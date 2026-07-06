@@ -1,0 +1,21 @@
+@theme {
+  --font-sans: Impact, Haettenschweiler, "Arial Narrow Bold", "Arial Black", system-ui, sans-serif;
+  --color-bg: #fff8ea;
+  --color-ink: #101010;
+  --color-muted: #58524b;
+  --color-accent: #ff5a1f;
+  --color-panel: #101010;
+  --text-hero: 8.2rem;
+  --text-display: 5.8rem;
+  --text-body: 2.2rem;
+}
+body { background: #151515; }
+.slide { background: linear-gradient(135deg, transparent 0 72%, rgb(255 90 31 / .18) 72% 100%), var(--color-bg); color: var(--color-ink); }
+.slide h1 { font-size: var(--text-hero); line-height: .82; letter-spacing: -.055em; text-transform: uppercase; }
+.slide h2 { font-size: var(--text-display); line-height: .86; letter-spacing: -.045em; text-transform: uppercase; }
+.text-muted { color: var(--color-muted); }
+.kicker { color: var(--color-accent); text-transform: uppercase; letter-spacing: .12em; font-size: 1.35rem; font-weight: 900; }
+.stat { color: var(--color-accent); font-size: 10rem; line-height: .78; font-weight: 900; letter-spacing: -.075em; text-transform: uppercase; }
+.divider { width: 12rem; height: .7rem; background: var(--color-accent); margin-block: 2rem; }
+.panel { background: var(--color-panel); color: #fff8ea; border: .35rem solid var(--color-accent); border-radius: 0; padding: 2rem; box-shadow: 1rem 1rem 0 var(--color-accent); }
+.panel .text-muted { color: #c9bfb1; }

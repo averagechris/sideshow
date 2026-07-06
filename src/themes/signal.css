@@ -1,0 +1,18 @@
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --color-bg: #080a10;
+  --color-ink: #f5f1e8;
+  --color-muted: #a7adbb;
+  --color-accent: #7cfff0;
+  --color-panel: #111827;
+  --text-hero: 7rem;
+  --text-display: 5rem;
+  --text-body: 2rem;
+}
+body { background: #05060a; }
+.slide { background: radial-gradient(circle at 80% 10%, rgb(124 255 240 / .16), transparent 32rem), var(--color-bg); color: var(--color-ink); }
+.text-muted { color: var(--color-muted); }
+.kicker { color: var(--color-accent); text-transform: uppercase; letter-spacing: .22em; font-size: 1.35rem; font-weight: 800; }
+.stat { color: var(--color-accent); font-size: 8rem; line-height: .9; font-weight: 800; letter-spacing: -.06em; }
+.divider { width: 9rem; height: .35rem; border-radius: 999px; background: var(--color-accent); margin-block: 2rem; }
+.panel { background: color-mix(in srgb, var(--color-panel) 84%, transparent); border: 1px solid rgb(255 255 255 / .12); border-radius: 2rem; padding: 2rem; }

@@ -1,0 +1,15 @@
+# Public project metadata for future averagechris fleet enrollment.
+# This file is informational today; site registry updates are manual.
+[project]
+name = "sideshow"
+description = "Agentic HTML slide deck compiler and toolkit"
+pages_subdir = "sideshow"
+srht_repo = "sideshow"
+artifact_prefix = "sideshow"
+binaries = ["sideshow"]
+version_file = "Cargo.toml"
+homepage_tier = "more"
+downloads = true
+
+[pages]
+docs = ["overview.html", "examples.html", "demo.html", "changelog.html"]

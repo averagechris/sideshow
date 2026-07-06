@@ -1,0 +1,193 @@
+---
+name: sideshow-deck-author
+description: Author, verify, and deliver sideshow HTML/markdown slide decks using the CLI, fixed-stage fragment contract, and rodney visual feedback loop.
+allowed-tools: Bash, Read, Grep, Glob, Edit, Write
+---
+
+# sideshow Deck Author
+
+Use this skill when creating or revising a `sideshow` deck. `sideshow` compiles a source directory of HTML/markdown slide fragments into one self-contained HTML file.
+
+Commands below assume `sideshow` is on PATH. When working inside the sideshow repo itself, substitute `nix develop -c cargo run --` for `sideshow`.
+
+## Core contract
+
+- Output is a single offline HTML file at `dist/<slug-of-deck-title>.html`.
+- Slides are authored as independent files in `slides/` and wrapped by the compiler into a fixed 1920×1080 stage.
+- The stage scales as a whole in the browser; slides must not rely on responsive reflow.
+- Visual QA is the agent's job: build, open in a browser with rodney, call `window.sideshow`, screenshot, inspect, iterate.
+- Do not edit generated `dist/*.html` directly. Fix source fragments, `deck.toml`, `theme.css`, or `assets/`.
+
+## Phase 1 — Content discovery
+
+Ask the user all discovery questions in one batched prompt before authoring:
+
+1. **Purpose:** What is this deck for? (talk, workshop, sales/pitch, internal update, report, teaching, other)
+2. **Audience:** Who will read/watch it, and what do they already know?
+3. **Slide count target:** Approximate range or time budget.
+4. **Density mode:**
+   - **Speaker-led sparse:** one idea per slide, large type, minimal copy, more slides.
+   - **Reading-first dense:** self-contained context, tables/grids/annotations, still no cramped text.
+5. **Existing material:** notes, docs, outlines, images, charts, data, brand assets, prior decks to import.
+6. **Brand constraints:** logo, color/token requirements, typography, tone, examples to emulate or avoid.
+
+If the user already supplied some answers, acknowledge them and ask only for the missing items in the same batch.
+
+## Phase 2 — Theme selection by showing, not telling
+
+People choose design better from screenshots than from theme names.
+
+1. **List built-in themes with metadata** and shortlist 1–3 that fit the mood/formality/density from Phase 1:
+
+   ```bash
+   sideshow themes --format json
+   ```
+
+2. **Scaffold 1–3 candidate decks** in a scratch directory, one per plausible theme:
+
+   ```bash
+   mkdir -p /tmp/sideshow-style-candidates
+   sideshow new /tmp/sideshow-style-candidates/candidate-signal --theme signal
+   ```
+
+3. Replace each candidate's `slides/01-title.html` with a real title slide using the user's actual subject. Do not render labels such as “option A,” “preview,” or theme filenames on the slide itself.
+
+4. Build and screenshot each candidate:
+
+   ```bash
+   sideshow check /tmp/sideshow-style-candidates/candidate-signal
+   sideshow build /tmp/sideshow-style-candidates/candidate-signal
+   rodney status || rodney start
+   rodney open file:///tmp/sideshow-style-candidates/candidate-signal/dist/signal-demo.html
+   rodney waitload
+   rodney screenshot -w 1280 -h 720 /tmp/sideshow-style-candidates/candidate-signal.png
+   ```
+
+5. Present the screenshots to the user with concise differences. Let them pick one direction or ask for a mix. Use the chosen deck/theme as the base for full authoring.
+
+## Phase 3 — Authoring rules
+
+### Source layout
+
+```text
+mydeck/
+  deck.toml
+  theme.css
+  slides/
+    01-title.html
+    02-context.md
+    03-diagram.html
+  assets/
+```
+
+Default slide order is lexicographic over `slides/*.{html,md}`. Name files with stable numeric prefixes: `01-title.html`, `02-problem.md`, `03-architecture.html`. For parallel work, assign subagents disjoint ranges such as `10-19`, `20-29`; slide files are independent and merge cleanly.
+
+### Fragment contract
+
+- `.html` slides contain only the inner content of a slide. Never include `<html>`, `<head>`, or `<script>` in fragments.
+- Use `.md` for simple prose/list slides; use `.html` for bespoke layouts, diagrams, dense grids, or exact visual hierarchy.
+- Speaker notes go inside the fragment as:
+
+  ```html
+  <template data-notes>Remind the audience why this matters.</template>
+  ```
+
+- Reveals use `data-step`; explicit ordering is allowed with `data-step="2"`:
+
+  ```html
+  <p data-step>First reveal</p>
+  <p data-step="2">Second reveal</p>
+  ```
+
+### Visual and CSS discipline
+
+- Prefer agent-authored inline SVG for diagrams, architecture maps, funnels, timelines, and charts. It stays sharp, self-contained, inspectable, and easy to edit. Use raster images only for real photos/screenshots/logos or supplied assets.
+- Use Tailwind utilities plus theme classes/tokens. Avoid ad-hoc hex colors in slides; use theme custom properties such as `var(--color-accent)`, `var(--color-muted)`, `var(--color-panel)`, or Tailwind classes that map to the theme.
+- If a color/spacing/type role is missing, extend `theme.css` intentionally rather than sprinkling one-off styles.
+- Respect density mode. Speaker-led decks should breathe; reading-first decks can use grids/tables but must remain legible.
+- Never shrink text below the theme's intended roles to “make it fit.” Split overflowing content into more slides.
+- Avoid filler: no lorem ipsum, no generic business bullets, no “AI-generated” gradient-purple aesthetics, no decoration that does not clarify the message. Use real data and concrete labels.
+
+### Images
+
+- Prefer inline SVG markup for diagrams, charts, architecture maps, and timelines; it stays sharp, small, inspectable, and editable.
+- Use raster files for photos, screenshots, logos, or supplied bitmap assets. Run `sideshow img info assets/photo.png` to inspect dimensions/projected inline size and `sideshow img optimize assets/photo.png` for photo-like assets.
+- `sideshow build` optimizes raster assets in memory by default via `[images]` config, but does not mutate `assets/`. `sideshow check` warns on large individual assets and total deck budget; use `--strict` when the budget must gate delivery.
+
+See `fragment-patterns.md` for canonical fragment starting points.
+
+## Phase 4 — Verify loop
+
+Run this loop after every meaningful authoring pass. Fix all findings before delivery.
+
+### 4.1 Static check
+
+```bash
+sideshow check mydeck
+sideshow check mydeck --format json
+```
+
+Fix every forbidden tag, missing asset, duplicate slide id, bad `deck.toml`, or missing slide.
+
+### 4.2 Build
+
+```bash
+sideshow build mydeck
+```
+
+The output path is printed and should be under `mydeck/dist/`.
+
+### 4.3 Browser audit with rodney
+
+Start rodney only if no browser session is available:
+
+```bash
+rodney status || rodney start
+rodney open file://$PWD/mydeck/dist/<deck-slug>.html
+rodney waitload
+rodney js 'JSON.stringify(sideshow.audit())'
+```
+
+Parse the audit JSON. For every slide, fix:
+
+- `overflow.x > 0` or `overflow.y > 0`
+- non-empty `brokenImages`
+- unexpected `steps` or missing/present notes if the outline required otherwise
+
+Useful API calls:
+
+```bash
+rodney js 'sideshow.count()'
+rodney js 'sideshow.goto(3)'
+rodney js 'sideshow.next()'
+rodney js 'sideshow.prev()'
+rodney js 'sideshow.notes(1)'
+```
+
+### 4.4 Per-slide visual pass
+
+For each slide number `N`, navigate, screenshot, read the image with vision, and revise until it looks right:
+
+```bash
+rodney js 'sideshow.goto(N)'
+rodney waitstable
+rodney screenshot -w 1280 -h 720 /tmp/sideshow-slide-N.png
+```
+
+Inspect screenshots for hierarchy, alignment, clipped text, awkward wrapping, contrast, accidental internal notes, broken SVG geometry, and whether the slide communicates the intended single idea. For reveal-heavy slides, call `rodney js 'sideshow.next()'` between screenshots to inspect each step.
+
+Repeat: edit source → `sideshow check` → `sideshow build` → `rodney reload --hard` or `rodney open ...` → audit → screenshots.
+
+## Phase 5 — Delivery
+
+- Hand over the single generated file: `mydeck/dist/<deck-slug>.html`.
+- For PDF, use the browser's native print flow; sideshow includes print CSS with one slide per page.
+- For a live URL, use the repository's central SourceHut Pages publisher flow or upload the single HTML file to S3 and share a presigned URL. A `sideshow publish` subcommand is forthcoming; do not document it as available unless your binary shows it.
+- Tell the user the deck path, output file, slide count, navigation keys, and any remaining caveats.
+
+## Quality bar
+
+- The first screenshot should look like a real deck, not a template demo.
+- Every slide must earn its place. If content is vague, ask or research; do not fill space with platitudes.
+- Restraint beats decoration. Use contrast, spacing, typography, diagrams, and real examples before ornamental effects.
+- Prefer more slides over overcrowded slides.
