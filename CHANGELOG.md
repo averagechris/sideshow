@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+
+## v0.1.0 - 2026-07-06
+
 ### Added
 
 - Added the `sideshow-deck-author` agentic skill pack with fragment patterns and
