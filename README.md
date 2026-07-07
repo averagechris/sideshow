@@ -102,6 +102,12 @@ nix run .#static-checks
 nix run .#ci-test
 ```
 
+## Issues
+
+Bugs and feature requests live on the umbrella tracker at
+[todo.sr.ht/~averagechris/projects](https://todo.sr.ht/~averagechris/projects);
+sideshow tickets carry the `repo:sideshow` label.
+
 ## Release
 
 ```sh

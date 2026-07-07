@@ -2,6 +2,11 @@
 
 Use `jj` for version-control actions in this repository.
 
+## Issue tracker
+
+Tickets live on https://todo.sr.ht/~averagechris/projects with the
+`repo:sideshow` label; use the `srht todo` CLI (it auto-applies the repo label).
+
 ## Development
 
 - Enter the toolchain with `direnv allow` or `nix develop`.
