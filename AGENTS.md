@@ -7,6 +7,12 @@ Use `jj` for version-control actions in this repository.
 Tickets live on https://todo.sr.ht/~averagechris/projects with the
 `repo:sideshow` label; use the `srht todo` CLI (it auto-applies the repo label).
 
+## Example deck
+
+`examples/making-of-sideshow/` is the dogfood deck; `docs/pages/demo.html` is its
+committed build output. After editing the deck, rebuild and re-copy:
+`sideshow build examples/making-of-sideshow && cp examples/making-of-sideshow/dist/the-making-of-sideshow.html docs/pages/demo.html`.
+
 ## Development
 
 - Enter the toolchain with `direnv allow` or `nix develop`.

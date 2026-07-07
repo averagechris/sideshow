@@ -102,6 +102,21 @@ nix run .#static-checks
 nix run .#ci-test
 ```
 
+## Examples
+
+`examples/making-of-sideshow/` is a full 14-slide deck about how this tool was
+built, authored with the tool itself. Browse previews at
+[averagechris.srht.site/sideshow/examples.html](https://averagechris.srht.site/sideshow/examples.html)
+or the compiled deck at
+[averagechris.srht.site/sideshow/demo.html](https://averagechris.srht.site/sideshow/demo.html).
+`docs/pages/demo.html` is that deck's build output, committed so the pages
+publisher can serve it; regenerate it after editing the example deck:
+
+```sh
+sideshow build examples/making-of-sideshow
+cp examples/making-of-sideshow/dist/the-making-of-sideshow.html docs/pages/demo.html
+```
+
 ## Issues
 
 Bugs and feature requests live on the umbrella tracker at
