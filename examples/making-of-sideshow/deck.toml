@@ -4,3 +4,6 @@ theme = "terminal"
 
 [build]
 inline_assets = true
+
+[images]
+optimize = false
