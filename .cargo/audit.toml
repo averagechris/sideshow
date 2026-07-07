@@ -1,7 +1,0 @@
-# Keep in sync with deny.toml [advisories] ignore. Tracked: ~averagechris/projects#50
-[advisories]
-ignore = [
-  # Transitive through comrak -> syntect; no maintained upgrade path in current comrak line.
-  "RUSTSEC-2025-0141", # bincode unmaintained
-  "RUSTSEC-2024-0320", # yaml-rust unmaintained
-]
