@@ -1,0 +1,29 @@
+<div class="h-full p-16 flex flex-col justify-between">
+  <header>
+    <p class="kicker">Shipping drama</p>
+    <h2 class="mt-5 font-black">incident report, v0.1.0</h2>
+    <div class="divider"></div>
+  </header>
+
+  <main class="space-y-5 text-3xl leading-snug">
+    <div class="panel grid grid-cols-12 gap-6 items-start">
+      <p class="col-span-3" style="color: var(--color-accent)">[bug-001]</p>
+      <p class="col-span-9"><strong>first bug:</strong> <code>sideshow check</code> reported the forbidden <code>&lt;script&gt;</code> finding twice for one escaped <code>&lt;script&gt;&lt;/script&gt;</code> mention: open tag plus close tag. The only “Fixed” entry in the v0.1.0 changelog.</p>
+    </div>
+    <div class="panel grid grid-cols-12 gap-6 items-start">
+      <p class="col-span-3" style="color: var(--color-accent)">[jj-time]</p>
+      <p class="col-span-9"><strong>timing footgun:</strong> the oauth fix briefly amended the just-pushed release commit; a leftover <code>maint</code> workspace kept respawning empty commits during cleanup. History was repaired properly.</p>
+    </div>
+    <div class="panel grid grid-cols-12 gap-6 items-start">
+      <p class="col-span-3" style="color: var(--color-accent)">[release]</p>
+      <p class="col-span-9"><strong>oauth archaeology:</strong> the linux release job died missing a pages.sr.ht oauth grant, a bug Chris had already fixed elsewhere that never propagated to the template.</p>
+    </div>
+    <div class="panel grid grid-cols-12 gap-6 items-start">
+      <p class="col-span-3" style="color: var(--color-accent)">[swarm]</p>
+      <p class="col-span-9"><strong>parallel sessions colliding:</strong> fleet maintenance kept landing on sideshow’s main mid-task, surprising the agent: “I’m trying to trace through the git history here…”</p>
+    </div>
+  </main>
+
+  <footer class="text-2xl text-muted">Kinks found. That is exactly what shaking out the pipeline was for.</footer>
+</div>
+<template data-notes>Keep this playful but factual: the launch was fast, not frictionless. The drama validates the dogfood process because the pipeline exposed real operational papercuts.</template>

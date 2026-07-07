@@ -1,0 +1,44 @@
+<div class="h-full p-16 flex flex-col justify-between">
+  <header>
+    <p class="kicker">Images</p>
+    <h2 class="mt-5 font-black">Base64 by design</h2>
+    <div class="divider"></div>
+  </header>
+
+  <main class="grid grid-cols-3 gap-8">
+    <section class="panel col-span-2">
+      <p class="text-5xl font-black leading-tight">“yes, base64 into the HTML — by design”</p>
+      <p class="mt-8 text-4xl leading-tight text-muted">That makes bloat a <span style="color: var(--color-accent)">linted condition</span> instead of a surprise.</p>
+      <div class="mt-10 grid grid-cols-2 gap-6">
+        <div class="panel">
+          <div class="stat">500KB</div>
+          <p class="text-3xl text-muted">per-asset warn budget</p>
+        </div>
+        <div class="panel">
+          <div class="stat">10MB</div>
+          <p class="text-3xl text-muted">per-deck warn budget</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel flex flex-col justify-between">
+      <div>
+        <p class="text-2xl text-muted">killer feature</p>
+        <p class="mt-6 text-4xl font-black leading-tight">Agents author SVG diagrams directly as text.</p>
+      </div>
+      <svg class="mt-8 w-full" viewBox="0 0 420 300" role="img" aria-label="SVG as text turns into a sharp diagram">
+        <rect x="24" y="30" width="170" height="210" rx="18" fill="var(--color-panel)" stroke="var(--color-accent)"/>
+        <text x="52" y="78" fill="var(--color-accent)" font-size="26" font-weight="800">&lt;svg&gt;</text>
+        <text x="52" y="124" fill="var(--color-muted)" font-size="20">path</text>
+        <text x="52" y="160" fill="var(--color-muted)" font-size="20">rect</text>
+        <text x="52" y="196" fill="var(--color-muted)" font-size="20">text</text>
+        <path d="M210 135 H286" stroke="var(--color-accent)" stroke-width="8" stroke-linecap="round"/>
+        <path d="M286 135 l-22 -18 M286 135 l-22 18" stroke="var(--color-accent)" stroke-width="8" stroke-linecap="round"/>
+        <circle cx="348" cy="135" r="54" fill="none" stroke="var(--color-accent)" stroke-width="8"/>
+        <path d="M322 138 l18 20 40 -52" fill="none" stroke="var(--color-accent)" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <p class="mt-6 text-2xl leading-snug text-muted">Meta: this deck’s diagrams are agent-authored SVG, not raster screenshots.</p>
+    </section>
+  </main>
+</div>
+<template data-notes>Image handling kept the single-file invariant. Raster assets can be inlined, optimized, and budgeted, while most agent-created visuals should be SVG text: sharp, inspectable, and easy to modify.</template>
