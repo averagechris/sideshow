@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Dual-license under MIT OR Apache-2.0 (LICENSE, LICENSE-MIT, LICENSE-APACHE).
+
 
 ## v0.1.0 - 2026-07-06
 
