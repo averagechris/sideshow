@@ -511,6 +511,8 @@ pub fn build_deck(dir: &Path) -> anyhow::Result<PathBuf> {
 
 fn compile_css(dir: &Path) -> anyhow::Result<String> {
     let tw = which::which("tailwindcss").context("tailwindcss binary not found on PATH; enter `nix develop` or install Tailwind CSS v4 standalone")?;
+    let slides_dir = fs::canonicalize(dir.join("slides"))?;
+    let slides_source = css_string(&slides_dir.to_string_lossy());
     let tmp = std::env::temp_dir().join(format!("sideshow-{}", std::process::id()));
     fs::create_dir_all(&tmp)?;
     let input = tmp.join("entry.css");
@@ -518,7 +520,8 @@ fn compile_css(dir: &Path) -> anyhow::Result<String> {
     fs::write(
         &input,
         format!(
-            "@import \"tailwindcss\";\n{}\n{}\n",
+            "@import \"tailwindcss\" source(none);\n@source {};\n{}\n{}\n",
+            slides_source,
             STAGE_CSS,
             fs::read_to_string(dir.join("theme.css"))?
         ),
@@ -528,14 +531,16 @@ fn compile_css(dir: &Path) -> anyhow::Result<String> {
         .arg(&input)
         .args(["-o"])
         .arg(&output)
-        .args(["--content"])
-        .arg(dir.join("slides/**/*.{html,md}"))
         .args(["--minify"])
         .status()?;
     if !status.success() {
         bail!("tailwindcss failed while compiling deck CSS");
     }
     Ok(fs::read_to_string(output)?)
+}
+
+fn css_string(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 fn slug(s: &str) -> String {
     let mut out = s

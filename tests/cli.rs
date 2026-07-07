@@ -38,6 +38,60 @@ fn new_then_build_outputs_single_file() {
 }
 
 #[test]
+fn build_scans_deck_slides_from_other_cwd_without_cwd_decoys() {
+    if which::which("tailwindcss").is_err() {
+        eprintln!("skipping integration test: tailwindcss not on PATH");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let deck = tmp.path().join("deck");
+    let cwd = tmp.path().join("cwd");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::write(
+        cwd.join("decoy.html"),
+        r#"<div class="backdrop-invert"></div>"#,
+    )
+    .unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_sideshow");
+    assert!(
+        Command::new(bin)
+            .args(["new", deck.to_str().unwrap()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(
+        deck.join("slides/01-title.html"),
+        r#"<h1 class="text-[7.2rem] grid grid-cols-2">Scoped</h1>"#,
+    )
+    .unwrap();
+    assert!(
+        Command::new(bin)
+            .current_dir(&cwd)
+            .args(["build", deck.to_str().unwrap()])
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let html = std::fs::read_to_string(deck.join("dist/signal-demo.html")).unwrap();
+    assert!(
+        html.contains("7.2rem"),
+        "arbitrary utility was not generated"
+    );
+    assert!(
+        html.contains("grid-cols-2"),
+        "deck slide utility was not generated"
+    );
+    assert!(
+        !html.contains("backdrop-invert"),
+        "Tailwind scanned a decoy file outside the deck"
+    );
+}
+
+#[test]
 fn build_optimizes_large_png_when_enabled_and_check_warns() {
     if which::which("tailwindcss").is_err() {
         eprintln!("skipping integration test: tailwindcss not on PATH");
