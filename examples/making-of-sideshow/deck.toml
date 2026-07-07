@@ -1,0 +1,6 @@
+[deck]
+title = "The Making of Sideshow"
+theme = "terminal"
+
+[build]
+inline_assets = true
