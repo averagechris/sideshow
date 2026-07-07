@@ -1,0 +1,47 @@
+<div class="h-full px-16 py-14 flex flex-col">
+  <header class="flex items-center justify-between text-muted text-2xl">
+    <p class="kicker">architecture</p>
+    <p>deterministic compiler, agent-authored fragments</p>
+  </header>
+
+  <blockquote class="mt-8 panel text-4xl leading-tight">
+    “The LLM writes content and picks design; <span style="color: var(--color-accent)">sideshow does everything that should be deterministic.</span>”
+  </blockquote>
+
+  <svg class="mt-10 w-full" style="height: 650px;" viewBox="0 0 1780 650" role="img" aria-label="sideshow source tree to compiler stages to single HTML file pipeline">
+    <defs>
+      <marker id="arch-arrow" markerWidth="16" markerHeight="16" refX="14" refY="8" orient="auto"><path d="M0,0 L16,8 L0,16 Z" fill="var(--color-accent)" /></marker>
+      <filter id="glow"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    </defs>
+    <rect x="30" y="70" width="430" height="500" rx="28" fill="var(--color-panel)" stroke="rgb(125 255 155 / .35)" />
+    <text x="70" y="130" fill="var(--color-accent)" font-size="28" font-weight="800">source tree</text>
+    <text x="70" y="190" fill="var(--color-ink)" font-size="31">deck.toml</text>
+    <text x="70" y="245" fill="var(--color-ink)" font-size="31">theme.css</text>
+    <text x="70" y="300" fill="var(--color-ink)" font-size="31">slides/*.html, *.md</text>
+    <text x="70" y="355" fill="var(--color-ink)" font-size="31">assets/</text>
+    <text x="70" y="455" fill="var(--color-muted)" font-size="28">agent touches a</text>
+    <text x="70" y="495" fill="var(--color-muted)" font-size="28">60-line fragment,</text>
+    <text x="70" y="535" fill="var(--color-muted)" font-size="28">not the monolith.</text>
+
+    <path d="M485 320 H620" stroke="var(--color-accent)" stroke-width="8" marker-end="url(#arch-arrow)" filter="url(#glow)" />
+
+    <rect x="640" y="45" width="520" height="550" rx="34" fill="rgb(13 27 22 / .82)" stroke="rgb(125 255 155 / .42)" />
+    <text x="900" y="105" text-anchor="middle" fill="var(--color-accent)" font-size="34" font-weight="900">compiler stages</text>
+    <rect x="700" y="155" width="400" height="95" rx="20" fill="var(--color-panel)" stroke="rgb(255 255 255 / .18)" />
+    <text x="900" y="215" text-anchor="middle" fill="var(--color-ink)" font-size="34" font-weight="800">wrap fragments</text>
+    <path d="M900 260 V315" stroke="var(--color-accent)" stroke-width="5" marker-end="url(#arch-arrow)" />
+    <rect x="700" y="325" width="400" height="95" rx="20" fill="var(--color-panel)" stroke="rgb(255 255 255 / .18)" />
+    <text x="900" y="385" text-anchor="middle" fill="var(--color-ink)" font-size="34" font-weight="800">tailwind standalone</text>
+    <path d="M900 430 V485" stroke="var(--color-accent)" stroke-width="5" marker-end="url(#arch-arrow)" />
+    <rect x="700" y="495" width="400" height="80" rx="20" fill="var(--color-panel)" stroke="rgb(255 255 255 / .18)" />
+    <text x="900" y="547" text-anchor="middle" fill="var(--color-ink)" font-size="32" font-weight="800">inline assets</text>
+
+    <path d="M1185 320 H1320" stroke="var(--color-accent)" stroke-width="8" marker-end="url(#arch-arrow)" filter="url(#glow)" />
+    <rect x="1345" y="135" width="385" height="370" rx="30" fill="var(--color-panel)" stroke="rgb(125 255 155 / .48)" />
+    <text x="1538" y="220" text-anchor="middle" fill="var(--color-accent)" font-size="34" font-weight="900">one file</text>
+    <text x="1538" y="305" text-anchor="middle" fill="var(--color-ink)" font-size="46" font-weight="900">deck.html</text>
+    <text x="1538" y="370" text-anchor="middle" fill="var(--color-muted)" font-size="28">self-contained</text>
+    <text x="1538" y="412" text-anchor="middle" fill="var(--color-muted)" font-size="28">works everywhere</text>
+  </svg>
+</div>
+<template data-notes>Emphasize the split: humans and LLMs do creative layout in small files; the compiler handles all repeatable mechanics.</template>
