@@ -84,6 +84,12 @@
         version = package.version;
         src = lib.cleanSource ./.;
         cargoLock.lockFile = ./Cargo.lock;
+        nativeBuildInputs = [pkgs.makeWrapper];
+
+        postInstall = ''
+          wrapProgram $out/bin/sideshow \
+            --prefix PATH : ${lib.makeBinPath [pkgs.tailwindcss_4]}
+        '';
 
         meta = {
           description = package.description;
@@ -107,10 +113,22 @@
         type = "app";
         program = "${self.packages.${system}.sideshow}/bin/sideshow";
       };
-      ci-audit = {type = "app"; program = "${self.packages.${system}.ci-audit}/bin/ci-audit";};
-      ci-deny = {type = "app"; program = "${self.packages.${system}.ci-deny}/bin/ci-deny";};
-      ci-machete = {type = "app"; program = "${self.packages.${system}.ci-machete}/bin/ci-machete";};
-      ci-sort = {type = "app"; program = "${self.packages.${system}.ci-sort}/bin/ci-sort";};
+      ci-audit = {
+        type = "app";
+        program = "${self.packages.${system}.ci-audit}/bin/ci-audit";
+      };
+      ci-deny = {
+        type = "app";
+        program = "${self.packages.${system}.ci-deny}/bin/ci-deny";
+      };
+      ci-machete = {
+        type = "app";
+        program = "${self.packages.${system}.ci-machete}/bin/ci-machete";
+      };
+      ci-sort = {
+        type = "app";
+        program = "${self.packages.${system}.ci-sort}/bin/ci-sort";
+      };
       inherit ((fleetApps system).apps) prepare-release release-tag release ci-fmt ci-clippy static-checks ci-test;
     });
 
