@@ -1,0 +1,44 @@
+<div class="h-full p-16 flex flex-col justify-between">
+  <header class="flex items-center justify-between text-2xl text-muted">
+    <p class="kicker">tech shootout</p>
+    <p>framework taste test</p>
+  </header>
+
+  <main>
+    <h2 class="font-black max-w-6xl">a tiny deck compiler, not a framework</h2>
+    <div class="divider"></div>
+
+    <section class="mt-10 grid grid-cols-3 gap-7 text-3xl leading-tight">
+      <div class="panel">
+        <p class="kicker">rejected</p>
+        <h3 class="mt-4 text-4xl font-bold">Leptos / WASM</h3>
+        <p class="mt-5 text-muted">“slides need ~100 lines of nav JS, period.”</p>
+        <p class="mt-5" style="color: var(--color-accent)">jackhammer for a thumbtack</p>
+      </div>
+      <div class="panel">
+        <p class="kicker">rejected</p>
+        <h3 class="mt-4 text-4xl font-bold">SSGs</h3>
+        <p class="mt-5 text-muted">“SSGs excel at <em>uniform</em> pages from markdown; great decks are <em>bespoke layouts per slide</em>.”</p>
+        <p class="mt-5" style="color: var(--color-accent)">wrong grain</p>
+      </div>
+      <div class="panel">
+        <p class="kicker">unlocked</p>
+        <h3 class="mt-4 text-4xl font-bold">Tailwind standalone</h3>
+        <p class="mt-5 text-muted">tailwindcss_4 standalone binary in nixpkgs.</p>
+        <p class="mt-5" style="color: var(--color-accent)">“zero node. That changes the tech calculus.”</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="grid grid-cols-2 gap-8 items-center">
+    <div class="panel text-3xl leading-relaxed">
+      <p>Invariant:</p>
+      <p class="mt-3 text-muted">“the artifact must stay a single self-contained HTML file.”</p>
+    </div>
+    <div class="panel text-3xl leading-relaxed">
+      <p><span style="color: var(--color-accent)">$</span> no WASM · no GUI · no reveal.js</p>
+      <p class="mt-3 text-muted">one offline file for srht pages, S3, Slack attachments, everywhere.</p>
+    </div>
+  </footer>
+</div>
+<template data-notes>Walk through the shootout as a sequence of constraints. The winning stack is boring on purpose: HTML fragments, Tailwind standalone, a small compiler, and one self-contained output file.</template>
