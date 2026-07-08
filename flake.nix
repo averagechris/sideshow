@@ -150,6 +150,7 @@
           cargo-sort
           clippy
           direnv
+          ffmpeg
           hut
           jujutsu
           nixd

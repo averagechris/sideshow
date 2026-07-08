@@ -212,3 +212,61 @@ fn build_optimizes_large_png_when_enabled_and_check_warns() {
     let optimized = std::fs::metadata(deck.join("dist/t.html")).unwrap().len();
     assert!(optimized < unoptimized, "{optimized} !< {unoptimized}");
 }
+
+#[test]
+fn build_inlines_video_assets_and_runtime_wires_playback() {
+    if which::which("tailwindcss").is_err() {
+        eprintln!("skipping integration test: tailwindcss not on PATH");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let deck = tmp.path().join("deck");
+    std::fs::create_dir_all(deck.join("slides")).unwrap();
+    std::fs::create_dir_all(deck.join("assets")).unwrap();
+    std::fs::write(deck.join("deck.toml"), "[deck]\ntitle='Video'\n").unwrap();
+    std::fs::write(deck.join("theme.css"), "").unwrap();
+    std::fs::write(
+        deck.join("slides/01.html"),
+        "<video src=\"assets/demo.webm\"></video>",
+    )
+    .unwrap();
+    std::fs::write(deck.join("assets/demo.webm"), b"demo video bytes").unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_sideshow");
+    assert!(
+        Command::new(bin)
+            .args(["build", deck.to_str().unwrap()])
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let html = std::fs::read_to_string(deck.join("dist/video.html")).unwrap();
+    assert!(html.contains("src=\"data:video/webm;base64,"));
+    assert!(html.contains("initVideos"));
+    assert!(html.contains("prefers-reduced-motion: reduce"));
+    assert!(html.contains("video.play()"));
+}
+
+#[test]
+fn video_optimize_errors_helpfully_without_ffmpeg() {
+    if which::which("ffmpeg").is_ok() {
+        eprintln!("skipping ffmpeg-missing test: ffmpeg is on PATH");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("demo.mp4");
+    std::fs::write(&input, b"not a real mp4").unwrap();
+    let bin = env!("CARGO_BIN_EXE_sideshow");
+    let out = Command::new(bin)
+        .args(["video", "optimize", input.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("ffmpeg binary not found on PATH"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("nix develop"), "{stderr}");
+}

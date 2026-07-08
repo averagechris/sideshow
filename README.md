@@ -28,7 +28,7 @@ sideshow check mydeck --format json
 
 `check` validates `deck.toml`, slide ordering, forbidden fragment tags, duplicate
 generated slide IDs, missing `assets/...` references, empty slide directories, and
-image size budgets. Budget findings are warnings by default; use `--strict` to
+asset size budgets. Budget findings are warnings by default; use `--strict` to
 make warnings fail the check.
 
 ## Images
@@ -59,6 +59,24 @@ optimize = true  # default
 quality = 80
 max_dim = 3840
 ```
+
+## Videos
+
+Small `.webm` and `.mp4` files referenced from `assets/` are inlined into the
+single output HTML as `data:video/...` URIs. Videos on the active slide are muted,
+looping, and play inline by default; they pause and reset when leaving the slide,
+and autoplay is disabled for `prefers-reduced-motion: reduce`.
+
+Keep demo clips short and run the ultra-minimal ffmpeg wrapper before adding them
+to a deck:
+
+```sh
+sideshow video optimize mydeck/assets/demo.mp4 --quality 40 --max-dim 1280
+```
+
+The command writes a sibling `<stem>.webm` only when it is smaller than the input;
+audio is stripped unless `--keep-audio` is passed. Video bytes count toward the
+same `sideshow check` per-asset and total inlined asset budgets as images.
 
 ## Built-in themes
 

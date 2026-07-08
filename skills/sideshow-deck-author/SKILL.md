@@ -116,6 +116,12 @@ Default slide order is lexicographic over `slides/*.{html,md}`. Name files with 
 - Use raster files for photos, screenshots, logos, or supplied bitmap assets. Run `sideshow img info assets/photo.png` to inspect dimensions/projected inline size and `sideshow img optimize assets/photo.png` for photo-like assets.
 - `sideshow build` optimizes raster assets in memory by default via `[images]` config, but does not mutate `assets/`. `sideshow check` warns on large individual assets and total deck budget; use `--strict` when the budget must gate delivery.
 
+### Videos
+
+- Keep videos short and intentional. Prefer `.webm`; `.webm` and `.mp4` files under `assets/` are inlined as data URIs and count against the same per-asset and total deck budgets as images.
+- Strip audio unless it is essential. Run `sideshow video optimize assets/demo.mp4 --quality 40 --max-dim 1280` and reference the generated `.webm` when it is smaller.
+- Slide videos are muted, looping, playsinline, and play only while their slide is active; reduced-motion users should not rely on autoplayed motion for meaning.
+
 See `fragment-patterns.md` for canonical fragment starting points.
 
 ## Phase 4 — Verify loop

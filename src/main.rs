@@ -1,3 +1,4 @@
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 use std::{
     fs,
@@ -38,6 +39,11 @@ enum Command {
     Img {
         #[command(subcommand)]
         command: ImgCommand,
+    },
+    /// Inspect and optimize videos.
+    Video {
+        #[command(subcommand)]
+        command: VideoCommand,
     },
     /// List built-in themes and selection metadata.
     Themes {
@@ -86,6 +92,19 @@ enum ImgCommand {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum VideoCommand {
+    Optimize {
+        file: PathBuf,
+        #[arg(long, default_value_t = 40)]
+        quality: u8,
+        #[arg(long, default_value_t = 1280)]
+        max_dim: u32,
+        #[arg(long)]
+        keep_audio: bool,
+    },
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -125,6 +144,7 @@ fn main() -> anyhow::Result<()> {
             if !fail { Ok(()) } else { std::process::exit(1) }
         }
         Command::Img { command } => img(command),
+        Command::Video { command } => video(command),
         Command::Themes { format } => {
             let themes = sideshow::theme_metadata();
             if format.as_deref() == Some("json") {
@@ -144,6 +164,68 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Serve { dir, port } => serve(&dir, port),
     }
+}
+
+fn video(command: VideoCommand) -> anyhow::Result<()> {
+    match command {
+        VideoCommand::Optimize {
+            file,
+            quality,
+            max_dim,
+            keep_audio,
+        } => {
+            let ffmpeg = which::which("ffmpeg").context(
+                "ffmpeg binary not found on PATH; enter `nix develop` or install ffmpeg",
+            )?;
+            let old = fs::metadata(&file)?.len();
+            let out = file.with_extension("webm");
+            let tmp = out.with_extension("webm.tmp");
+            let scale = format!(
+                "scale='if(gt(iw,ih),min({max_dim},iw),-2)':'if(gt(iw,ih),-2,min({max_dim},ih))'"
+            );
+            let quality = quality.to_string();
+            let mut cmd = std::process::Command::new(ffmpeg);
+            cmd.args(["-y", "-i"]).arg(&file).args([
+                "-c:v",
+                "libvpx-vp9",
+                "-crf",
+                &quality,
+                "-b:v",
+                "0",
+                "-vf",
+                &scale,
+            ]);
+            if keep_audio {
+                cmd.args(["-c:a", "libopus", "-b:a", "64k"]);
+            } else {
+                cmd.arg("-an");
+            }
+            let status = cmd.args(["-f", "webm"]).arg(&tmp).status()?;
+            if !status.success() {
+                let _ = fs::remove_file(&tmp);
+                anyhow::bail!("ffmpeg failed while optimizing video");
+            }
+            let new = fs::metadata(&tmp)?.len();
+            if new < old {
+                fs::rename(&tmp, &out)?;
+                println!(
+                    "optimized {} -> {}: {} -> {} bytes",
+                    file.display(),
+                    out.display(),
+                    old,
+                    new
+                );
+            } else {
+                let _ = fs::remove_file(&tmp);
+                println!(
+                    "kept {}: optimized WebM was not smaller than {} bytes",
+                    file.display(),
+                    old
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn img(command: ImgCommand) -> anyhow::Result<()> {

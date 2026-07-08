@@ -579,6 +579,8 @@ fn mime_for(p: &str) -> &'static str {
         "gif" => "image/gif",
         "svg" => "image/svg+xml",
         "webp" => "image/webp",
+        "webm" => "video/webm",
+        "mp4" => "video/mp4",
         "css" => "text/css",
         _ => "application/octet-stream",
     }
@@ -892,6 +894,22 @@ mod tests {
                 .count()
                 == 2
         );
+    }
+
+    #[test]
+    fn rewrites_video_assets_with_video_mime() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir_all(t.path().join("assets")).unwrap();
+        fs::write(t.path().join("assets/demo.webm"), b"webm").unwrap();
+        fs::write(t.path().join("assets/demo.mp4"), b"mp4").unwrap();
+        let out = rewrite_asset_refs(
+            t.path(),
+            "<video src=\"assets/demo.webm\"></video><video src='assets/demo.mp4'></video>",
+            ImagesConfig::default(),
+        )
+        .unwrap();
+        assert!(out.contains("src=\"data:video/webm;base64,d2VibQ==\""));
+        assert!(out.contains("src='data:video/mp4;base64,bXA0'"));
     }
 
     #[test]

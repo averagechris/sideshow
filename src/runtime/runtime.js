@@ -4,6 +4,7 @@
   const slides = Array.from(document.querySelectorAll(".slide"));
   let index = 0;
   let digits = "";
+  const reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   function scale() {
     const s = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
@@ -22,8 +23,32 @@
     slides.forEach((slide, i) => {
       slide.classList.toggle("is-active", i === index);
       if (i !== index) steps(slide).forEach((el) => el.classList.remove("is-revealed"));
+      updateVideos(slide, i === index);
     });
     history.replaceState(null, "", `#${index + 1}`);
+  }
+
+  function initVideos() {
+    slides.forEach((slide) => Array.from(slide.querySelectorAll("video")).forEach((video) => {
+      video.muted = true;
+      video.loop = true;
+      video.playsInline = true;
+      video.setAttribute("muted", "");
+      video.setAttribute("loop", "");
+      video.setAttribute("playsinline", "");
+    }));
+  }
+
+  function updateVideos(slide, active) {
+    Array.from(slide.querySelectorAll("video")).forEach((video) => {
+      if (active && !reduceMotion) {
+        const p = video.play();
+        if (p && typeof p.catch === "function") p.catch(() => {});
+      } else {
+        video.pause();
+        video.currentTime = 0;
+      }
+    });
   }
 
   function go(n) {
@@ -113,6 +138,7 @@
     if (event.key === "End") go(slides.length - 1);
   });
   scale();
+  initVideos();
   const start = Number(location.hash.slice(1));
   if (Number.isFinite(start) && start > 0) index = Math.min(slides.length - 1, start - 1);
   apply();
