@@ -89,7 +89,16 @@ enum ImgCommand {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::New { dir, theme } => sideshow::new_deck(&dir, &theme),
+        Command::New { dir, theme } => {
+            sideshow::new_deck(&dir, &theme)?;
+            println!("created {} (theme: {theme})", dir.display());
+            println!(
+                "next: sideshow check {} && sideshow build {}",
+                dir.display(),
+                dir.display()
+            );
+            Ok(())
+        }
         Command::Build { dir } => {
             let output = sideshow::build_deck(&dir)?;
             println!("built {}", output.display());
@@ -104,7 +113,7 @@ fn main() -> anyhow::Result<()> {
             if format.as_deref() == Some("json") {
                 println!("{}", serde_json::to_string_pretty(&findings)?);
             } else if findings.is_empty() {
-                println!("ok: no findings");
+                println!("ok: no static findings (run the browser audit for visual verification)");
             } else {
                 for f in &findings {
                     println!("{:?}: {}: {}: {}", f.severity, f.path, f.kind, f.message);

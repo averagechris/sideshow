@@ -9,12 +9,19 @@ fn new_then_build_outputs_single_file() {
     let tmp = tempfile::tempdir().unwrap();
     let deck = tmp.path().join("deck");
     let bin = env!("CARGO_BIN_EXE_sideshow");
-    assert!(
-        Command::new(bin)
-            .args(["new", deck.to_str().unwrap()])
-            .status()
-            .unwrap()
-            .success()
+    let new = Command::new(bin)
+        .args(["new", "--theme", "terminal", deck.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(new.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&new.stdout),
+        format!(
+            "created {} (theme: terminal)\nnext: sideshow check {} && sideshow build {}\n",
+            deck.display(),
+            deck.display(),
+            deck.display()
+        )
     );
     assert!(
         Command::new(bin)
@@ -23,7 +30,7 @@ fn new_then_build_outputs_single_file() {
             .unwrap()
             .success()
     );
-    let out = deck.join("dist/signal-demo.html");
+    let out = deck.join("dist/terminal-demo.html");
     assert!(out.exists());
     let html = std::fs::read_to_string(out).unwrap();
     let first = html.find("data-src=\"slides/01-title.html\"").unwrap();
@@ -88,6 +95,30 @@ fn build_scans_deck_slides_from_other_cwd_without_cwd_decoys() {
     assert!(
         !html.contains("backdrop-invert"),
         "Tailwind scanned a decoy file outside the deck"
+    );
+}
+
+#[test]
+fn check_success_message_mentions_static_findings() {
+    let tmp = tempfile::tempdir().unwrap();
+    let deck = tmp.path().join("deck");
+    let bin = env!("CARGO_BIN_EXE_sideshow");
+    assert!(
+        Command::new(bin)
+            .args(["new", deck.to_str().unwrap()])
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let check = Command::new(bin)
+        .args(["check", deck.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(check.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&check.stdout),
+        "ok: no static findings (run the browser audit for visual verification)\n"
     );
 }
 
