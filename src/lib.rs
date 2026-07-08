@@ -1,6 +1,6 @@
 use anyhow::{Context, bail};
 use base64::Engine;
-use comrak::{Options, markdown_to_html};
+use comrak::{Options, Plugins, markdown_to_html_with_plugins};
 use regex::{Captures, Regex};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -8,6 +8,8 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+
+mod highlight;
 
 pub const RUNTIME_MARKER: &str = "sideshow-runtime-v1";
 const STAGE_CSS: &str = include_str!("runtime/stage.css");
@@ -480,7 +482,10 @@ pub fn build_deck(dir: &Path) -> anyhow::Result<PathBuf> {
         let stem = p.file_stem().unwrap().to_string_lossy();
         let raw = fs::read_to_string(&p)?;
         let html = if p.extension().and_then(|s| s.to_str()) == Some("md") {
-            markdown_to_html(&raw, &Options::default())
+            let mut plugins = Plugins::default();
+            let adapter = highlight::Highlighter;
+            plugins.render.codefence_syntax_highlighter = Some(&adapter);
+            markdown_to_html_with_plugins(&raw, &Options::default(), &plugins)
         } else {
             validate_fragment(&p, &raw)?;
             raw

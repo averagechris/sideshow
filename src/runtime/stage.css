@@ -11,5 +11,10 @@ body { font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif); colo
 .slide-md { display: flex; flex-direction: column; justify-content: center; gap: 1.5rem; font-size: 2.5rem; line-height: 1.2; }
 .slide-md h1 { font-size: 5.5rem; line-height: .95; margin: 0 0 2rem; }
 .slide-md li + li { margin-top: .6em; }
+.tok-kw { color: var(--code-keyword, var(--color-accent, #7cfff0)); }
+.tok-str { color: var(--code-string, var(--color-muted, #a7adbb)); }
+.tok-com { color: var(--code-comment, color-mix(in srgb, var(--color-muted, #a7adbb) 72%, transparent)); font-style: italic; }
+.tok-num { color: var(--code-number, color-mix(in srgb, var(--color-accent, #7cfff0) 78%, var(--color-ink, #f5f1e8))); }
+.tok-fn { color: var(--code-function, var(--color-ink, #f5f1e8)); }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } }
 @media print { html, body { overflow: visible; background: white; } #stage { position: static; transform: none !important; width: auto; height: auto; box-shadow: none; background: transparent; } .slide { position: relative; visibility: visible !important; opacity: 1 !important; page-break-after: always; break-after: page; } [data-step] { opacity: 1 !important; transform: none !important; } }

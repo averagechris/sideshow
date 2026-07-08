@@ -123,6 +123,39 @@ fn check_success_message_mentions_static_findings() {
 }
 
 #[test]
+fn build_highlights_recognized_markdown_code_fences() {
+    if which::which("tailwindcss").is_err() {
+        eprintln!("skipping integration test: tailwindcss not on PATH");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let deck = tmp.path().join("deck");
+    std::fs::create_dir_all(deck.join("slides")).unwrap();
+    std::fs::write(deck.join("deck.toml"), "[deck]\ntitle='Syntax'\n").unwrap();
+    std::fs::write(deck.join("theme.css"), "").unwrap();
+    std::fs::write(
+        deck.join("slides/01-code.md"),
+        "# Code\n\n```rust\nfn main() { let n = 1; }\n```\n",
+    )
+    .unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_sideshow");
+    assert!(
+        Command::new(bin)
+            .args(["build", deck.to_str().unwrap()])
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let html = std::fs::read_to_string(deck.join("dist/syntax.html")).unwrap();
+    assert!(html.contains("class=\"language-rust\""));
+    assert!(html.contains("tok-kw"));
+    assert!(html.contains("tok-fn"));
+}
+
+#[test]
 fn build_optimizes_large_png_when_enabled_and_check_warns() {
     if which::which("tailwindcss").is_err() {
         eprintln!("skipping integration test: tailwindcss not on PATH");

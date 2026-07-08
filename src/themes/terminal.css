@@ -5,6 +5,8 @@
   --color-muted: #8dae9b;
   --color-accent: #7dff9b;
   --color-panel: #0d1b16;
+  /* Optional code highlighting tokens:
+     --code-keyword, --code-string, --code-comment, --code-number, --code-function */
   --text-hero: 6.7rem;
   --text-display: 4.8rem;
   --text-body: 1.9rem;
