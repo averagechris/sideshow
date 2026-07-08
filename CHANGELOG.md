@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Dual-license under MIT OR Apache-2.0 (LICENSE, LICENSE-MIT, LICENSE-APACHE).
+- Added `sideshow publish` with S3 presigned upload (`--target s3`) and srht pages handoff (`--target srht`).
 
 
 ## v0.1.0 - 2026-07-06

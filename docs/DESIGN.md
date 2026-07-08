@@ -119,10 +119,10 @@ v1:
   violations, broken asset refs, deck.toml validity, duplicate slide ids.
   Dynamic checks (overflow, image rendering) are `sideshow.audit()` via
   the skill's rodney workflow, not the CLI.
+- `sideshow publish <dir> --target {s3,srht}` — publish an existing dist
+  output via S3 upload + presigned URL or the srht central pages handoff.
 
 fast-follow:
-- `sideshow publish <dir> --target {s3,srht}` — s3: upload + presigned URL
-  with `--expires`; srht: hand off to the central pages publisher flow.
 - PDF export: native `@media print` is the v1 answer (print from the
   agent-driven browser or by hand); a dedicated exporter only if fidelity
   demands it.

@@ -88,6 +88,8 @@ pub struct ToolsConfig {
     pub ffmpeg: Option<PathBuf>,
     #[serde(default)]
     pub vhs: Option<PathBuf>,
+    #[serde(default)]
+    pub aws: Option<PathBuf>,
 }
 
 impl ToolsConfig {
@@ -96,6 +98,7 @@ impl ToolsConfig {
             "tailwindcss" => self.tailwindcss.as_ref(),
             "ffmpeg" => self.ffmpeg.as_ref(),
             "vhs" => self.vhs.as_ref(),
+            "aws" => self.aws.as_ref(),
             _ => None,
         }
     }
@@ -670,6 +673,13 @@ pub fn build_deck(dir: &Path) -> anyhow::Result<PathBuf> {
         ),
     )?;
     Ok(out)
+}
+
+pub fn deck_dist_path(dir: &Path) -> anyhow::Result<PathBuf> {
+    let deck = parse_deck_toml(&fs::read_to_string(dir.join("deck.toml"))?)?;
+    Ok(dir
+        .join("dist")
+        .join(format!("{}.html", slug(&deck.deck.title))))
 }
 
 fn compile_css(dir: &Path) -> anyhow::Result<String> {
@@ -1424,5 +1434,16 @@ mod tests {
         fs::write(t.path().join("assets/demo.webm"), b"webm").unwrap();
         let findings = check_deck(t.path());
         assert!(!findings.iter().any(|f| f.kind == "tape"));
+    }
+
+    #[test]
+    fn tools_config_parses_aws_path() {
+        let config =
+            parse_user_config("[tools]\naws = '/tmp/aws'\n", Path::new("config.toml")).unwrap();
+        assert_eq!(config.tools.aws, Some(PathBuf::from("/tmp/aws")));
+        assert_eq!(
+            config.tools.path_for("aws"),
+            Some(&PathBuf::from("/tmp/aws"))
+        );
     }
 }

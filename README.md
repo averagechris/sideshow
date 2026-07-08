@@ -22,8 +22,8 @@ and embeds the stage CSS/runtime JavaScript. Tailwind CSS v4's standalone
 ## External tools
 
 Sideshow resolves external tools in this order: environment override, user config,
-then `PATH`. Set `SIDESHOW_TAILWINDCSS`, `SIDESHOW_FFMPEG`, or `SIDESHOW_VHS` to
-an executable file path for the highest-priority override. The user config file is
+then `PATH`. Set `SIDESHOW_TAILWINDCSS`, `SIDESHOW_FFMPEG`, `SIDESHOW_VHS`, or
+`SIDESHOW_AWS` to an executable file path for the highest-priority override. The user config file is
 loaded from `$SIDESHOW_CONFIG`, `$XDG_CONFIG_HOME/sideshow/config.toml`, or
 `$HOME/.config/sideshow/config.toml` (first match; missing files mean defaults):
 
@@ -32,6 +32,7 @@ loaded from `$SIDESHOW_CONFIG`, `$XDG_CONFIG_HOME/sideshow/config.toml`, or
 tailwindcss = "/path/to/tailwindcss"
 ffmpeg = "/path/to/ffmpeg"
 vhs = "/path/to/vhs"
+aws = "/path/to/aws"
 ```
 
 Lint before building:
@@ -45,6 +46,17 @@ sideshow check mydeck --format json
 generated slide IDs, missing `assets/...` references, empty slide directories, and
 asset size budgets. Budget findings are warnings by default; use `--strict` to
 make warnings fail the check.
+
+Publish an already-built deck without rebuilding:
+
+```sh
+sideshow publish mydeck --target s3 --bucket my-bucket --key demos/mydeck.html --expires 3600
+sideshow publish mydeck --target srht --name demo
+```
+
+S3 publishing shells out to the AWS CLI for `aws s3 cp` and `aws s3 presign`.
+Set `SIDESHOW_AWS=/path/to/aws` or add `aws = "/path/to/aws"` under `[tools]`
+in the sideshow config when it is not on `PATH`.
 
 ## Images
 

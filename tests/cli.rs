@@ -10,6 +10,17 @@ fn make_executable(path: &std::path::Path, body: &str) {
     std::fs::set_permissions(path, permissions).unwrap();
 }
 
+fn prebuilt_t_deck(root: &std::path::Path) -> std::path::PathBuf {
+    let deck = root.join("deck");
+    std::fs::create_dir_all(deck.join("slides")).unwrap();
+    std::fs::create_dir_all(deck.join("dist")).unwrap();
+    std::fs::write(deck.join("deck.toml"), "[deck]\ntitle='T'\n").unwrap();
+    std::fs::write(deck.join("theme.css"), "").unwrap();
+    std::fs::write(deck.join("slides/01.html"), "<h1>T</h1>").unwrap();
+    std::fs::write(deck.join("dist/t.html"), "<!doctype html><title>T</title>").unwrap();
+    deck
+}
+
 #[test]
 fn new_then_build_outputs_single_file() {
     if which::which("tailwindcss").is_err() {
@@ -256,6 +267,146 @@ fn build_inlines_video_assets_and_runtime_wires_playback() {
     assert!(html.contains("initVideos"));
     assert!(html.contains("prefers-reduced-motion: reduce"));
     assert!(html.contains("video.play()"));
+}
+
+#[test]
+fn publish_missing_dist_mentions_build_first() {
+    let tmp = tempfile::tempdir().unwrap();
+    let deck = tmp.path().join("deck");
+    std::fs::create_dir_all(deck.join("slides")).unwrap();
+    std::fs::write(deck.join("deck.toml"), "[deck]\ntitle='T'\n").unwrap();
+    std::fs::write(deck.join("theme.css"), "").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_sideshow"))
+        .args(["publish", deck.to_str().unwrap(), "--target", "srht"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("sideshow build"));
+}
+
+#[cfg(unix)]
+#[test]
+fn publish_s3_uses_configured_aws_and_prints_presigned_url() {
+    let tmp = tempfile::tempdir().unwrap();
+    let deck = prebuilt_t_deck(tmp.path());
+    let log = tmp.path().join("aws.log");
+    let aws = tmp.path().join("aws");
+    make_executable(
+        &aws,
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\nif [ \"$2\" = presign ]; then printf '%s\\n' 'https://example.invalid/t'; fi\n",
+            log.display()
+        ),
+    );
+    let config = tmp.path().join("config.toml");
+    std::fs::write(&config, format!("[tools]\naws = '{}'\n", aws.display())).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_sideshow"))
+        .args([
+            "publish",
+            deck.to_str().unwrap(),
+            "--target",
+            "s3",
+            "--bucket",
+            "bucket",
+            "--key",
+            "custom.html",
+            "--expires",
+            "60",
+        ])
+        .env("SIDESHOW_CONFIG", &config)
+        .env_remove("SIDESHOW_AWS")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let log = std::fs::read_to_string(log).unwrap();
+    assert!(log.contains(&format!(
+        "s3 cp {} s3://bucket/custom.html --content-type text/html --no-progress",
+        deck.join("dist/t.html").display()
+    )));
+    assert!(log.contains("s3 presign s3://bucket/custom.html --expires-in 60"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("https://example.invalid/t"));
+}
+
+#[test]
+fn publish_s3_rejects_invalid_expires() {
+    let tmp = tempfile::tempdir().unwrap();
+    let deck = prebuilt_t_deck(tmp.path());
+    for expires in ["0", "604801"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_sideshow"))
+            .args([
+                "publish",
+                deck.to_str().unwrap(),
+                "--target",
+                "s3",
+                "--bucket",
+                "b",
+                "--expires",
+                expires,
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("604800"));
+    }
+}
+
+#[test]
+fn publish_srht_copies_to_docs_pages_and_prints_next_steps() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(tmp.path().join(".git")).unwrap();
+    let deck = prebuilt_t_deck(tmp.path());
+    let output = Command::new(env!("CARGO_BIN_EXE_sideshow"))
+        .args(["publish", deck.to_str().unwrap(), "--target", "srht"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("docs/pages/demo.html")).unwrap(),
+        "<!doctype html><title>T</title>"
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("next: commit and push to main"));
+}
+
+#[test]
+fn publish_srht_rejects_bad_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(tmp.path().join(".git")).unwrap();
+    let deck = prebuilt_t_deck(tmp.path());
+    let output = Command::new(env!("CARGO_BIN_EXE_sideshow"))
+        .args([
+            "publish",
+            deck.to_str().unwrap(),
+            "--target",
+            "srht",
+            "--name",
+            "nope",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("central pages publisher"));
+}
+
+#[test]
+fn publish_srht_rejects_oversized_dist() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(tmp.path().join(".git")).unwrap();
+    let deck = prebuilt_t_deck(tmp.path());
+    std::fs::write(deck.join("dist/t.html"), vec![b'x'; 2_000_001]).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_sideshow"))
+        .args(["publish", deck.to_str().unwrap(), "--target", "srht"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("2000000-byte"));
 }
 
 #[test]

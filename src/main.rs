@@ -1,5 +1,5 @@
 use anyhow::Context;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use sideshow::find_tool;
 use std::{
     fs,
@@ -62,6 +62,31 @@ enum Command {
         #[arg(long, default_value_t = 8000)]
         port: u16,
     },
+    /// Publish an existing dist output to S3 or the srht pages handoff.
+    Publish {
+        dir: PathBuf,
+        /// Publish target.
+        #[arg(long, value_enum)]
+        target: PublishTarget,
+        /// S3 bucket name (required with --target s3).
+        #[arg(long)]
+        bucket: Option<String>,
+        /// S3 object key (defaults to the dist file name).
+        #[arg(long)]
+        key: Option<String>,
+        /// S3 presign expiration in seconds (1..=604800).
+        #[arg(long, default_value_t = 604800)]
+        expires: u32,
+        /// srht pages allowlisted output name.
+        #[arg(long, default_value = "demo")]
+        name: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum PublishTarget {
+    S3,
+    Srht,
 }
 
 #[derive(Debug, Subcommand)]
@@ -181,7 +206,166 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Serve { dir, port } => serve(&dir, port),
+        Command::Publish {
+            dir,
+            target,
+            bucket,
+            key,
+            expires,
+            name,
+        } => publish(
+            &dir,
+            target,
+            bucket.as_deref(),
+            key.as_deref(),
+            expires,
+            &name,
+        ),
     }
+}
+
+const SRHT_PAGE_NAMES: &[&str] = &[
+    "overview",
+    "examples",
+    "example",
+    "demo",
+    "changelog",
+    "tour",
+    "sample-review",
+];
+const SRHT_MAX_DOC_BYTES: u64 = 2_000_000;
+
+fn publish(
+    dir: &Path,
+    target: PublishTarget,
+    bucket: Option<&str>,
+    key: Option<&str>,
+    expires: u32,
+    name: &str,
+) -> anyhow::Result<()> {
+    let dist = sideshow::deck_dist_path(dir)?;
+    if !dist.is_file() {
+        anyhow::bail!(
+            "dist output not found: {}; run sideshow build {} first",
+            dist.display(),
+            dir.display()
+        );
+    }
+    warn_if_stale(dir, &dist)?;
+    match target {
+        PublishTarget::S3 => publish_s3(&dist, bucket, key, expires),
+        PublishTarget::Srht => publish_srht(dir, &dist, name),
+    }
+}
+
+fn publish_key(dist: &Path, key: Option<&str>) -> anyhow::Result<String> {
+    key.map(ToOwned::to_owned)
+        .or_else(|| dist.file_name().map(|s| s.to_string_lossy().into_owned()))
+        .context("dist output has no file name for default S3 key")
+}
+
+fn validate_expires(expires: u32) -> anyhow::Result<()> {
+    if !(1..=604800).contains(&expires) {
+        anyhow::bail!("--expires must be between 1 and 604800 seconds (AWS SigV4 presign maximum)");
+    }
+    Ok(())
+}
+
+fn publish_s3(
+    dist: &Path,
+    bucket: Option<&str>,
+    key: Option<&str>,
+    expires: u32,
+) -> anyhow::Result<()> {
+    validate_expires(expires)?;
+    let bucket = bucket.context("--bucket is required when --target s3")?;
+    let key = publish_key(dist, key)?;
+    let uri = format!("s3://{bucket}/{key}");
+    let aws = find_tool(
+        "aws",
+        "SIDESHOW_AWS",
+        "sideshow publish --target s3 needs the aws CLI to upload and presign",
+        "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html",
+    )?;
+    let cp = std::process::Command::new(&aws)
+        .args(["s3", "cp"])
+        .arg(dist)
+        .arg(&uri)
+        .args(["--content-type", "text/html", "--no-progress"])
+        .output()?;
+    if !cp.status.success() {
+        anyhow::bail!(
+            "aws s3 cp failed: {}",
+            String::from_utf8_lossy(&cp.stderr).trim()
+        );
+    }
+    println!("uploaded {} -> {uri}", dist.display());
+    let presign = std::process::Command::new(&aws)
+        .args(["s3", "presign"])
+        .arg(&uri)
+        .args(["--expires-in", &expires.to_string()])
+        .output()?;
+    if !presign.status.success() {
+        anyhow::bail!(
+            "aws s3 presign failed: {}",
+            String::from_utf8_lossy(&presign.stderr).trim()
+        );
+    }
+    println!("presigned url (expires in {expires}s):");
+    print!("{}", String::from_utf8_lossy(&presign.stdout));
+    Ok(())
+}
+
+fn validate_srht_name(name: &str) -> anyhow::Result<()> {
+    if !SRHT_PAGE_NAMES.contains(&name) {
+        anyhow::bail!(
+            "--name must be one of {}; the central pages publisher only fetches these docs/pages/*.html filenames",
+            SRHT_PAGE_NAMES.join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn publish_srht(dir: &Path, dist: &Path, name: &str) -> anyhow::Result<()> {
+    validate_srht_name(name)?;
+    let bytes = fs::metadata(dist)?.len();
+    if bytes > SRHT_MAX_DOC_BYTES {
+        anyhow::bail!(
+            "dist output is {bytes} bytes, exceeding the 2000000-byte srht publisher cap; optimize images and rebuild"
+        );
+    }
+    let root = find_repo_root(dir)?;
+    let dest = root.join("docs/pages").join(format!("{name}.html"));
+    fs::create_dir_all(dest.parent().unwrap())?;
+    fs::copy(dist, &dest)?;
+    println!("copied {} -> {}", dist.display(), dest.display());
+    println!(
+        "next: commit and push to main; the central pages publisher picks it up on its next refresh (published as {name}.html under this project's pages path)"
+    );
+    Ok(())
+}
+
+fn find_repo_root(start: &Path) -> anyhow::Result<PathBuf> {
+    for p in start.ancestors() {
+        if p.join(".jj").exists() || p.join(".git").exists() {
+            return Ok(p.to_path_buf());
+        }
+    }
+    anyhow::bail!(
+        "could not find an enclosing repository root from {}; expected a parent with .jj or .git",
+        start.display()
+    )
+}
+
+fn warn_if_stale(dir: &Path, dist: &Path) -> anyhow::Result<()> {
+    let dist_mtime = fs::metadata(dist)?.modified()?;
+    if deck_sources_mtime(dir)? > dist_mtime {
+        println!(
+            "warning: dist output is older than deck sources; run sideshow build {} to refresh",
+            dir.display()
+        );
+    }
+    Ok(())
 }
 
 fn tape(command: TapeCommand) -> anyhow::Result<()> {
@@ -480,5 +664,38 @@ fn newest_mtime(dir: &Path) -> anyhow::Result<SystemTime> {
     }
     let mut max = SystemTime::UNIX_EPOCH;
     walk(dir, &mut max)?;
+    Ok(max)
+}
+
+fn deck_sources_mtime(dir: &Path) -> anyhow::Result<SystemTime> {
+    fn consider_file(p: &Path, max: &mut SystemTime) -> anyhow::Result<()> {
+        if p.is_file()
+            && let Ok(m) = fs::metadata(p)?.modified()
+            && m > *max
+        {
+            *max = m;
+        }
+        Ok(())
+    }
+    fn walk(p: &Path, max: &mut SystemTime) -> anyhow::Result<()> {
+        if !p.is_dir() {
+            return Ok(());
+        }
+        for e in fs::read_dir(p)? {
+            let e = e?;
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, max)?;
+            } else {
+                consider_file(&p, max)?;
+            }
+        }
+        Ok(())
+    }
+    let mut max = SystemTime::UNIX_EPOCH;
+    consider_file(&dir.join("deck.toml"), &mut max)?;
+    consider_file(&dir.join("theme.css"), &mut max)?;
+    walk(&dir.join("slides"), &mut max)?;
+    walk(&dir.join("assets"), &mut max)?;
     Ok(max)
 }
