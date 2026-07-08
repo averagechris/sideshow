@@ -404,7 +404,7 @@ fn serve(dir: &Path, port: u16) -> anyhow::Result<()> {
     let out = sideshow::build_deck(dir)?;
     let root = dir.join("dist");
     let listener = TcpListener::bind(("127.0.0.1", port))?;
-    println!("Serving {} at http://localhost:{port}/", root.display());
+    println!("serving {} at http://localhost:{port}/", root.display());
     for stream in listener.incoming() {
         let mut stream = stream?;
         let req = read_req(&mut stream)?;
