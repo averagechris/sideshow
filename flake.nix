@@ -159,6 +159,7 @@
           rustfmt
           sccache
           tailwindcss_4
+          vhs
         ];
       };
     });

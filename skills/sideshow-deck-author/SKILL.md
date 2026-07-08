@@ -121,6 +121,21 @@ Default slide order is lexicographic over `slides/*.{html,md}`. Name files with 
 - Keep videos short and intentional. Prefer `.webm`; `.webm` and `.mp4` files under `assets/` are inlined as data URIs and count against the same per-asset and total deck budgets as images.
 - Strip audio unless it is essential. Run `sideshow video optimize assets/demo.mp4 --quality 40 --max-dim 1280` and reference the generated `.webm` when it is smaller.
 - Slide videos are muted, looping, playsinline, and play only while their slide is active; reduced-motion users should not rely on autoplayed motion for meaning.
+- For terminal demos, put Charmbracelet VHS tapes in `tapes/` and set each tape's `Output` to `assets/<stem>.webm`. Render with `sideshow tape render <deck-dir>` (or `--tape demo`); the command skips up-to-date outputs unless `--force` is passed, and `sideshow check` warns on missing/stale rendered assets.
+- Make tapes deterministic: set shell, typing speed, font size, width, and height explicitly. Minimal example:
+
+```text
+Set Shell "bash"
+Set TypingSpeed 30ms
+Set FontSize 22
+Set Width 1280
+Set Height 720
+Output "assets/demo.webm"
+
+Type "sideshow check ."
+Enter
+Sleep 1s
+```
 
 See `fragment-patterns.md` for canonical fragment starting points.
 

@@ -403,7 +403,48 @@ pub fn check_deck(dir: &Path) -> Vec<CheckFinding> {
             ),
         });
     }
+    findings.extend(check_tapes(dir));
     findings
+}
+
+fn check_tapes(dir: &Path) -> Vec<CheckFinding> {
+    let tapes_dir = dir.join("tapes");
+    if !tapes_dir.is_dir() {
+        return Vec::new();
+    }
+    let Ok(entries) = fs::read_dir(&tapes_dir) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("tape"))
+        .filter_map(|tape| tape_finding(dir, &tape))
+        .collect()
+}
+
+fn tape_finding(dir: &Path, tape: &Path) -> Option<CheckFinding> {
+    let stem = tape.file_stem()?.to_str()?;
+    let rel_tape = format!("tapes/{stem}.tape");
+    let rel_out = format!("assets/{stem}.webm");
+    let out = dir.join(&rel_out);
+    let stale = match (fs::metadata(tape), fs::metadata(&out)) {
+        (Ok(_), Err(_)) => true,
+        (Ok(tape_meta), Ok(out_meta)) => match (tape_meta.modified(), out_meta.modified()) {
+            (Ok(tape_mtime), Ok(out_mtime)) => out_mtime < tape_mtime,
+            _ => true,
+        },
+        _ => false,
+    };
+    stale.then(|| CheckFinding {
+        path: rel_tape,
+        severity: FindingSeverity::Warning,
+        kind: "tape".into(),
+        message: format!(
+            "render {rel_out} with `sideshow tape render {}`",
+            dir.display()
+        ),
+    })
 }
 
 fn unique_forbidden_tags(html: &str) -> Vec<String> {
@@ -1146,5 +1187,27 @@ mod tests {
                 .iter()
                 .any(|f| f.severity == FindingSeverity::Warning && f.kind == "asset_size_budget")
         );
+    }
+
+    #[test]
+    fn check_warns_for_missing_or_stale_tape_output() {
+        let t = tempfile::tempdir().unwrap();
+        minimal_deck(&t);
+        fs::create_dir_all(t.path().join("tapes")).unwrap();
+        let tape = t.path().join("tapes/demo.tape");
+        fs::write(&tape, "Output \"assets/demo.webm\"\n").unwrap();
+
+        let findings = check_deck(t.path());
+        assert!(findings.iter().any(|f| {
+            f.severity == FindingSeverity::Warning
+                && f.kind == "tape"
+                && f.path == "tapes/demo.tape"
+                && f.message.contains("sideshow tape render")
+        }));
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(t.path().join("assets/demo.webm"), b"webm").unwrap();
+        let findings = check_deck(t.path());
+        assert!(!findings.iter().any(|f| f.kind == "tape"));
     }
 }

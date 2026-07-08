@@ -78,6 +78,32 @@ The command writes a sibling `<stem>.webm` only when it is smaller than the inpu
 audio is stripped unless `--keep-audio` is passed. Video bytes count toward the
 same `sideshow check` per-asset and total inlined asset budgets as images.
 
+## Terminal demos (vhs tapes)
+
+Deck-local Charmbracelet VHS tapes live in `tapes/*.tape` and render to video
+assets. Use the convention that each tape's `Output` directive points at
+`assets/<tape-stem>.webm` relative to the deck directory:
+
+```text
+Output "assets/demo.webm"
+```
+
+Render all tapes, or one tape by stem/name:
+
+```sh
+sideshow tape render mydeck
+sideshow tape render mydeck --tape demo
+```
+
+The renderer runs `vhs` from the deck directory so relative paths in the tape stay
+deck-local. It skips outputs that already exist and are newer than the `.tape`
+source; pass `--force` to re-render anyway. `sideshow check` warns when a tape's
+expected `.webm` output is missing or stale. Rendered videos are ordinary assets,
+so the same inlined asset budgets apply. Prefer deterministic tapes: set shell,
+typing speed, font size, width, and height explicitly, keep sleeps short, and keep
+clips brief. If your VHS setup emits `.mp4`, render that manually and run
+`sideshow video optimize` to produce the recommended `.webm` asset.
+
 ## Built-in themes
 
 List theme selection metadata with `sideshow themes` or `sideshow themes --format json`.

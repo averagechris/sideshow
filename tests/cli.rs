@@ -270,3 +270,29 @@ fn video_optimize_errors_helpfully_without_ffmpeg() {
     );
     assert!(stderr.contains("nix develop"), "{stderr}");
 }
+
+#[test]
+fn tape_render_errors_helpfully_without_vhs() {
+    if which::which("vhs").is_ok() {
+        eprintln!("skipping vhs-missing test: vhs is on PATH");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let deck = tmp.path().join("deck");
+    std::fs::create_dir_all(deck.join("tapes")).unwrap();
+    std::fs::write(deck.join("deck.toml"), "[deck]\ntitle='Tape'\n").unwrap();
+    std::fs::write(
+        deck.join("tapes/demo.tape"),
+        "Output \"assets/demo.webm\"\n",
+    )
+    .unwrap();
+    let bin = env!("CARGO_BIN_EXE_sideshow");
+    let out = Command::new(bin)
+        .args(["tape", "render", deck.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("vhs binary not found on PATH"), "{stderr}");
+    assert!(stderr.contains("nix develop"), "{stderr}");
+}

@@ -45,6 +45,11 @@ enum Command {
         #[command(subcommand)]
         command: VideoCommand,
     },
+    /// Render deck-local terminal demo tapes.
+    Tape {
+        #[command(subcommand)]
+        command: TapeCommand,
+    },
     /// List built-in themes and selection metadata.
     Themes {
         #[arg(long)]
@@ -105,6 +110,17 @@ enum VideoCommand {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum TapeCommand {
+    Render {
+        deck_dir: PathBuf,
+        #[arg(long)]
+        tape: Option<String>,
+        #[arg(long)]
+        force: bool,
+    },
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -145,6 +161,7 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Img { command } => img(command),
         Command::Video { command } => video(command),
+        Command::Tape { command } => tape(command),
         Command::Themes { format } => {
             let themes = sideshow::theme_metadata();
             if format.as_deref() == Some("json") {
@@ -164,6 +181,84 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Serve { dir, port } => serve(&dir, port),
     }
+}
+
+fn tape(command: TapeCommand) -> anyhow::Result<()> {
+    match command {
+        TapeCommand::Render {
+            deck_dir,
+            tape,
+            force,
+        } => render_tapes(&deck_dir, tape.as_deref(), force),
+    }
+}
+
+fn render_tapes(deck_dir: &Path, tape: Option<&str>, force: bool) -> anyhow::Result<()> {
+    let vhs = which::which("vhs")
+        .context("vhs binary not found on PATH; enter `nix develop` or install vhs")?;
+    let tapes_dir = deck_dir.join("tapes");
+    let tapes = if let Some(name) = tape {
+        let file = if name.ends_with(".tape") {
+            tapes_dir.join(name)
+        } else {
+            tapes_dir.join(format!("{name}.tape"))
+        };
+        if !file.is_file() {
+            anyhow::bail!("tape not found: {}", file.display());
+        }
+        vec![file]
+    } else if tapes_dir.is_dir() {
+        let mut tapes = fs::read_dir(&tapes_dir)?
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("tape"))
+            .collect::<Vec<_>>();
+        tapes.sort();
+        tapes
+    } else {
+        Vec::new()
+    };
+    if tapes.is_empty() {
+        println!("no tapes found in {}", tapes_dir.display());
+        return Ok(());
+    }
+    fs::create_dir_all(deck_dir.join("assets"))?;
+    for tape_path in tapes {
+        let stem = tape_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .context("tape file name is not valid utf-8")?;
+        let out = deck_dir.join("assets").join(format!("{stem}.webm"));
+        let rel_tape = format!(
+            "tapes/{}.tape",
+            tape_path.file_stem().unwrap().to_string_lossy()
+        );
+        let rel_out = format!("assets/{stem}.webm");
+        // Mtime caching is enough for the MVP: tapes are tiny source files and VHS rendering is expensive.
+        if !force && is_newer_than(&out, &tape_path)? {
+            println!("skipped {rel_tape} (up to date)");
+            continue;
+        }
+        let status = std::process::Command::new(&vhs)
+            .current_dir(deck_dir)
+            .arg(&rel_tape)
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("vhs failed while rendering {rel_tape}");
+        }
+        if !out.is_file() {
+            anyhow::bail!(
+                "expected output not found: {rel_out}; add `Output \"{rel_out}\"` to {rel_tape}"
+            );
+        }
+        let bytes = fs::metadata(&out)?.len();
+        println!("rendered {rel_tape} -> {rel_out} ({bytes} bytes)");
+    }
+    Ok(())
+}
+
+fn is_newer_than(out: &Path, input: &Path) -> anyhow::Result<bool> {
+    Ok(out.is_file() && fs::metadata(out)?.modified()? >= fs::metadata(input)?.modified()?)
 }
 
 fn video(command: VideoCommand) -> anyhow::Result<()> {
