@@ -259,16 +259,22 @@ fn video_optimize_errors_helpfully_without_ffmpeg() {
     std::fs::write(&input, b"not a real mp4").unwrap();
     let bin = env!("CARGO_BIN_EXE_sideshow");
     let out = Command::new(bin)
+        .env_remove("SIDESHOW_FFMPEG")
         .args(["video", "optimize", input.to_str().unwrap()])
         .output()
         .unwrap();
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("ffmpeg binary not found on PATH"),
+        stderr
+            .contains("ffmpeg not found: sideshow video optimize needs ffmpeg to re-encode videos"),
         "{stderr}"
     );
-    assert!(stderr.contains("nix develop"), "{stderr}");
+    assert!(
+        stderr.contains("https://ffmpeg.org/download.html"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("SIDESHOW_FFMPEG"), "{stderr}");
 }
 
 #[test]
@@ -288,11 +294,19 @@ fn tape_render_errors_helpfully_without_vhs() {
     .unwrap();
     let bin = env!("CARGO_BIN_EXE_sideshow");
     let out = Command::new(bin)
+        .env_remove("SIDESHOW_VHS")
         .args(["tape", "render", deck.to_str().unwrap()])
         .output()
         .unwrap();
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("vhs binary not found on PATH"), "{stderr}");
-    assert!(stderr.contains("nix develop"), "{stderr}");
+    assert!(
+        stderr.contains("vhs not found: sideshow tape render needs vhs to render terminal demos"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("https://github.com/charmbracelet/vhs"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("SIDESHOW_VHS"), "{stderr}");
 }

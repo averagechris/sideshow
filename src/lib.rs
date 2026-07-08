@@ -19,6 +19,30 @@ const LEDGER_CSS: &str = include_str!("themes/ledger.css");
 const TERMINAL_CSS: &str = include_str!("themes/terminal.css");
 const POSTER_CSS: &str = include_str!("themes/poster.css");
 
+pub fn find_tool(
+    binary: &str,
+    env_var: &str,
+    purpose: &str,
+    install_hint: &str,
+) -> anyhow::Result<PathBuf> {
+    if let Some(value) = std::env::var_os(env_var) {
+        let path = PathBuf::from(value);
+        if !path.is_file() {
+            bail!(
+                "{env_var} points to {}, but it is not a file",
+                path.display()
+            );
+        }
+        return Ok(path);
+    }
+
+    which::which(binary).with_context(|| {
+        format!(
+            "{binary} not found: {purpose}; install it ({install_hint}) or set {env_var} to its path"
+        )
+    })
+}
+
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 pub struct ThemeMetadata {
     pub name: &'static str,
@@ -560,7 +584,12 @@ pub fn build_deck(dir: &Path) -> anyhow::Result<PathBuf> {
 }
 
 fn compile_css(dir: &Path) -> anyhow::Result<String> {
-    let tw = which::which("tailwindcss").context("tailwindcss binary not found on PATH; enter `nix develop` or install Tailwind CSS v4 standalone")?;
+    let tw = find_tool(
+        "tailwindcss",
+        "SIDESHOW_TAILWINDCSS",
+        "sideshow build compiles deck CSS with Tailwind",
+        "https://tailwindcss.com/blog/standalone-cli",
+    )?;
     let slides_dir = fs::canonicalize(dir.join("slides"))?;
     let slides_source = css_string(&slides_dir.to_string_lossy());
     let tmp = std::env::temp_dir().join(format!("sideshow-{}", std::process::id()));
@@ -886,6 +915,56 @@ pub fn optimize_image(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn find_tool_uses_env_override_path() {
+        let t = tempfile::tempdir().unwrap();
+        let tool = t.path().join("custom-tool");
+        fs::write(&tool, "#!/bin/sh\n").unwrap();
+        let env_var = format!("SIDESHOW_TEST_TOOL_{}_OK", std::process::id());
+        unsafe {
+            std::env::set_var(&env_var, &tool);
+        }
+
+        let found = find_tool(
+            "definitely-not-on-path",
+            &env_var,
+            "test needs a tool",
+            "test",
+        )
+        .unwrap();
+
+        unsafe {
+            std::env::remove_var(&env_var);
+        }
+        assert_eq!(found, tool);
+    }
+
+    #[test]
+    fn find_tool_errors_when_env_override_is_not_file() {
+        let t = tempfile::tempdir().unwrap();
+        let missing = t.path().join("missing-tool");
+        let env_var = format!("SIDESHOW_TEST_TOOL_{}_MISSING", std::process::id());
+        unsafe {
+            std::env::set_var(&env_var, &missing);
+        }
+
+        let err = find_tool(
+            "definitely-not-on-path",
+            &env_var,
+            "test needs a tool",
+            "test",
+        )
+        .unwrap_err()
+        .to_string();
+
+        unsafe {
+            std::env::remove_var(&env_var);
+        }
+        assert!(err.contains(&format!("{env_var} points to")), "{err}");
+        assert!(err.contains("but it is not a file"), "{err}");
+    }
+
     #[test]
     fn parses_deck() {
         let d = parse_deck_toml("[deck]\ntitle='T'\nslides=['slides/b.md']\n").unwrap();

@@ -1,5 +1,6 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
+use sideshow::find_tool;
 use std::{
     fs,
     io::{Read, Write},
@@ -194,8 +195,12 @@ fn tape(command: TapeCommand) -> anyhow::Result<()> {
 }
 
 fn render_tapes(deck_dir: &Path, tape: Option<&str>, force: bool) -> anyhow::Result<()> {
-    let vhs = which::which("vhs")
-        .context("vhs binary not found on PATH; enter `nix develop` or install vhs")?;
+    let vhs = find_tool(
+        "vhs",
+        "SIDESHOW_VHS",
+        "sideshow tape render needs vhs to render terminal demos",
+        "https://github.com/charmbracelet/vhs",
+    )?;
     let tapes_dir = deck_dir.join("tapes");
     let tapes = if let Some(name) = tape {
         let file = if name.ends_with(".tape") {
@@ -269,8 +274,11 @@ fn video(command: VideoCommand) -> anyhow::Result<()> {
             max_dim,
             keep_audio,
         } => {
-            let ffmpeg = which::which("ffmpeg").context(
-                "ffmpeg binary not found on PATH; enter `nix develop` or install ffmpeg",
+            let ffmpeg = find_tool(
+                "ffmpeg",
+                "SIDESHOW_FFMPEG",
+                "sideshow video optimize needs ffmpeg to re-encode videos",
+                "https://ffmpeg.org/download.html",
             )?;
             let old = fs::metadata(&file)?.len();
             let out = file.with_extension("webm");

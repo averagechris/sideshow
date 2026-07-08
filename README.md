@@ -17,7 +17,13 @@ open <path printed by sideshow build>
 `sideshow build` reads `deck.toml`, wraps `slides/*.html` and `slides/*.md` as
 fixed 1920×1080 slide sections, inlines local `assets/` references as data URIs,
 and embeds the stage CSS/runtime JavaScript. Tailwind CSS v4's standalone
-`tailwindcss` binary must be on `PATH`; the Nix dev shell provides it.
+`tailwindcss` binary must be available; packaged installs bundle it.
+
+## External tools
+
+By default, sideshow finds external tools on `PATH`. Set `SIDESHOW_TAILWINDCSS`,
+`SIDESHOW_FFMPEG`, or `SIDESHOW_VHS` to an executable file path to override the
+tool used for CSS builds, video optimization, or tape rendering.
 
 Lint before building:
 
