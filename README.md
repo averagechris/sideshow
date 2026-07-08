@@ -51,12 +51,27 @@ Publish an already-built deck without rebuilding:
 
 ```sh
 sideshow publish mydeck --target s3 --bucket my-bucket --key demos/mydeck.html --expires 3600
-sideshow publish mydeck --target srht --name demo
+sideshow publish mydeck --target srht --domain user.srht.site
 ```
 
 S3 publishing shells out to the AWS CLI for `aws s3 cp` and `aws s3 presign`.
 Set `SIDESHOW_AWS=/path/to/aws` or add `aws = "/path/to/aws"` under `[tools]`
 in the sideshow config when it is not on `PATH`.
+
+SourceHut publishing uploads directly to the Pages API. Set `SRHT_TOKEN` to a
+personal access token from <https://meta.sr.ht/oauth2> with scope
+`pages.sr.ht/PAGES:RW`, or configure a command that prints one:
+
+```toml
+[srht]
+token-cmd = ["pass", "show", "srht"]
+```
+
+By default the deck is published under the dist file stem, so the example above
+serves at `https://user.srht.site/<slug>/`. Override that with
+`--subdir decks/foo` for nested paths. Only that subdirectory is updated; the
+rest of the site is left untouched. Use `--pages-url <url>` for self-hosted
+SourceHut Pages instances or tests.
 
 ## Images
 

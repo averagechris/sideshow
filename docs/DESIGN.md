@@ -120,7 +120,8 @@ v1:
   Dynamic checks (overflow, image rendering) are `sideshow.audit()` via
   the skill's rodney workflow, not the CLI.
 - `sideshow publish <dir> --target {s3,srht}` — publish an existing dist
-  output via S3 upload + presigned URL or the srht central pages handoff.
+  output via S3 upload + presigned URL or direct pages.sr.ht REST publish with a
+  subdir-scoped tarball upload, no external publisher dependency.
 
 fast-follow:
 - PDF export: native `@media print` is the v1 answer (print from the

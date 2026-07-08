@@ -1,5 +1,76 @@
 use std::process::Command;
 
+#[derive(Debug)]
+struct CapturedRequest {
+    path: String,
+    authorization: String,
+    body: Vec<u8>,
+}
+
+fn srht_test_server(
+    status: &'static str,
+    response_body: &'static str,
+) -> (String, std::sync::mpsc::Receiver<CapturedRequest>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 1024];
+        let head_end = loop {
+            let n = stream.read(&mut tmp).unwrap();
+            assert!(n > 0);
+            buf.extend_from_slice(&tmp[..n]);
+            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break pos + 4;
+            }
+        };
+        let head = String::from_utf8_lossy(&buf[..head_end]);
+        let path = head
+            .lines()
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .to_owned();
+        let authorization = head
+            .lines()
+            .find_map(|l| l.strip_prefix("Authorization: "))
+            .unwrap_or("")
+            .to_owned();
+        let content_length: usize = head
+            .lines()
+            .find_map(|l| l.strip_prefix("Content-Length: "))
+            .unwrap()
+            .parse()
+            .unwrap();
+        let mut body = buf[head_end..].to_vec();
+        while body.len() < content_length {
+            let n = stream.read(&mut tmp).unwrap();
+            assert!(n > 0);
+            body.extend_from_slice(&tmp[..n]);
+        }
+        body.truncate(content_length);
+        tx.send(CapturedRequest {
+            path,
+            authorization,
+            body,
+        })
+        .unwrap();
+        write!(
+            stream,
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        )
+        .unwrap();
+    });
+    (format!("http://{addr}"), rx)
+}
+
 #[cfg(unix)]
 fn make_executable(path: &std::path::Path, body: &str) {
     use std::os::unix::fs::PermissionsExt;
@@ -277,7 +348,14 @@ fn publish_missing_dist_mentions_build_first() {
     std::fs::write(deck.join("deck.toml"), "[deck]\ntitle='T'\n").unwrap();
     std::fs::write(deck.join("theme.css"), "").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_sideshow"))
-        .args(["publish", deck.to_str().unwrap(), "--target", "srht"])
+        .args([
+            "publish",
+            deck.to_str().unwrap(),
+            "--target",
+            "srht",
+            "--domain",
+            "example.srht.site",
+        ])
         .output()
         .unwrap();
     assert!(!output.status.success());
@@ -355,12 +433,22 @@ fn publish_s3_rejects_invalid_expires() {
 }
 
 #[test]
-fn publish_srht_copies_to_docs_pages_and_prints_next_steps() {
+fn publish_srht_uploads_to_pages_api() {
     let tmp = tempfile::tempdir().unwrap();
-    std::fs::create_dir(tmp.path().join(".git")).unwrap();
     let deck = prebuilt_t_deck(tmp.path());
+    let (url, rx) = srht_test_server("200 OK", "v123\n");
     let output = Command::new(env!("CARGO_BIN_EXE_sideshow"))
-        .args(["publish", deck.to_str().unwrap(), "--target", "srht"])
+        .args([
+            "publish",
+            deck.to_str().unwrap(),
+            "--target",
+            "srht",
+            "--domain",
+            "example.srht.site",
+            "--pages-url",
+            &url,
+        ])
+        .env("SRHT_TOKEN", "tok123")
         .output()
         .unwrap();
     assert!(
@@ -368,45 +456,132 @@ fn publish_srht_copies_to_docs_pages_and_prints_next_steps() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(
-        std::fs::read_to_string(tmp.path().join("docs/pages/demo.html")).unwrap(),
-        "<!doctype html><title>T</title>"
+    let request = rx.recv().unwrap();
+    assert_eq!(request.path, "/publish/example.srht.site/t");
+    assert_eq!(request.authorization, "Bearer tok123");
+    assert!(
+        request
+            .body
+            .windows(b"name=\"content\"".len())
+            .any(|w| w == b"name=\"content\"")
     );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("next: commit and push to main"));
+    assert!(request.body.windows(2).any(|w| w == b"\x1f\x8b"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("https://example.srht.site/t/"));
+    assert!(stdout.contains("v123"));
 }
 
 #[test]
-fn publish_srht_rejects_bad_name() {
+fn publish_srht_requires_token() {
     let tmp = tempfile::tempdir().unwrap();
-    std::fs::create_dir(tmp.path().join(".git")).unwrap();
     let deck = prebuilt_t_deck(tmp.path());
+    let config = tmp.path().join("config.toml");
+    std::fs::write(&config, "").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_sideshow"))
         .args([
             "publish",
             deck.to_str().unwrap(),
             "--target",
             "srht",
-            "--name",
-            "nope",
+            "--domain",
+            "example.srht.site",
         ])
+        .env_remove("SRHT_TOKEN")
+        .env("SIDESHOW_CONFIG", &config)
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("central pages publisher"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("SRHT_TOKEN"));
+    assert!(stderr.contains("meta.sr.ht/oauth2"));
+}
+
+#[cfg(unix)]
+#[test]
+fn publish_srht_token_cmd_from_config() {
+    let tmp = tempfile::tempdir().unwrap();
+    let deck = prebuilt_t_deck(tmp.path());
+    let script = tmp.path().join("tok");
+    make_executable(&script, "#!/bin/sh\necho 'tok-from-cmd extra'\n");
+    let config = tmp.path().join("config.toml");
+    std::fs::write(
+        &config,
+        format!("[srht]\ntoken-cmd = ['{}']\n", script.display()),
+    )
+    .unwrap();
+    let (url, rx) = srht_test_server("200 OK", "v456");
+    let output = Command::new(env!("CARGO_BIN_EXE_sideshow"))
+        .args([
+            "publish",
+            deck.to_str().unwrap(),
+            "--target",
+            "srht",
+            "--domain",
+            "example.srht.site",
+            "--pages-url",
+            &url,
+        ])
+        .env_remove("SRHT_TOKEN")
+        .env("SIDESHOW_CONFIG", &config)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(rx.recv().unwrap().authorization, "Bearer tok-from-cmd");
 }
 
 #[test]
-fn publish_srht_rejects_oversized_dist() {
+fn publish_srht_rejects_bad_subdir() {
     let tmp = tempfile::tempdir().unwrap();
-    std::fs::create_dir(tmp.path().join(".git")).unwrap();
     let deck = prebuilt_t_deck(tmp.path());
-    std::fs::write(deck.join("dist/t.html"), vec![b'x'; 2_000_001]).unwrap();
+    for (subdir, expected) in [
+        ("../evil", ".."),
+        ("", "root publishing is intentionally unsupported"),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_sideshow"))
+            .args([
+                "publish",
+                deck.to_str().unwrap(),
+                "--target",
+                "srht",
+                "--domain",
+                "example.srht.site",
+                "--subdir",
+                subdir,
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(expected));
+    }
+}
+
+#[test]
+fn publish_srht_surfaces_api_errors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let deck = prebuilt_t_deck(tmp.path());
+    let (url, _rx) = srht_test_server("401 Unauthorized", "bad token");
     let output = Command::new(env!("CARGO_BIN_EXE_sideshow"))
-        .args(["publish", deck.to_str().unwrap(), "--target", "srht"])
+        .args([
+            "publish",
+            deck.to_str().unwrap(),
+            "--target",
+            "srht",
+            "--domain",
+            "example.srht.site",
+            "--pages-url",
+            &url,
+        ])
+        .env("SRHT_TOKEN", "tok123")
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("2000000-byte"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("401"));
+    assert!(stderr.contains("pages.sr.ht/PAGES:RW"));
 }
 
 #[test]

@@ -1,12 +1,13 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
+use flate2::{Compression, write::GzEncoder};
 use sideshow::find_tool;
 use std::{
     fs,
-    io::{Read, Write},
+    io::{Cursor, Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
-    time::SystemTime,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 #[derive(Debug, Parser)]
@@ -62,7 +63,7 @@ enum Command {
         #[arg(long, default_value_t = 8000)]
         port: u16,
     },
-    /// Publish an existing dist output to S3 or the srht pages handoff.
+    /// Publish an existing dist output to S3 or SourceHut Pages.
     Publish {
         dir: PathBuf,
         /// Publish target.
@@ -77,9 +78,15 @@ enum Command {
         /// S3 presign expiration in seconds (1..=604800).
         #[arg(long, default_value_t = 604800)]
         expires: u32,
-        /// srht pages allowlisted output name.
-        #[arg(long, default_value = "demo")]
-        name: String,
+        /// SourceHut Pages domain (required with --target srht).
+        #[arg(long)]
+        domain: Option<String>,
+        /// SourceHut Pages subdirectory (defaults to the deck slug).
+        #[arg(long)]
+        subdir: Option<String>,
+        /// SourceHut Pages API base URL.
+        #[arg(long, default_value = "https://pages.sr.ht")]
+        pages_url: String,
     },
 }
 
@@ -212,37 +219,35 @@ fn main() -> anyhow::Result<()> {
             bucket,
             key,
             expires,
-            name,
+            domain,
+            subdir,
+            pages_url,
         } => publish(
             &dir,
-            target,
-            bucket.as_deref(),
-            key.as_deref(),
-            expires,
-            &name,
+            PublishOptions {
+                target,
+                bucket: bucket.as_deref(),
+                key: key.as_deref(),
+                expires,
+                domain: domain.as_deref(),
+                subdir: subdir.as_deref(),
+                pages_url: &pages_url,
+            },
         ),
     }
 }
 
-const SRHT_PAGE_NAMES: &[&str] = &[
-    "overview",
-    "examples",
-    "example",
-    "demo",
-    "changelog",
-    "tour",
-    "sample-review",
-];
-const SRHT_MAX_DOC_BYTES: u64 = 2_000_000;
-
-fn publish(
-    dir: &Path,
+struct PublishOptions<'a> {
     target: PublishTarget,
-    bucket: Option<&str>,
-    key: Option<&str>,
+    bucket: Option<&'a str>,
+    key: Option<&'a str>,
     expires: u32,
-    name: &str,
-) -> anyhow::Result<()> {
+    domain: Option<&'a str>,
+    subdir: Option<&'a str>,
+    pages_url: &'a str,
+}
+
+fn publish(dir: &Path, options: PublishOptions<'_>) -> anyhow::Result<()> {
     let dist = sideshow::deck_dist_path(dir)?;
     if !dist.is_file() {
         anyhow::bail!(
@@ -252,9 +257,11 @@ fn publish(
         );
     }
     warn_if_stale(dir, &dist)?;
-    match target {
-        PublishTarget::S3 => publish_s3(&dist, bucket, key, expires),
-        PublishTarget::Srht => publish_srht(dir, &dist, name),
+    match options.target {
+        PublishTarget::S3 => publish_s3(&dist, options.bucket, options.key, options.expires),
+        PublishTarget::Srht => {
+            publish_srht(&dist, options.domain, options.subdir, options.pages_url)
+        }
     }
 }
 
@@ -316,45 +323,129 @@ fn publish_s3(
     Ok(())
 }
 
-fn validate_srht_name(name: &str) -> anyhow::Result<()> {
-    if !SRHT_PAGE_NAMES.contains(&name) {
+fn validate_srht_subdir(subdir: &str) -> anyhow::Result<()> {
+    if subdir.is_empty() {
         anyhow::bail!(
-            "--name must be one of {}; the central pages publisher only fetches these docs/pages/*.html filenames",
-            SRHT_PAGE_NAMES.join(", ")
+            "--subdir cannot be empty; root publishing is intentionally unsupported to avoid replacing a whole site"
         );
+    }
+    if subdir.starts_with('/') || subdir.ends_with('/') {
+        anyhow::bail!("--subdir must not start or end with '/'");
+    }
+    if subdir.split('/').any(|s| s == "..") {
+        anyhow::bail!("--subdir must not contain '..' path segments");
+    }
+    if subdir.chars().any(char::is_whitespace) {
+        anyhow::bail!("--subdir must not contain whitespace");
     }
     Ok(())
 }
 
-fn publish_srht(dir: &Path, dist: &Path, name: &str) -> anyhow::Result<()> {
-    validate_srht_name(name)?;
-    let bytes = fs::metadata(dist)?.len();
-    if bytes > SRHT_MAX_DOC_BYTES {
-        anyhow::bail!(
-            "dist output is {bytes} bytes, exceeding the 2000000-byte srht publisher cap; optimize images and rebuild"
-        );
-    }
-    let root = find_repo_root(dir)?;
-    let dest = root.join("docs/pages").join(format!("{name}.html"));
-    fs::create_dir_all(dest.parent().unwrap())?;
-    fs::copy(dist, &dest)?;
-    println!("copied {} -> {}", dist.display(), dest.display());
-    println!(
-        "next: commit and push to main; the central pages publisher picks it up on its next refresh (published as {name}.html under this project's pages path)"
-    );
-    Ok(())
+fn first_token_field(raw: &str) -> Option<String> {
+    raw.split_whitespace().next().map(str::to_owned)
 }
 
-fn find_repo_root(start: &Path) -> anyhow::Result<PathBuf> {
-    for p in start.ancestors() {
-        if p.join(".jj").exists() || p.join(".git").exists() {
-            return Ok(p.to_path_buf());
+fn resolve_srht_token() -> anyhow::Result<String> {
+    if let Ok(raw) = std::env::var("SRHT_TOKEN")
+        && let Some(token) = first_token_field(raw.trim())
+    {
+        return Ok(token);
+    }
+    let (config, path) = sideshow::srht_config()?;
+    if let Some(argv) = config.token_cmd {
+        let program = argv.first().context("[srht] token-cmd must not be empty")?;
+        let output = std::process::Command::new(program)
+            .args(&argv[1..])
+            .output()
+            .with_context(|| format!("failed to run [srht] token-cmd {}", program))?;
+        if !output.status.success() {
+            anyhow::bail!("[srht] token-cmd {} failed", program);
         }
+        if let Some(token) = first_token_field(&String::from_utf8_lossy(&output.stdout)) {
+            return Ok(token);
+        }
+        anyhow::bail!("[srht] token-cmd {} produced no token", program);
     }
     anyhow::bail!(
-        "could not find an enclosing repository root from {}; expected a parent with .jj or .git",
-        start.display()
+        "srht publishing needs a token: set SRHT_TOKEN or [srht] token-cmd in {}; create a personal access token with scope pages.sr.ht/PAGES:RW at https://meta.sr.ht/oauth2",
+        path.display()
     )
+}
+
+fn srht_site_tar_gz(index_html: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let gz = GzEncoder::new(Vec::new(), Compression::default());
+    let mut tar = tar::Builder::new(gz);
+    let mut header = tar::Header::new_gnu();
+    header.set_entry_type(tar::EntryType::Regular);
+    header.set_size(index_html.len() as u64);
+    header.set_mode(0o644);
+    header.set_uid(0);
+    header.set_gid(0);
+    header.set_mtime(0);
+    tar.append_data(&mut header, "index.html", Cursor::new(index_html.to_vec()))?;
+    let gz = tar.into_inner()?;
+    Ok(gz.finish()?)
+}
+
+fn srht_multipart_body(boundary: &str, tar_gz: &[u8]) -> Vec<u8> {
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"content\"; filename=\"site.tar.gz\"\r\nContent-Type: application/gzip\r\n\r\n").as_bytes());
+    body.extend_from_slice(tar_gz);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    body
+}
+
+fn publish_srht(
+    dist: &Path,
+    domain: Option<&str>,
+    subdir: Option<&str>,
+    pages_url: &str,
+) -> anyhow::Result<()> {
+    let domain = domain.context("--domain is required when --target srht")?;
+    let default_subdir = dist
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .context("dist output has no utf-8 file stem for default --subdir")?;
+    let subdir = subdir.unwrap_or(default_subdir);
+    validate_srht_subdir(subdir)?;
+    let token = resolve_srht_token()?;
+    let tar_gz = srht_site_tar_gz(&fs::read(dist)?)?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let boundary = format!("sideshow-srht-{nonce}-{}", std::process::id());
+    let body = srht_multipart_body(&boundary, &tar_gz);
+    let pages_url = pages_url.trim_end_matches('/');
+    let url = format!("{pages_url}/publish/{domain}/{subdir}");
+    let response = ureq::post(&url)
+        .set("Authorization", &format!("Bearer {token}"))
+        .set(
+            "Content-Type",
+            &format!("multipart/form-data; boundary={boundary}"),
+        )
+        .send_bytes(&body);
+    match response {
+        Ok(resp) => {
+            let version = resp.into_string()?.trim().to_owned();
+            println!(
+                "published {} -> https://{domain}/{subdir}/ (site version {version})",
+                dist.display()
+            );
+            println!("note: only /{subdir}/ was updated on {domain}");
+            Ok(())
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let text = resp.into_string().unwrap_or_default();
+            if code == 401 || code == 403 {
+                anyhow::bail!(
+                    "srht pages api returned {code}: {text}; check that the token has scope pages.sr.ht/PAGES:RW"
+                );
+            }
+            anyhow::bail!("srht pages api returned {code}: {text}");
+        }
+        Err(err) => anyhow::bail!("srht pages api request failed: {err}"),
+    }
 }
 
 fn warn_if_stale(dir: &Path, dist: &Path) -> anyhow::Result<()> {
@@ -698,4 +789,41 @@ fn deck_sources_mtime(dir: &Path) -> anyhow::Result<SystemTime> {
     walk(&dir.join("slides"), &mut max)?;
     walk(&dir.join("assets"), &mut max)?;
     Ok(max)
+}
+
+#[cfg(test)]
+mod publish_srht_tests {
+    use super::*;
+    use flate2::read::GzDecoder;
+
+    #[test]
+    fn token_first_field_extracts_first_whitespace_field() {
+        assert_eq!(first_token_field("  tok extra\n"), Some("tok".into()));
+        assert_eq!(first_token_field(" \t\n"), None);
+    }
+
+    #[test]
+    fn subdir_validation_matrix() {
+        for good in ["deck", "decks/foo", "a..b"] {
+            validate_srht_subdir(good).unwrap();
+        }
+        for bad in ["", "/deck", "deck/", "../evil", "a/../b", "two words"] {
+            assert!(validate_srht_subdir(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn tarball_roundtrip_has_single_deterministic_index() {
+        let gz = srht_site_tar_gz(b"hello").unwrap();
+        let mut archive = tar::Archive::new(GzDecoder::new(Cursor::new(gz)));
+        let mut entries = archive.entries().unwrap();
+        let mut entry = entries.next().unwrap().unwrap();
+        assert_eq!(entry.path().unwrap().to_string_lossy(), "index.html");
+        assert_eq!(entry.header().mode().unwrap(), 0o644);
+        let mut body = String::new();
+        entry.read_to_string(&mut body).unwrap();
+        assert_eq!(body, "hello");
+        drop(entry);
+        assert!(entries.next().is_none());
+    }
 }

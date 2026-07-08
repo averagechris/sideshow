@@ -78,6 +78,14 @@ fn find_tool_with(
 pub struct UserConfig {
     #[serde(default)]
     pub tools: ToolsConfig,
+    #[serde(default)]
+    pub srht: SrhtConfig,
+}
+
+#[derive(Debug, Default, Deserialize, PartialEq)]
+pub struct SrhtConfig {
+    #[serde(default, rename = "token-cmd")]
+    pub token_cmd: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize, PartialEq)]
@@ -115,8 +123,31 @@ fn user_config() -> anyhow::Result<(UserConfig, PathBuf)> {
     Ok((config, path))
 }
 
+pub fn srht_config() -> anyhow::Result<(SrhtConfig, PathBuf)> {
+    let (config, path) = user_config()?;
+    Ok((config.srht, path))
+}
+
 fn parse_user_config(raw: &str, path: &Path) -> anyhow::Result<UserConfig> {
     toml::from_str(raw).with_context(|| format!("failed to parse config file {}", path.display()))
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn parses_srht_token_cmd() {
+        let config = parse_user_config(
+            "[srht]\ntoken-cmd = [\"pass\", \"show\", \"srht\"]\n",
+            Path::new("config.toml"),
+        )
+        .unwrap();
+        assert_eq!(
+            config.srht.token_cmd,
+            Some(vec!["pass".into(), "show".into(), "srht".into()])
+        );
+    }
 }
 
 fn config_path() -> PathBuf {
@@ -1096,6 +1127,7 @@ mod tests {
                 ffmpeg: Some(tool.clone()),
                 ..ToolsConfig::default()
             },
+            ..UserConfig::default()
         };
 
         let found = find_tool_with(
