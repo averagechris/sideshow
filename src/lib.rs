@@ -431,13 +431,17 @@ pub fn rewrite_asset_refs(
             eprintln!(
                 "info: {rel} is SVG; data URI inlined, but inline SVG markup is usually smaller and more editable"
             );
-        } else if images.optimize
-            && is_raster(rel)
-            && let Ok(opt) = optimize_bytes(&bytes, images.quality, images.max_dim)
-            && opt.len() < bytes.len()
-        {
-            bytes = opt;
-            mime = "image/webp";
+        } else if images.optimize && is_raster(rel) {
+            if is_animated(&bytes) {
+                eprintln!(
+                    "warning: {rel} is animated; skipping optimization to preserve animation"
+                );
+            } else if let Ok(opt) = optimize_bytes(&bytes, images.quality, images.max_dim)
+                && opt.len() < bytes.len()
+            {
+                bytes = opt;
+                mime = "image/webp";
+            }
         }
         Ok(format!(
             "data:{mime};base64,{}",
@@ -672,7 +676,115 @@ fn parse_rect(s: &str) -> anyhow::Result<(u32, u32, u32, u32, bool)> {
     ))
 }
 
+pub fn is_animated(bytes: &[u8]) -> bool {
+    is_animated_gif(bytes) || is_animated_webp(bytes) || is_animated_apng(bytes)
+}
+
+fn is_animated_gif(bytes: &[u8]) -> bool {
+    if bytes.len() < 13 || !matches!(&bytes[..6], b"GIF87a" | b"GIF89a") {
+        return false;
+    }
+    let mut pos = 13;
+    if bytes[10] & 0x80 != 0 {
+        pos += 3 * (1usize << ((bytes[10] & 0x07) + 1));
+    }
+    let mut images = 0;
+    while pos < bytes.len() {
+        match bytes[pos] {
+            0x2c => {
+                images += 1;
+                if images > 1 {
+                    return true;
+                }
+                if pos + 10 > bytes.len() {
+                    return false;
+                }
+                let packed = bytes[pos + 9];
+                pos += 10;
+                if packed & 0x80 != 0 {
+                    pos += 3 * (1usize << ((packed & 0x07) + 1));
+                }
+                if pos >= bytes.len() {
+                    return false;
+                }
+                pos += 1;
+                if let Some(next) = skip_gif_sub_blocks(bytes, pos) {
+                    pos = next;
+                } else {
+                    return false;
+                }
+            }
+            0x21 => {
+                if pos + 2 > bytes.len() {
+                    return false;
+                }
+                if bytes[pos + 1] == 0xff
+                    && pos + 14 <= bytes.len()
+                    && &bytes[pos + 3..pos + 14] == b"NETSCAPE2.0"
+                {
+                    return true;
+                }
+                if let Some(next) = skip_gif_sub_blocks(bytes, pos + 2) {
+                    pos = next;
+                } else {
+                    return false;
+                }
+            }
+            0x3b => return false,
+            _ => return false,
+        }
+    }
+    false
+}
+
+fn skip_gif_sub_blocks(bytes: &[u8], mut pos: usize) -> Option<usize> {
+    while pos < bytes.len() {
+        let len = bytes[pos] as usize;
+        pos += 1;
+        if len == 0 {
+            return Some(pos);
+        }
+        pos = pos.checked_add(len)?;
+    }
+    None
+}
+
+fn is_animated_webp(bytes: &[u8]) -> bool {
+    bytes.len() >= 21
+        && &bytes[..4] == b"RIFF"
+        && &bytes[8..12] == b"WEBP"
+        && (&bytes[12..16] == b"VP8X" && bytes[20] & 0x02 != 0
+            || bytes.windows(4).any(|w| w == b"ANIM"))
+}
+
+fn is_animated_apng(bytes: &[u8]) -> bool {
+    if bytes.len() < 8 || &bytes[..8] != b"\x89PNG\r\n\x1a\n" {
+        return false;
+    }
+    let mut pos = 8;
+    while pos + 8 <= bytes.len() {
+        let len = u32::from_be_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
+        let kind = &bytes[pos + 4..pos + 8];
+        if kind == b"acTL" {
+            return true;
+        }
+        if kind == b"IDAT" {
+            return false;
+        }
+        pos = match pos.checked_add(12).and_then(|p| p.checked_add(len)) {
+            Some(next) => next,
+            None => return false,
+        };
+    }
+    false
+}
+
 pub fn optimize_bytes(bytes: &[u8], quality: f32, max_dim: u32) -> anyhow::Result<Vec<u8>> {
+    if is_animated(bytes) {
+        bail!(
+            "animated image optimization would flatten animation; skipping to preserve animation"
+        );
+    }
     let mut img = image::load_from_memory(bytes)?;
     let longest = img.width().max(img.height());
     if longest > max_dim {
@@ -704,6 +816,12 @@ pub fn optimize_image(
         );
     }
     let old = fs::read(path)?;
+    if is_animated(&old) {
+        bail!(
+            "{} is animated; skipping optimization to preserve animation",
+            path.display()
+        );
+    }
     let new = optimize_bytes(&old, quality, max_dim)?;
     let out = path.with_extension("webp");
     if new.len() < old.len() {
@@ -899,6 +1017,95 @@ mod tests {
         if let Some(new) = maybe_new {
             assert!(new < old);
         }
+    }
+
+    fn animated_gif_bytes() -> Vec<u8> {
+        vec![
+            b'G', b'I', b'F', b'8', b'9', b'a', 1, 0, 1, 0, 0x80, 0, 0, 0, 0, 0, 255, 255, 255,
+            0x21, 0xff, 11, b'N', b'E', b'T', b'S', b'C', b'A', b'P', b'E', b'2', b'.', b'0', 3, 1,
+            0, 0, 0, 0x21, 0xf9, 4, 0, 1, 0, 0, 0, 0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 0x44, 1,
+            0, 0x21, 0xf9, 4, 0, 1, 0, 0, 0, 0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 0x44, 1, 0,
+            0x3b,
+        ]
+    }
+
+    fn static_gif_bytes() -> Vec<u8> {
+        vec![
+            b'G', b'I', b'F', b'8', b'9', b'a', 1, 0, 1, 0, 0x80, 0, 0, 0, 0, 0, 255, 255, 255,
+            0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 0x44, 1, 0, 0x3b,
+        ]
+    }
+
+    #[test]
+    fn detects_animated_gif_webp_and_apng() {
+        assert!(is_animated(&animated_gif_bytes()));
+        assert!(!is_animated(&static_gif_bytes()));
+
+        let mut webp = b"RIFF\x16\0\0\0WEBPVP8X\n\0\0\0".to_vec();
+        webp.extend([0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(is_animated(&webp));
+
+        let mut apng = b"\x89PNG\r\n\x1a\n".to_vec();
+        apng.extend([0, 0, 0, 13]);
+        apng.extend(b"IHDR");
+        apng.extend([0; 17]);
+        apng.extend([0, 0, 0, 8]);
+        apng.extend(b"acTL");
+        apng.extend([0; 12]);
+        assert!(is_animated(&apng));
+    }
+
+    #[test]
+    fn animated_assets_inline_without_optimization() {
+        let t = tempfile::tempdir().unwrap();
+        minimal_deck(&t);
+        let gif = animated_gif_bytes();
+        fs::write(t.path().join("assets/a.gif"), &gif).unwrap();
+        let out = rewrite_asset_refs(
+            t.path(),
+            "<img src='assets/a.gif'>",
+            ImagesConfig::default(),
+        )
+        .unwrap();
+        assert!(out.contains("data:image/gif;base64,"));
+        let encoded = out
+            .split("data:image/gif;base64,")
+            .nth(1)
+            .unwrap()
+            .split('\'')
+            .next()
+            .unwrap();
+        let inlined = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
+        assert_eq!(inlined, gif);
+        assert!(optimize_bytes(&gif, 80.0, 3840).is_err());
+    }
+
+    #[test]
+    fn static_images_still_optimize() {
+        assert!(!is_animated(&static_gif_bytes()));
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("static.png");
+        let img = image::RgbaImage::from_pixel(16, 16, image::Rgba([10, 20, 30, 255]));
+        img.save(&p).unwrap();
+        let bytes = fs::read(&p).unwrap();
+        assert!(!is_animated(&bytes));
+        assert!(
+            optimize_bytes(&bytes, 80.0, 3840)
+                .unwrap()
+                .starts_with(b"RIFF")
+        );
+
+        let gif = t.path().join("static.gif");
+        img.save(&gif).unwrap();
+        let bytes = fs::read(&gif).unwrap();
+        assert!(!is_animated(&bytes));
+        assert!(
+            optimize_bytes(&bytes, 80.0, 3840)
+                .unwrap()
+                .starts_with(b"RIFF")
+        );
     }
 
     #[test]
