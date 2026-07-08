@@ -11,7 +11,7 @@ self-contained HTML file:
 sideshow new mydeck --theme signal
 $EDITOR mydeck/slides/01-title.html mydeck/slides/02-content.md
 sideshow build mydeck
-open mydeck/dist/signal-demo.html
+open <path printed by sideshow build>
 ```
 
 `sideshow build` reads `deck.toml`, wraps `slides/*.html` and `slides/*.md` as
@@ -79,10 +79,13 @@ The deck exposes a small browser automation API at `window.sideshow`. The
 canonical rodney loop is:
 
 ```sh
-rodney open file://$PWD/mydeck/dist/signal-demo.html
+sideshow build mydeck
+rodney open file://$(pwd)/mydeck/dist/<deck-slug>.html
 rodney js 'sideshow.audit()'
 rodney screenshot /tmp/sideshow-slide.png
 ```
+
+Use the exact path printed by `sideshow build`; `mydeck/dist/<deck-slug>.html` is only a placeholder shape.
 
 Useful calls: `sideshow.goto(2)`, `sideshow.next()`, `sideshow.prev()`,
 `sideshow.count()`, `sideshow.notes(1)`, and `sideshow.audit()`.

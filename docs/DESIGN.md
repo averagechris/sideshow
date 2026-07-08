@@ -112,7 +112,7 @@ Keep the schema tiny. Add keys only when a real need appears.
 
 v1:
 - `sideshow new <dir> [--theme <name>]` — scaffold deck source.
-- `sideshow build <dir>` — compile to `dist/<name>.html` (single file).
+- `sideshow build <dir>` — compile to `dist/<slug-of-deck-title>.html` and print the path (single file).
 - `sideshow serve <dir>` — build + local server with srht-pages-like
   headers (CSP, MIME), rebuild on change.
 - `sideshow check <dir>` — static deck linter: fragment contract

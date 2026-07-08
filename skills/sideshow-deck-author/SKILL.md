@@ -58,10 +58,12 @@ People choose design better from screenshots than from theme names.
    sideshow check /tmp/sideshow-style-candidates/candidate-signal
    sideshow build /tmp/sideshow-style-candidates/candidate-signal
    rodney status || rodney start
-   rodney open file:///tmp/sideshow-style-candidates/candidate-signal/dist/signal-demo.html
+   rodney open file://<exact path printed by sideshow build>
    rodney waitload
    rodney screenshot -w 1280 -h 720 /tmp/sideshow-style-candidates/candidate-signal.png
    ```
+
+   Even when the scaffold title makes `dist/<deck-slug>.html` predictable, use the exact path printed by `sideshow build` instead of guessing the filename.
 
 5. Present the screenshots to the user with concise differences. Let them pick one direction or ask for a mix. Use the chosen deck/theme as the base for full authoring.
 
@@ -143,10 +145,12 @@ Start rodney only if no browser session is available:
 
 ```bash
 rodney status || rodney start
-rodney open file://$PWD/mydeck/dist/<deck-slug>.html
+rodney open file://$(pwd)/mydeck/dist/<deck-slug>.html
 rodney waitload
 rodney js 'JSON.stringify(sideshow.audit())'
 ```
+
+Use the exact path printed by `sideshow build`; `mydeck/dist/<deck-slug>.html` is only a placeholder shape.
 
 Parse the audit JSON. For every slide, fix:
 
@@ -180,7 +184,7 @@ Repeat: edit source → `sideshow check` → `sideshow build` → `rodney reload
 
 ## Phase 5 — Delivery
 
-- Hand over the single generated file: `mydeck/dist/<deck-slug>.html`.
+- Hand over the single generated file at the path printed by `sideshow build` (`mydeck/dist/<deck-slug>.html`).
 - For PDF, use the browser's native print flow; sideshow includes print CSS with one slide per page.
 - For a live URL, use the repository's central SourceHut Pages publisher flow or upload the single HTML file to S3 and share a presigned URL. A `sideshow publish` subcommand is forthcoming; do not document it as available unless your binary shows it.
 - Tell the user the deck path, output file, slide count, navigation keys, and any remaining caveats.
