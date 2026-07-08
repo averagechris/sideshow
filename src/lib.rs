@@ -25,6 +25,25 @@ pub fn find_tool(
     purpose: &str,
     install_hint: &str,
 ) -> anyhow::Result<PathBuf> {
+    let (config, config_path) = user_config()?;
+    find_tool_with(
+        &config,
+        &config_path,
+        binary,
+        env_var,
+        purpose,
+        install_hint,
+    )
+}
+
+fn find_tool_with(
+    config: &UserConfig,
+    config_path: &Path,
+    binary: &str,
+    env_var: &str,
+    purpose: &str,
+    install_hint: &str,
+) -> anyhow::Result<PathBuf> {
     if let Some(value) = std::env::var_os(env_var) {
         let path = PathBuf::from(value);
         if !path.is_file() {
@@ -36,11 +55,81 @@ pub fn find_tool(
         return Ok(path);
     }
 
+    if let Some(path) = config.tools.path_for(binary) {
+        if !path.is_file() {
+            bail!(
+                "{} [tools] {binary} points to {}, but it is not a file",
+                config_path.display(),
+                path.display()
+            );
+        }
+        return Ok(path.clone());
+    }
+
     which::which(binary).with_context(|| {
         format!(
-            "{binary} not found: {purpose}; install it ({install_hint}) or set {env_var} to its path"
+            "{binary} not found: {purpose}; install it ({install_hint}), set {env_var} to its path, or add {binary} to [tools] in {}",
+            config_path.display()
         )
     })
+}
+
+#[derive(Debug, Default, Deserialize, PartialEq)]
+pub struct UserConfig {
+    #[serde(default)]
+    pub tools: ToolsConfig,
+}
+
+#[derive(Debug, Default, Deserialize, PartialEq)]
+pub struct ToolsConfig {
+    #[serde(default)]
+    pub tailwindcss: Option<PathBuf>,
+    #[serde(default)]
+    pub ffmpeg: Option<PathBuf>,
+    #[serde(default)]
+    pub vhs: Option<PathBuf>,
+}
+
+impl ToolsConfig {
+    fn path_for(&self, binary: &str) -> Option<&PathBuf> {
+        match binary {
+            "tailwindcss" => self.tailwindcss.as_ref(),
+            "ffmpeg" => self.ffmpeg.as_ref(),
+            "vhs" => self.vhs.as_ref(),
+            _ => None,
+        }
+    }
+}
+
+fn user_config() -> anyhow::Result<(UserConfig, PathBuf)> {
+    let path = config_path();
+    if !path.is_file() {
+        return Ok((UserConfig::default(), path));
+    }
+    let raw = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read config file {}", path.display()))?;
+    let config = parse_user_config(&raw, &path)?;
+    Ok((config, path))
+}
+
+fn parse_user_config(raw: &str, path: &Path) -> anyhow::Result<UserConfig> {
+    toml::from_str(raw).with_context(|| format!("failed to parse config file {}", path.display()))
+}
+
+fn config_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("SIDESHOW_CONFIG") {
+        return PathBuf::from(path);
+    }
+    if let Some(home) = std::env::var_os("XDG_CONFIG_HOME") {
+        return PathBuf::from(home).join("sideshow/config.toml");
+    }
+    default_config_path()
+}
+
+fn default_config_path() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join(".config/sideshow/config.toml"))
+        .unwrap_or_else(|| PathBuf::from("~/.config/sideshow/config.toml"))
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -926,13 +1015,7 @@ mod tests {
             std::env::set_var(&env_var, &tool);
         }
 
-        let found = find_tool(
-            "definitely-not-on-path",
-            &env_var,
-            "test needs a tool",
-            "test",
-        )
-        .unwrap();
+        let found = find_tool("ffmpeg", &env_var, "test needs a tool", "test").unwrap();
 
         unsafe {
             std::env::remove_var(&env_var);
@@ -949,20 +1032,73 @@ mod tests {
             std::env::set_var(&env_var, &missing);
         }
 
-        let err = find_tool(
-            "definitely-not-on-path",
-            &env_var,
-            "test needs a tool",
-            "test",
-        )
-        .unwrap_err()
-        .to_string();
+        let err = find_tool("ffmpeg", &env_var, "test needs a tool", "test")
+            .unwrap_err()
+            .to_string();
 
         unsafe {
             std::env::remove_var(&env_var);
         }
         assert!(err.contains(&format!("{env_var} points to")), "{err}");
         assert!(err.contains("but it is not a file"), "{err}");
+    }
+
+    #[test]
+    fn parses_user_config_tools() {
+        let config = parse_user_config(
+            "[tools]\ntailwindcss = '/tw'\nffmpeg = '/ffmpeg'\nvhs = '/vhs'\n",
+            Path::new("config.toml"),
+        )
+        .unwrap();
+        assert_eq!(config.tools.tailwindcss, Some(PathBuf::from("/tw")));
+        assert_eq!(config.tools.ffmpeg, Some(PathBuf::from("/ffmpeg")));
+        assert_eq!(config.tools.vhs, Some(PathBuf::from("/vhs")));
+    }
+
+    #[test]
+    fn parses_user_config_defaults_and_unknown_keys() {
+        let empty = parse_user_config("", Path::new("config.toml")).unwrap();
+        assert_eq!(empty, UserConfig::default());
+
+        let unknown = parse_user_config(
+            "unknown = true\n\n[other]\nvalue = 1\n\n[tools]\nffmpeg = '/bin/ffmpeg'\nextra = 'ok'\n",
+            Path::new("config.toml"),
+        )
+        .unwrap();
+        assert_eq!(unknown.tools.ffmpeg, Some(PathBuf::from("/bin/ffmpeg")));
+        assert_eq!(unknown.tools.tailwindcss, None);
+    }
+
+    #[test]
+    fn invalid_user_config_error_mentions_path() {
+        let path = Path::new("/tmp/sideshow-config.toml");
+        let err = parse_user_config("[tools\n", path).unwrap_err().to_string();
+        assert!(err.contains(&path.display().to_string()), "{err}");
+    }
+
+    #[test]
+    fn find_tool_uses_config_path_before_path() {
+        let t = tempfile::tempdir().unwrap();
+        let tool = t.path().join("ffmpeg");
+        fs::write(&tool, "#!/bin/sh\n").unwrap();
+        let config = UserConfig {
+            tools: ToolsConfig {
+                ffmpeg: Some(tool.clone()),
+                ..ToolsConfig::default()
+            },
+        };
+
+        let found = find_tool_with(
+            &config,
+            Path::new("config.toml"),
+            "ffmpeg",
+            "SIDESHOW_TEST_TOOL_UNUSED",
+            "test needs a tool",
+            "test",
+        )
+        .unwrap();
+
+        assert_eq!(found, tool);
     }
 
     #[test]

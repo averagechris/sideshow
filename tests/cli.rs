@@ -1,5 +1,15 @@
 use std::process::Command;
 
+#[cfg(unix)]
+fn make_executable(path: &std::path::Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::write(path, body).unwrap();
+    let mut permissions = std::fs::metadata(path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions).unwrap();
+}
+
 #[test]
 fn new_then_build_outputs_single_file() {
     if which::which("tailwindcss").is_err() {
@@ -260,6 +270,7 @@ fn video_optimize_errors_helpfully_without_ffmpeg() {
     let bin = env!("CARGO_BIN_EXE_sideshow");
     let out = Command::new(bin)
         .env_remove("SIDESHOW_FFMPEG")
+        .env("SIDESHOW_CONFIG", tmp.path().join("missing-config.toml"))
         .args(["video", "optimize", input.to_str().unwrap()])
         .output()
         .unwrap();
@@ -275,6 +286,99 @@ fn video_optimize_errors_helpfully_without_ffmpeg() {
         "{stderr}"
     );
     assert!(stderr.contains("SIDESHOW_FFMPEG"), "{stderr}");
+}
+
+#[test]
+fn video_optimize_uses_ffmpeg_from_config() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("demo.mp4");
+    let ffmpeg = tmp.path().join("ffmpeg");
+    let config = tmp.path().join("config.toml");
+    std::fs::write(&input, b"not a real mp4").unwrap();
+    make_executable(&ffmpeg, "#!/bin/sh\nexit 1\n");
+    std::fs::write(
+        &config,
+        format!("[tools]\nffmpeg = '{}'\n", ffmpeg.display()),
+    )
+    .unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_sideshow");
+    let out = Command::new(bin)
+        .env_remove("SIDESHOW_FFMPEG")
+        .env("SIDESHOW_CONFIG", &config)
+        .args(["video", "optimize", input.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("ffmpeg failed while optimizing video"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("ffmpeg not found"), "{stderr}");
+}
+
+#[test]
+fn video_optimize_errors_when_config_ffmpeg_is_not_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("demo.mp4");
+    let missing = tmp.path().join("missing-ffmpeg");
+    let config = tmp.path().join("config.toml");
+    std::fs::write(&input, b"not a real mp4").unwrap();
+    std::fs::write(
+        &config,
+        format!("[tools]\nffmpeg = '{}'\n", missing.display()),
+    )
+    .unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_sideshow");
+    let out = Command::new(bin)
+        .env_remove("SIDESHOW_FFMPEG")
+        .env("SIDESHOW_CONFIG", &config)
+        .args(["video", "optimize", input.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "{} [tools] ffmpeg points to {}, but it is not a file",
+            config.display(),
+            missing.display()
+        )),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn video_optimize_env_ffmpeg_beats_config() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("demo.mp4");
+    let ffmpeg = tmp.path().join("ffmpeg");
+    let missing = tmp.path().join("missing-ffmpeg");
+    let config = tmp.path().join("config.toml");
+    std::fs::write(&input, b"not a real mp4").unwrap();
+    make_executable(&ffmpeg, "#!/bin/sh\nexit 1\n");
+    std::fs::write(
+        &config,
+        format!("[tools]\nffmpeg = '{}'\n", missing.display()),
+    )
+    .unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_sideshow");
+    let out = Command::new(bin)
+        .env("SIDESHOW_FFMPEG", &ffmpeg)
+        .env("SIDESHOW_CONFIG", &config)
+        .args(["video", "optimize", input.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("ffmpeg failed while optimizing video"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("points to"), "{stderr}");
 }
 
 #[test]
@@ -295,6 +399,7 @@ fn tape_render_errors_helpfully_without_vhs() {
     let bin = env!("CARGO_BIN_EXE_sideshow");
     let out = Command::new(bin)
         .env_remove("SIDESHOW_VHS")
+        .env("SIDESHOW_CONFIG", tmp.path().join("missing-config.toml"))
         .args(["tape", "render", deck.to_str().unwrap()])
         .output()
         .unwrap();

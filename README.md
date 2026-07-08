@@ -21,9 +21,18 @@ and embeds the stage CSS/runtime JavaScript. Tailwind CSS v4's standalone
 
 ## External tools
 
-By default, sideshow finds external tools on `PATH`. Set `SIDESHOW_TAILWINDCSS`,
-`SIDESHOW_FFMPEG`, or `SIDESHOW_VHS` to an executable file path to override the
-tool used for CSS builds, video optimization, or tape rendering.
+Sideshow resolves external tools in this order: environment override, user config,
+then `PATH`. Set `SIDESHOW_TAILWINDCSS`, `SIDESHOW_FFMPEG`, or `SIDESHOW_VHS` to
+an executable file path for the highest-priority override. The user config file is
+loaded from `$SIDESHOW_CONFIG`, `$XDG_CONFIG_HOME/sideshow/config.toml`, or
+`$HOME/.config/sideshow/config.toml` (first match; missing files mean defaults):
+
+```toml
+[tools]
+tailwindcss = "/path/to/tailwindcss"
+ffmpeg = "/path/to/ffmpeg"
+vhs = "/path/to/vhs"
+```
 
 Lint before building:
 
