@@ -824,7 +824,20 @@ fn compile_css(dir: &Path) -> anyhow::Result<String> {
     if !status.success() {
         bail!("tailwindcss failed while compiling deck CSS");
     }
-    Ok(fs::read_to_string(output)?)
+    Ok(strip_leading_css_banner_comments(&fs::read_to_string(output)?).to_string())
+}
+
+fn strip_leading_css_banner_comments(mut css: &str) -> &str {
+    loop {
+        let trimmed = css.trim_start();
+        let Some(after_open) = trimmed.strip_prefix("/*!") else {
+            return trimmed;
+        };
+        let Some(end) = after_open.find("*/") else {
+            return trimmed;
+        };
+        css = &after_open[end + 2..];
+    }
 }
 
 fn css_string(value: &str) -> String {
@@ -1161,6 +1174,20 @@ mod tests {
         }
         assert!(err.contains(&format!("{env_var} points to")), "{err}");
         assert!(err.contains("but it is not a file"), "{err}");
+    }
+
+    #[test]
+    fn strips_leading_css_banner_comments() {
+        assert_eq!(
+            strip_leading_css_banner_comments(
+                "/*! tailwindcss v4.1.11 | MIT License | https://tailwindcss.com */\n/*! other */.slide{display:block}"
+            ),
+            ".slide{display:block}"
+        );
+        assert_eq!(
+            strip_leading_css_banner_comments("/* regular comment */.slide{}"),
+            "/* regular comment */.slide{}"
+        );
     }
 
     #[test]
