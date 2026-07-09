@@ -5,6 +5,7 @@ use lol_html::{RewriteStrSettings, element, html_content::ContentType};
 use regex::{Captures, Regex};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -429,6 +430,76 @@ fn srcset_urls(input: &str) -> impl Iterator<Item = String> + '_ {
         .filter_map(|candidate| candidate.split_whitespace().next().map(str::to_string))
 }
 
+fn color_literals(input: &str) -> anyhow::Result<Vec<String>> {
+    let color = Regex::new(
+        r#"(?ix)
+        \#(?:[0-9a-f]{8}|[0-9a-f]{6}|[0-9a-f]{3})\b
+        |\b(?:rgb|rgba|hsl|hsla|oklch)\([^)]*\)
+        "#,
+    )?;
+    let style_attr = Regex::new(r#"(?is)\sstyle\s*=\s*(?:"([^"]*)"|'([^']*)')"#)?;
+    let class_attr = Regex::new(r#"(?is)\sclass\s*=\s*(?:"([^"]*)"|'([^']*)')"#)?;
+    let style_block = Regex::new(r#"(?is)<style\b[^>]*>(.*?)</style>"#)?;
+    let mut literals = BTreeSet::new();
+    for captures in style_attr
+        .captures_iter(input)
+        .chain(class_attr.captures_iter(input))
+        .chain(style_block.captures_iter(input))
+    {
+        if let Some(scope) = captures.get(1).or_else(|| captures.get(2)) {
+            literals.extend(
+                color
+                    .find_iter(scope.as_str())
+                    .map(|m| m.as_str().to_string()),
+            );
+        }
+    }
+    Ok(literals.into_iter().collect())
+}
+
+fn orphaned_assets(dir: &Path, refs: &BTreeSet<String>) -> Vec<String> {
+    fn visit(root: &Path, dir: &Path, refs: &BTreeSet<String>, out: &mut Vec<String>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with('.'))
+            {
+                continue;
+            }
+            // .tape files are vhs build inputs, not slide assets; never orphans.
+            if path.extension().and_then(|s| s.to_str()) == Some("tape") {
+                continue;
+            }
+            if path.is_dir() {
+                visit(root, &path, refs, out);
+            } else if path.is_file() {
+                let rel = path
+                    .strip_prefix(root)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .to_string();
+                if !refs.contains(&rel) {
+                    out.push(rel);
+                }
+            }
+        }
+    }
+
+    let assets_dir = dir.join("assets");
+    if !assets_dir.is_dir() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    visit(dir, &assets_dir, refs, &mut out);
+    out.sort();
+    out
+}
+
 pub fn check_deck(dir: &Path) -> Vec<CheckFinding> {
     let mut findings = Vec::new();
     let deck_path = dir.join("deck.toml");
@@ -478,6 +549,7 @@ pub fn check_deck(dir: &Path) -> Vec<CheckFinding> {
         });
     }
     let mut stems = std::collections::HashMap::<String, PathBuf>::new();
+    let mut all_refs = BTreeSet::new();
     for p in slides {
         let rel = p
             .strip_prefix(dir)
@@ -526,8 +598,19 @@ pub fn check_deck(dir: &Path) -> Vec<CheckFinding> {
                 message: format!("forbidden <{tag}> tag"),
             });
         }
+        if let Ok(literals) = color_literals(&raw) {
+            for literal in literals {
+                findings.push(CheckFinding {
+                    path: rel.clone(),
+                    severity: FindingSeverity::Warning,
+                    kind: "off_token_color".into(),
+                    message: format!("hardcoded color {literal}; use theme tokens instead"),
+                });
+            }
+        }
         if let Ok(refs) = asset_refs(&raw) {
             for r in refs {
+                all_refs.insert(r.clone());
                 let asset = dir.join(&r);
                 if !asset.is_file() {
                     findings.push(CheckFinding {
@@ -553,17 +636,15 @@ pub fn check_deck(dir: &Path) -> Vec<CheckFinding> {
             }
         }
     }
-    let mut refs = std::collections::BTreeSet::new();
-    if let Ok(slides) = slide_order(dir, &deck) {
-        for p in slides {
-            if let Ok(raw) = fs::read_to_string(&p)
-                && let Ok(rs) = asset_refs(&raw)
-            {
-                refs.extend(rs);
-            }
-        }
+    for orphan in orphaned_assets(dir, &all_refs) {
+        findings.push(CheckFinding {
+            path: orphan.clone(),
+            severity: FindingSeverity::Warning,
+            kind: "orphaned_asset".into(),
+            message: "asset is not referenced by any slide fragment".into(),
+        });
     }
-    let total: u64 = refs
+    let total: u64 = all_refs
         .iter()
         .filter_map(|r| {
             fs::metadata(dir.join(r))
@@ -1833,6 +1914,68 @@ mod tests {
                 .iter()
                 .any(|f| f.severity == FindingSeverity::Warning && f.kind == "asset_size_budget")
         );
+    }
+
+    #[test]
+    fn check_warns_for_orphaned_assets_but_skips_referenced_and_dotfiles() {
+        let t = tempfile::tempdir().unwrap();
+        minimal_deck(&t);
+        fs::create_dir_all(t.path().join("assets/nested")).unwrap();
+        fs::write(t.path().join("assets/used.png"), b"used").unwrap();
+        fs::write(t.path().join("assets/srcset.png"), b"srcset").unwrap();
+        fs::write(t.path().join("assets/nested/css.png"), b"css").unwrap();
+        fs::write(t.path().join("assets/orphan.png"), b"orphan").unwrap();
+        fs::write(t.path().join("assets/.scratch.png"), b"scratch").unwrap();
+        fs::write(t.path().join("assets/demo.tape"), b"tape").unwrap();
+        fs::write(
+            t.path().join("slides/01.html"),
+            "<img src='assets/used.png' srcset='assets/srcset.png 2x'><div style=\"background:url(assets/nested/css.png)\"></div>",
+        )
+        .unwrap();
+
+        let findings = check_deck(t.path());
+        assert!(findings.iter().any(|f| {
+            f.severity == FindingSeverity::Warning
+                && f.kind == "orphaned_asset"
+                && f.path == "assets/orphan.png"
+        }));
+        assert!(!findings.iter().any(|f| f.kind == "orphaned_asset"
+            && (f.path == "assets/used.png"
+                || f.path == "assets/srcset.png"
+                || f.path == "assets/nested/css.png"
+                || f.path == "assets/demo.tape"
+                || f.path == "assets/.scratch.png")));
+    }
+
+    #[test]
+    fn check_warns_for_off_token_colors_in_fragment_css_surfaces() {
+        let t = tempfile::tempdir().unwrap();
+        minimal_deck(&t);
+        fs::write(
+            t.path().join("slides/01.html"),
+            r##"
+            <section style="color: #fff; border-color: rgb(1, 2, 3); background: var(--color-bg)">
+              <style>.x { color: oklch(70% 0.2 140); background: var(--color-accent); }</style>
+              <div class="text-[#ff0000] bg-[rgb(1,2,3)] border-[var(--color-panel)]"></div>
+              <pre><code>.demo { color: #123456; }</code></pre>
+            </section>
+            "##,
+        )
+        .unwrap();
+
+        let findings = check_deck(t.path());
+        let off_token: Vec<_> = findings
+            .iter()
+            .filter(|f| f.kind == "off_token_color")
+            .map(|f| f.message.as_str())
+            .collect();
+        assert!(off_token.iter().any(|m| m.contains("#fff")));
+        assert!(off_token.iter().any(|m| m.contains("rgb(1, 2, 3)")));
+        assert!(off_token.iter().any(|m| m.contains("oklch(70% 0.2 140)")));
+        assert!(off_token.iter().any(|m| m.contains("#ff0000")));
+        assert!(off_token.iter().any(|m| m.contains("rgb(1,2,3)")));
+        assert!(!off_token.iter().any(|m| m.contains("var(--color")));
+        assert!(!off_token.iter().any(|m| m.contains("#123456")));
     }
 
     #[test]
