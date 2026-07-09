@@ -7,12 +7,12 @@ allow = [
   "CDLA-Permissive-2.0",
   "ISC",
   "MIT",
-  # MPL-2.0 is file-level weak copyleft; fine for unmodified deps
-  # (cssparser/dtoa-short via lol_html).
+  # MPL-2.0 is file-level weak copyleft; accepted for the unmodified parser
+  # crates in lol_html's dependency graph (cssparser, cssparser-macros,
+  # dtoa-short, and selectors).
   "MPL-2.0",
   "Unicode-3.0",
   "Unlicense",
   "Zlib",
 ]
 confidence-threshold = 0.8
-

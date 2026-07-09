@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Parse HTML asset references structurally, including `srcset`, while confining
+  local reads to the deck's `assets/` directory.
+- Inline safe direct SVG image sources as sanitized, deck-wide namespaced markup;
+  unsupported SVGs retain passive data-URI image behavior.
+- Watch deck inputs during `sideshow serve` and reload served browser tabs after
+  successful, atomically written rebuilds.
+- Warn from `sideshow check` about orphaned assets and hardcoded fragment colors.
+- Remove the generated Tailwind banner while preserving unrelated license
+  comments.
 
 ## v0.2.0 - 2026-07-08
 

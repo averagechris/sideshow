@@ -114,7 +114,7 @@ Default slide order is lexicographic over `slides/*.{html,md}`. Name files with 
 
 - Prefer inline SVG markup for diagrams, charts, architecture maps, and timelines; it stays sharp, small, inspectable, and editable.
 - Use raster files for photos, screenshots, logos, or supplied bitmap assets. Run `sideshow img info assets/photo.png` to inspect dimensions/projected inline size and `sideshow img optimize assets/photo.png` for photo-like assets.
-- `sideshow build` optimizes raster assets in memory by default via `[images]` config, but does not mutate `assets/`. `sideshow check` warns on large individual assets and total deck budget; use `--strict` when the budget must gate delivery.
+- `sideshow build` optimizes raster assets in memory by default via `[images]` config, but does not mutate `assets/`. Safe direct SVG image sources may be promoted to namespaced inline markup; unsupported SVG remains a passive data-URI image. `sideshow check` warns on large individual assets, total deck budget, orphaned assets, and hardcoded fragment colors; use `--strict` when warnings must gate delivery.
 
 ### Videos
 
@@ -141,7 +141,9 @@ See `fragment-patterns.md` for canonical fragment starting points.
 
 ## Phase 4 — Verify loop
 
-Run this loop after every meaningful authoring pass. Fix all findings before delivery.
+Run this loop after every meaningful authoring pass. Fix all errors before
+delivery. Review every warning; either fix it or make the intentional exception
+clear in the deck's source and handoff.
 
 ### 4.1 Static check
 
@@ -150,7 +152,9 @@ sideshow check mydeck
 sideshow check mydeck --format json
 ```
 
-Fix every forbidden tag, missing asset, duplicate slide id, bad `deck.toml`, or missing slide.
+Fix every forbidden tag, missing asset, duplicate slide id, bad `deck.toml`, or
+missing slide. Remove orphaned assets when they are accidental and move
+deliberate hardcoded colors into a named theme role or component where possible.
 
 ### 4.2 Build
 
@@ -207,7 +211,7 @@ Repeat: edit source → `sideshow check` → `sideshow build` → `rodney reload
 
 - Hand over the single generated file at the path printed by `sideshow build` (`mydeck/dist/<deck-slug>.html`).
 - For PDF, use the browser's native print flow; sideshow includes print CSS with one slide per page.
-- For a live URL, use the repository's central SourceHut Pages publisher flow or upload the single HTML file to S3 and share a presigned URL. A `sideshow publish` subcommand is forthcoming; do not document it as available unless your binary shows it.
+- For a live URL, use `sideshow publish mydeck --target srht --domain user.srht.site` or `sideshow publish mydeck --target s3 --bucket … --key …`. Confirm the exact options with `sideshow publish --help`.
 - Tell the user the deck path, output file, slide count, navigation keys, and any remaining caveats.
 
 ## Quality bar

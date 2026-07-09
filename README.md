@@ -15,9 +15,12 @@ open <path printed by sideshow build>
 ```
 
 `sideshow build` reads `deck.toml`, wraps `slides/*.html` and `slides/*.md` as
-fixed 1920×1080 slide sections, inlines local `assets/` references as data URIs,
-and embeds the stage CSS/runtime JavaScript. Tailwind CSS v4's standalone
-`tailwindcss` binary must be available; packaged installs bundle it.
+fixed 1920×1080 slide sections, inlines local `assets/` references, and embeds
+the stage CSS/runtime JavaScript. Assets normally become data URIs. A direct
+`<img src="assets/diagram.svg">` becomes namespaced inline markup only when it
+passes Sideshow's conservative static-SVG checks; unsupported SVGs stay passive
+data-URI images. Tailwind CSS v4's standalone `tailwindcss` binary must be
+available; packaged installs bundle it.
 
 ## External tools
 
@@ -43,9 +46,11 @@ sideshow check mydeck --format json
 ```
 
 `check` validates `deck.toml`, slide ordering, forbidden fragment tags, duplicate
-generated slide IDs, missing `assets/...` references, empty slide directories, and
-asset size budgets. Budget findings are warnings by default; use `--strict` to
-make warnings fail the check.
+generated slide IDs, missing `assets/...` references, empty slide directories,
+and asset size budgets. It also warns about unreferenced files under `assets/`
+and hardcoded colors in fragment CSS and SVG presentation attributes. Warnings
+are advisory by default; use `--strict` when a deck intentionally treats them as
+release gates.
 
 Publish an already-built deck without rebuilding:
 
@@ -152,8 +157,8 @@ List theme selection metadata with `sideshow themes` or `sideshow themes --forma
 Built-ins: `signal` (dark/cyan balanced), `ledger` (formal paper dense),
 `terminal` (dark engineering balanced), and `poster` (bold keynote sparse).
 
-Serve locally with SourceHut Pages-like MIME/CSP headers and rebuild-on-request
-when source files change:
+Serve locally with SourceHut Pages-like MIME/CSP headers, filesystem watching,
+and automatic browser reload after a successful rebuild:
 
 ```sh
 sideshow serve mydeck --port 8000

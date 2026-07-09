@@ -33,7 +33,7 @@ mydeck/
     01-title.html      # per-slide fragments (bespoke layout slides)
     02-agenda.md       # markdown slides (uniform content slides, comrak)
     03-diagram.html
-  assets/              # images etc., inlined at build
+  assets/              # presented assets only, inlined at build
 ```
 
 ### deck.toml
@@ -59,8 +59,8 @@ Keep the schema tiny. Add keys only when a real need appears.
   `<html>`, `<head>`, `<script>` in fragments (compiler rejects; `check`
   enforces).
 - **Speaker notes:** optional `<template data-notes>…</template>` inside a
-  fragment. Never rendered on stage; surfaced by `shot --notes` and in
-  terminal output.
+  fragment. Never rendered on stage; exposed through
+  `window.sideshow.notes(n)` for the browser-driven agent workflow.
 - **Incremental reveals:** elements with `data-step` (or `data-step="2"` for
   explicit ordering) are revealed stepwise by the runtime before advancing
   to the next slide.
@@ -68,6 +68,10 @@ Keep the schema tiny. Add keys only when a real need appears.
   `<section class="slide slide-md">…</section>` and are styled by theme
   typography defaults. Markdown is for content-shaped slides; anything
   bespoke should be an HTML fragment.
+- Local assets are confined to `assets/` and normally become data URIs. Direct
+  SVG `<img>` sources may become same-document markup only when strict XML and
+  static-content checks succeed; IDs are namespaced across the full deck and
+  unsupported SVGs retain passive image semantics.
 
 ## Stage model
 
