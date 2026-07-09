@@ -1,7 +1,7 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use flate2::{Compression, write::GzEncoder};
-use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use sideshow::find_tool;
 use std::{
     fs,
@@ -9,7 +9,7 @@ use std::{
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
@@ -684,30 +684,28 @@ const CSP: &str = "default-src 'self' data: blob:; script-src 'self' 'unsafe-eva
 
 fn serve(dir: &Path, port: u16) -> anyhow::Result<()> {
     let out = sideshow::build_deck(dir)?;
-    let root = dir.join("dist");
-    let generation = Arc::new(AtomicU64::new(0));
-    start_rebuild_watcher(dir.to_path_buf(), root.clone(), Arc::clone(&generation))?;
+    let (dir, root, out) = normalized_serve_paths(dir, out)?;
+    let generation = Arc::new(AtomicU64::new(reload_session_id() << 32));
+    let current_output = Arc::new(Mutex::new(out));
+    start_rebuild_watcher(
+        dir.to_path_buf(),
+        root.clone(),
+        Arc::clone(&generation),
+        Arc::clone(&current_output),
+    )?;
     let listener = TcpListener::bind(("127.0.0.1", port))?;
     println!("serving {} at http://localhost:{port}/", root.display());
     for stream in listener.incoming() {
-        let mut stream = stream?;
-        let req = read_req(&mut stream)?;
-        let path = req
-            .split_whitespace()
-            .nth(1)
-            .unwrap_or("/")
-            .trim_start_matches('/');
-        if path == "__sideshow/reload" {
-            respond_reload(&mut stream, generation.load(Ordering::Relaxed))?;
-            continue;
-        }
-        respond(
-            &mut stream,
-            &root,
-            path,
-            &out,
-            generation.load(Ordering::Relaxed),
-        )?;
+        let root = root.clone();
+        let generation = Arc::clone(&generation);
+        let current_output = Arc::clone(&current_output);
+        thread::spawn(move || {
+            if let Ok(mut stream) = stream {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+                let _ = handle_stream(&mut stream, &root, &current_output, &generation);
+            }
+        });
     }
     Ok(())
 }
@@ -716,6 +714,7 @@ fn start_rebuild_watcher(
     dir: PathBuf,
     dist: PathBuf,
     generation: Arc<AtomicU64>,
+    current_output: Arc<Mutex<PathBuf>>,
 ) -> anyhow::Result<()> {
     let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
     let mut watcher = RecommendedWatcher::new(
@@ -728,14 +727,22 @@ fn start_rebuild_watcher(
     thread::spawn(move || {
         let _watcher = watcher;
         while let Ok(res) = rx.recv() {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
             let mut should_rebuild = event_is_relevant(res, &dir, &dist);
-            while let Ok(res) = rx.recv_timeout(Duration::from_millis(250)) {
+            while let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) {
+                let timeout = remaining.min(Duration::from_millis(250));
+                let Ok(res) = rx.recv_timeout(timeout) else {
+                    break;
+                };
                 should_rebuild |= event_is_relevant(res, &dir, &dist);
             }
             if should_rebuild {
                 eprintln!("change detected; rebuilding deck...");
                 match sideshow::build_deck(&dir) {
                     Ok(path) => {
+                        if let Ok(mut current) = current_output.lock() {
+                            *current = path.clone();
+                        }
                         generation.fetch_add(1, Ordering::Relaxed);
                         eprintln!("rebuilt {}", path.display());
                     }
@@ -749,15 +756,72 @@ fn start_rebuild_watcher(
 
 fn event_is_relevant(res: notify::Result<Event>, deck_dir: &Path, dist: &Path) -> bool {
     match res {
-        Ok(event) => event
-            .paths
-            .iter()
-            .any(|path| path != deck_dir && !is_in_dir(path, dist)),
+        Ok(event) => {
+            if event.need_rescan() {
+                return true;
+            }
+            if !event_kind_is_build_input(&event.kind) {
+                return false;
+            }
+            event
+                .paths
+                .iter()
+                .any(|path| path != deck_dir && build_input_path_is_relevant(path, deck_dir, dist))
+        }
         Err(err) => {
             eprintln!("watch error: {err}");
             false
         }
     }
+}
+
+fn event_kind_is_build_input(kind: &EventKind) -> bool {
+    use notify::event::{CreateKind, ModifyKind, RemoveKind, RenameMode};
+    matches!(
+        kind,
+        EventKind::Create(CreateKind::Any | CreateKind::File | CreateKind::Folder)
+            | EventKind::Remove(RemoveKind::Any | RemoveKind::File | RemoveKind::Folder)
+            | EventKind::Modify(
+                ModifyKind::Any
+                    | ModifyKind::Data(_)
+                    | ModifyKind::Name(
+                        RenameMode::Any | RenameMode::Both | RenameMode::From | RenameMode::To,
+                    ),
+            )
+            | EventKind::Any
+    )
+}
+
+fn normalized_serve_paths(
+    input_dir: &Path,
+    output: PathBuf,
+) -> anyhow::Result<(PathBuf, PathBuf, PathBuf)> {
+    let dir = input_dir
+        .canonicalize()
+        .with_context(|| format!("failed to resolve deck directory {}", input_dir.display()))?;
+    let root = dir.join("dist");
+    let output = if output.is_absolute() {
+        output
+    } else {
+        std::env::current_dir()?.join(output)
+    };
+    let output = output.canonicalize().unwrap_or(output);
+    Ok((dir, root, output))
+}
+
+fn build_input_path_is_relevant(path: &Path, deck_dir: &Path, dist: &Path) -> bool {
+    if is_in_dir(path, dist) {
+        return false;
+    }
+    let rel = path.strip_prefix(deck_dir).unwrap_or(path);
+    rel == Path::new("deck.toml")
+        || rel == Path::new("theme.css")
+        || has_top_level_component(rel, "slides")
+        || has_top_level_component(rel, "assets")
+}
+
+fn has_top_level_component(path: &Path, name: &str) -> bool {
+    matches!(path.components().next(), Some(std::path::Component::Normal(component)) if component == name)
 }
 
 fn is_in_dir(path: &Path, dir: &Path) -> bool {
@@ -775,27 +839,123 @@ fn read_req(stream: &mut TcpStream) -> anyhow::Result<String> {
     let n = stream.read(&mut b)?;
     Ok(String::from_utf8_lossy(&b[..n]).into())
 }
+
+fn handle_stream(
+    stream: &mut TcpStream,
+    root: &Path,
+    current_output: &Mutex<PathBuf>,
+    generation: &AtomicU64,
+) -> anyhow::Result<()> {
+    let req = read_req(stream)?;
+    let Some(request) = parse_request_line(&req) else {
+        return respond_status(stream, "400 Bad Request");
+    };
+    if request.method != "GET" && request.method != "HEAD" {
+        return respond_status(stream, "405 Method Not Allowed");
+    }
+    if request.path == "__sideshow/reload" {
+        return respond_reload(
+            stream,
+            generation.load(Ordering::Relaxed),
+            request.method == "HEAD",
+        );
+    }
+    let default = current_output
+        .lock()
+        .map(|p| p.clone())
+        .unwrap_or_else(|_| root.join("index.html"));
+    respond(
+        stream,
+        root,
+        &request.path,
+        &default,
+        generation.load(Ordering::Relaxed),
+        request.method == "HEAD",
+    )
+}
+
+struct RequestLine<'a> {
+    method: &'a str,
+    path: String,
+}
+
+fn parse_request_line(req: &str) -> Option<RequestLine<'_>> {
+    let mut parts = req.lines().next()?.split_whitespace();
+    let method = parts.next()?;
+    let target = parts.next()?;
+    let target = target.split(['?', '#']).next().unwrap_or(target);
+    let path = safe_request_path(target)?;
+    Some(RequestLine { method, path })
+}
+
+fn safe_request_path(target: &str) -> Option<String> {
+    if !target.starts_with('/') || target.starts_with("//") {
+        return None;
+    }
+    let trimmed = target.trim_start_matches('/');
+    let decoded = percent_decode(trimmed)?;
+    let p = Path::new(&decoded);
+    if p.is_absolute()
+        || p.components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    Some(decoded)
+}
+
+fn percent_decode(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len() {
+                return None;
+            }
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+fn respond_status(stream: &mut TcpStream, code: &str) -> anyhow::Result<()> {
+    let body = format!("<!doctype html><title>{code}</title><h1>{code}</h1>");
+    write!(
+        stream,
+        "HTTP/1.1 {code}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nX-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )?;
+    Ok(())
+}
 fn respond(
     stream: &mut TcpStream,
     root: &Path,
     path: &str,
     default: &Path,
     generation: u64,
+    head_only: bool,
 ) -> anyhow::Result<()> {
-    let file = if path.is_empty() {
+    let requested = if path.is_empty() {
         default.to_path_buf()
     } else {
         root.join(path)
     };
-    let (code, mut body) = if file.is_file() {
-        ("200 OK", fs::read(&file)?)
+    let file = resolve_served_file(root, &requested);
+    let (code, mut body) = if let Some(file) = file.as_ref() {
+        ("200 OK", fs::read(file)?)
     } else {
         (
             "404 Not Found",
             b"<!doctype html><title>404 Not Found</title><h1>404 Not Found</h1>".to_vec(),
         )
     };
-    let mime = match file.extension().and_then(|s| s.to_str()).unwrap_or("") {
+    let mime = match requested.extension().and_then(|s| s.to_str()).unwrap_or("") {
         "html" => "text/html; charset=utf-8",
         "css" => "text/css",
         "js" => "text/javascript",
@@ -808,26 +968,52 @@ fn respond(
     }
     write!(
         stream,
-        "HTTP/1.1 {code}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nContent-Security-Policy: {CSP}\r\naccess-control-allow-origin: *\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {code}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nContent-Security-Policy: {CSP}\r\nX-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
-    stream.write_all(&body)?;
+    if !head_only {
+        stream.write_all(&body)?;
+    }
     Ok(())
 }
 
-fn respond_reload(stream: &mut TcpStream, generation: u64) -> anyhow::Result<()> {
+fn resolve_served_file(root: &Path, file: &Path) -> Option<PathBuf> {
+    if !file.is_file() {
+        return None;
+    }
+    let root = root.canonicalize().ok()?;
+    let file = file.canonicalize().ok()?;
+    if file.starts_with(&root) {
+        Some(file)
+    } else {
+        None
+    }
+}
+
+fn respond_reload(stream: &mut TcpStream, generation: u64, head_only: bool) -> anyhow::Result<()> {
     let body = generation.to_string();
     write!(
         stream,
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\naccess-control-allow-origin: *\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
+    if !head_only {
+        stream.write_all(body.as_bytes())?;
+    }
     Ok(())
+}
+
+fn reload_session_id() -> u64 {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    (nanos ^ u64::from(std::process::id())).max(1)
 }
 
 fn inject_livereload(body: &[u8], generation: u64) -> Vec<u8> {
     let script = format!(
-        r#"<script>(()=>{{let g={generation};setInterval(async()=>{{try{{const r=await fetch('/__sideshow/reload',{{cache:'no-store'}});const n=Number(await r.text());if(n>g) location.reload();}}catch(_){{}}}},500);}})();</script>"#
+        r#"<script>(()=>{{let g='{generation}';async function poll(){{let d=document.hidden?3000:1000;try{{const r=await fetch('/__sideshow/reload',{{cache:'no-store'}});const n=(await r.text()).trim();if(n&&n!==g)location.reload();}}catch(_){{}}setTimeout(poll,d);}}setTimeout(poll,1000);}})();</script>"#
     );
     let Ok(html) = std::str::from_utf8(body) else {
         return body.to_vec();
@@ -889,8 +1075,15 @@ mod serve_tests {
 
         let injected = String::from_utf8(inject_livereload(html, 7)).unwrap();
 
-        assert!(injected.contains("let g=7"));
+        assert!(injected.contains("let g='7'"));
         assert!(injected.contains("/__sideshow/reload"));
+        assert!(injected.contains("async function poll()"));
+        assert!(injected.contains("document.hidden?3000:1000"));
+        assert!(injected.contains("setTimeout(poll,d)"));
+        assert!(injected.contains("setTimeout(poll,1000)"));
+        assert!(injected.contains("n!==g"));
+        assert!(!injected.contains("setInterval"));
+        assert!(!injected.contains("n>g"));
         assert!(injected.contains("</script></body>"));
     }
 
@@ -909,6 +1102,163 @@ mod serve_tests {
         let body = b"\xff\xfe";
 
         assert_eq!(inject_livereload(body, 1), body);
+    }
+
+    #[test]
+    fn event_relevance_accepts_build_inputs_and_ignores_dist_and_noise() {
+        let deck = Path::new("/deck");
+        let dist = deck.join("dist");
+        let relevant = notify::Event::new(EventKind::Modify(notify::event::ModifyKind::Data(
+            notify::event::DataChange::Content,
+        )))
+        .add_path(deck.join("slides/one.md"));
+        assert!(event_is_relevant(Ok(relevant), deck, &dist));
+
+        for input in ["deck.toml", "theme.css", "assets/logo.svg"] {
+            let event = notify::Event::new(EventKind::Create(notify::event::CreateKind::File))
+                .add_path(deck.join(input));
+            assert!(event_is_relevant(Ok(event), deck, &dist), "{input}");
+        }
+
+        let dist_event = notify::Event::new(EventKind::Modify(notify::event::ModifyKind::Data(
+            notify::event::DataChange::Content,
+        )))
+        .add_path(deck.join("dist/deck.html"));
+        assert!(!event_is_relevant(Ok(dist_event), deck, &dist));
+
+        let notes_event = notify::Event::new(EventKind::Modify(notify::event::ModifyKind::Data(
+            notify::event::DataChange::Content,
+        )))
+        .add_path(deck.join("notes/talk.md"));
+        assert!(!event_is_relevant(Ok(notes_event), deck, &dist));
+
+        let metadata_event = notify::Event::new(EventKind::Modify(
+            notify::event::ModifyKind::Metadata(notify::event::MetadataKind::Any),
+        ))
+        .add_path(deck.join("slides/one.md"));
+        assert!(!event_is_relevant(Ok(metadata_event), deck, &dist));
+
+        let access_event = notify::Event::new(EventKind::Access(notify::event::AccessKind::Open(
+            notify::event::AccessMode::Any,
+        )))
+        .add_path(deck.join("slides/one.md"));
+        assert!(!event_is_relevant(Ok(access_event), deck, &dist));
+
+        let any_modify_event =
+            notify::Event::new(EventKind::Modify(notify::event::ModifyKind::Any))
+                .add_path(deck.join("slides/one.md"));
+        assert!(event_is_relevant(Ok(any_modify_event), deck, &dist));
+    }
+
+    #[test]
+    fn normalized_serve_paths_make_relative_deck_match_absolute_events() {
+        let cwd = std::env::current_dir().unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix("sideshow-serve-normalize-")
+            .tempdir_in(&cwd)
+            .unwrap();
+        let deck_name = tmp.path().file_name().unwrap();
+        let relative_deck = PathBuf::from(deck_name);
+        let dist = tmp.path().join("dist");
+        fs::create_dir(&dist).unwrap();
+        let output = dist.join("deck.html");
+        fs::write(&output, "deck").unwrap();
+
+        let (deck_dir, dist_dir, current_output) =
+            normalized_serve_paths(&relative_deck, relative_deck.join("dist/deck.html")).unwrap();
+
+        assert!(deck_dir.is_absolute());
+        assert_eq!(deck_dir, tmp.path().canonicalize().unwrap());
+        assert_eq!(dist_dir, deck_dir.join("dist"));
+        assert_eq!(current_output, output.canonicalize().unwrap());
+
+        let event = notify::Event::new(EventKind::Modify(notify::event::ModifyKind::Any))
+            .add_path(deck_dir.join("slides/one.md"));
+        assert!(event_is_relevant(Ok(event), &deck_dir, &dist_dir));
+    }
+
+    #[test]
+    fn rescan_is_relevant_even_without_paths() {
+        let event = notify::Event::new(EventKind::Any).set_flag(notify::event::Flag::Rescan);
+        assert!(event_is_relevant(
+            Ok(event),
+            Path::new("/deck"),
+            Path::new("/deck/dist")
+        ));
+    }
+
+    #[test]
+    fn build_input_path_matrix_excludes_tapes() {
+        let deck = Path::new("/deck");
+        let dist = deck.join("dist");
+        for good in ["deck.toml", "theme.css", "slides/a.md", "assets/a.png"] {
+            assert!(
+                build_input_path_is_relevant(&deck.join(good), deck, &dist),
+                "{good}"
+            );
+        }
+        for bad in [
+            "dist/out.html",
+            "tapes/demo.yaml",
+            "README.md",
+            "src/main.rs",
+            "slides-old/a.md",
+            "assets-backup/a.png",
+        ] {
+            assert!(
+                !build_input_path_is_relevant(&deck.join(bad), deck, &dist),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn safe_request_path_rejects_traversal_absolute_and_encoded_traversal() {
+        assert_eq!(
+            safe_request_path("/slides/a.html").as_deref(),
+            Some("slides/a.html")
+        );
+        assert_eq!(safe_request_path("/").as_deref(), Some(""));
+        for bad in [
+            "slides/a.html",
+            "//evil",
+            "/../secret",
+            "/slides/../secret",
+            "/%2e%2e/secret",
+            "/slides/%2E%2E/secret",
+            "/%ZZ",
+        ] {
+            assert!(safe_request_path(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn parse_request_line_limits_request_target_and_methods_are_visible() {
+        let req =
+            parse_request_line("HEAD /__sideshow/reload?x=1 HTTP/1.1\r\nHost: x\r\n").unwrap();
+        assert_eq!(req.method, "HEAD");
+        assert_eq!(req.path, "__sideshow/reload");
+        assert!(parse_request_line("GET /%2e%2e/secret HTTP/1.1\r\n").is_none());
+    }
+
+    #[test]
+    fn resolved_served_file_rejects_symlink_escape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir(&dist).unwrap();
+        let inside = dist.join("inside.html");
+        let outside = tmp.path().join("outside.html");
+        fs::write(&inside, "inside").unwrap();
+        fs::write(&outside, "outside").unwrap();
+
+        assert!(resolve_served_file(&dist, &inside).is_some());
+
+        #[cfg(unix)]
+        {
+            let link = dist.join("escape.html");
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            assert!(resolve_served_file(&dist, &link).is_none());
+        }
     }
 }
 
