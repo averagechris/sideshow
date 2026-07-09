@@ -1,7 +1,7 @@
 use anyhow::{Context, bail};
 use base64::Engine;
 use comrak::{Options, Plugins, markdown_to_html_with_plugins};
-use lol_html::{RewriteStrSettings, element};
+use lol_html::{RewriteStrSettings, element, html_content::ContentType};
 use regex::{Captures, Regex};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -646,11 +646,7 @@ pub fn rewrite_asset_refs(
         let mut bytes = fs::read(deck_dir.join(rel))
             .with_context(|| format!("missing asset reference: {rel}"))?;
         let mut mime = mime_for(rel);
-        if rel.ends_with(".svg") {
-            eprintln!(
-                "info: {rel} is SVG; data URI inlined, but inline SVG markup is usually smaller and more editable"
-            );
-        } else if images.optimize && is_raster(rel) {
+        if !rel.ends_with(".svg") && images.optimize && is_raster(rel) {
             if is_animated(&bytes) {
                 eprintln!(
                     "warning: {rel} is animated; skipping optimization to preserve animation"
@@ -667,7 +663,7 @@ pub fn rewrite_asset_refs(
             base64::engine::general_purpose::STANDARD.encode(bytes)
         ))
     };
-    let out = rewrite_html_asset_attrs(input, &replace_path)?;
+    let out = rewrite_html_asset_attrs(deck_dir, input, &replace_path)?;
     let mut err = None;
     let out = css.replace_all(&out, |c: &Captures| match replace_path(&c["path"]) {
         Ok(uri) => format!("url({uri})"),
@@ -682,15 +678,35 @@ pub fn rewrite_asset_refs(
     Ok(out.into_owned())
 }
 
-fn rewrite_html_asset_attrs<F>(input: &str, replace_path: &F) -> anyhow::Result<String>
+fn rewrite_html_asset_attrs<F>(
+    deck_dir: &Path,
+    input: &str,
+    replace_path: &F,
+) -> anyhow::Result<String>
 where
     F: Fn(&str) -> anyhow::Result<String>,
 {
     let mut err = None;
+    let mut svg_instance = 0usize;
     let out = lol_html::rewrite_str(
         input,
         RewriteStrSettings {
             element_content_handlers: vec![element!("*[src], *[href], *[srcset]", |el| {
+                if el.tag_name().eq_ignore_ascii_case("img")
+                    && let Some(src) = el.get_attribute("src")
+                    && src.starts_with("assets/")
+                    && src.to_ascii_lowercase().ends_with(".svg")
+                {
+                    svg_instance += 1;
+                    match inline_svg_for_img(deck_dir, &src, svg_instance, el) {
+                        Ok(Some(svg)) => {
+                            el.replace(&svg, ContentType::Html);
+                            return Ok(());
+                        }
+                        Ok(None) => {}
+                        Err(_) => {}
+                    }
+                }
                 for name in ["src", "href"] {
                     if let Some(value) = el.get_attribute(name)
                         && value.starts_with("assets/")
@@ -712,6 +728,121 @@ where
     )
     .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     if let Some(e) = err { Err(e) } else { Ok(out) }
+}
+
+fn inline_svg_for_img(
+    deck_dir: &Path,
+    rel: &str,
+    instance: usize,
+    img: &mut lol_html::html_content::Element,
+) -> anyhow::Result<Option<String>> {
+    let raw = fs::read_to_string(deck_dir.join(rel))?;
+    if !raw.to_ascii_lowercase().contains("<svg") || raw.contains("<>") {
+        return Ok(None);
+    }
+    let prefix = format!("sideshow-svg-{instance}-");
+    let mut svg = sanitize_svg_markup(&raw, &prefix)?;
+    svg = carry_img_attrs_to_svg(svg, img)?;
+    Ok(Some(svg))
+}
+
+fn sanitize_svg_markup(input: &str, prefix: &str) -> anyhow::Result<String> {
+    let id_re = Regex::new(r#"\bid\s*=\s*['\"]([^'\"]+)['\"]"#)?;
+    let ids = id_re
+        .captures_iter(input)
+        .map(|c| c[1].to_string())
+        .collect::<Vec<_>>();
+    let mut out = lol_html::rewrite_str(
+        input,
+        RewriteStrSettings {
+            element_content_handlers: vec![element!("*", |el| {
+                if el.tag_name().eq_ignore_ascii_case("script") {
+                    el.remove();
+                    return Ok(());
+                }
+                let remove_attrs = el
+                    .attributes()
+                    .iter()
+                    .filter_map(|attr| {
+                        let name = attr.name();
+                        let value = attr.value();
+                        let lower = name.to_ascii_lowercase();
+                        (lower.starts_with("on")
+                            || ((lower == "href" || lower == "xlink:href")
+                                && !value.starts_with('#')))
+                        .then_some(name)
+                    })
+                    .collect::<Vec<_>>();
+                for name in remove_attrs {
+                    el.remove_attribute(&name);
+                }
+                Ok(())
+            })],
+            ..RewriteStrSettings::default()
+        },
+    )
+    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    for id in ids {
+        let new = format!("{prefix}{id}");
+        out = out.replace(&format!("id=\"{id}\""), &format!("id=\"{new}\""));
+        out = out.replace(&format!("id='{id}'"), &format!("id=\"{new}\""));
+        out = out.replace(&format!("url(#{id})"), &format!("url(#{new})"));
+        out = out.replace(&format!("href=\"#{id}\""), &format!("href=\"#{new}\""));
+        out = out.replace(&format!("href='#{id}'"), &format!("href=\"#{new}\""));
+        out = out.replace(
+            &format!("xlink:href=\"#{id}\""),
+            &format!("xlink:href=\"#{new}\""),
+        );
+        out = out.replace(
+            &format!("xlink:href='#{id}'"),
+            &format!("xlink:href=\"#{new}\""),
+        );
+    }
+    Ok(out)
+}
+
+fn carry_img_attrs_to_svg(
+    svg: String,
+    img: &mut lol_html::html_content::Element,
+) -> anyhow::Result<String> {
+    let mut attrs = Vec::new();
+    for name in ["class", "width", "height"] {
+        if let Some(value) = img.get_attribute(name) {
+            attrs.push((name.to_string(), value));
+        }
+    }
+    if let Some(alt) = img.get_attribute("alt")
+        && !alt.is_empty()
+    {
+        attrs.push(("role".into(), "img".into()));
+        attrs.push(("aria-label".into(), alt));
+    }
+    let Some(pos) = svg.find("<svg") else {
+        return Ok(svg);
+    };
+    let Some(end) = svg[pos..].find('>') else {
+        return Ok(svg);
+    };
+    let insert_at = pos + end;
+    let mut attr_text = String::new();
+    for (name, value) in attrs {
+        attr_text.push(' ');
+        attr_text.push_str(&name);
+        attr_text.push_str("=\"");
+        attr_text.push_str(&html_escape_attr(&value));
+        attr_text.push('"');
+    }
+    let mut out = svg;
+    out.insert_str(insert_at, &attr_text);
+    Ok(out)
+}
+
+fn html_escape_attr(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn rewrite_srcset<F>(input: &str, replace_path: &F, err: &mut Option<anyhow::Error>) -> String
@@ -1297,6 +1428,107 @@ mod tests {
             out.matches("data:application/octet-stream;base64,aGk=")
                 .count()
                 == 2
+        );
+    }
+
+    #[test]
+    fn inline_svg_img_replaces_with_markup_and_carries_attrs() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir_all(t.path().join("assets")).unwrap();
+        fs::write(
+            t.path().join("assets/icon.svg"),
+            "<svg viewBox='0 0 1 1'><path/></svg>",
+        )
+        .unwrap();
+        let out = rewrite_asset_refs(
+            t.path(),
+            "<img src='assets/icon.svg' class='logo' width='10' height='11' alt='Logo'>",
+            ImagesConfig::default(),
+        )
+        .unwrap();
+        assert!(out.contains("<svg"), "{out}");
+        assert!(out.contains("class=\"logo\""), "{out}");
+        assert!(out.contains("width=\"10\""), "{out}");
+        assert!(out.contains("height=\"11\""), "{out}");
+        assert!(out.contains("role=\"img\""), "{out}");
+        assert!(out.contains("aria-label=\"Logo\""), "{out}");
+        assert!(!out.contains("data:image/svg+xml"), "{out}");
+    }
+
+    #[test]
+    fn inline_svg_sanitizes_scripts_handlers_external_refs_and_ids() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir_all(t.path().join("assets")).unwrap();
+        fs::write(
+            t.path().join("assets/icon.svg"),
+            "<svg onload='evil()'><script>evil()</script><defs><linearGradient id='g'/></defs><rect fill='url(#g)' href='https://example.com/x'/><use href='#g' xlink:href='http://example.com/y'/></svg>",
+        )
+        .unwrap();
+        let out = rewrite_asset_refs(
+            t.path(),
+            "<img src='assets/icon.svg'>",
+            ImagesConfig::default(),
+        )
+        .unwrap();
+        assert!(!out.contains("script"), "{out}");
+        assert!(!out.contains("onload"), "{out}");
+        assert!(!out.contains("https://example.com"), "{out}");
+        assert!(!out.contains("http://example.com"), "{out}");
+        assert!(out.contains("id=\"sideshow-svg-1-g\""), "{out}");
+        assert!(out.contains("url(#sideshow-svg-1-g)"), "{out}");
+        assert!(out.contains("href=\"#sideshow-svg-1-g\""), "{out}");
+    }
+
+    #[test]
+    fn inline_svg_instances_get_distinct_id_prefixes() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir_all(t.path().join("assets")).unwrap();
+        fs::write(
+            t.path().join("assets/icon.svg"),
+            "<svg><g id='a'/><use href='#a'/></svg>",
+        )
+        .unwrap();
+        let out = rewrite_asset_refs(
+            t.path(),
+            "<img src='assets/icon.svg'><img src='assets/icon.svg'>",
+            ImagesConfig::default(),
+        )
+        .unwrap();
+        assert!(out.contains("id=\"sideshow-svg-1-a\""), "{out}");
+        assert!(out.contains("id=\"sideshow-svg-2-a\""), "{out}");
+        assert!(out.contains("href=\"#sideshow-svg-1-a\""), "{out}");
+        assert!(out.contains("href=\"#sideshow-svg-2-a\""), "{out}");
+    }
+
+    #[test]
+    fn malformed_svg_falls_back_to_data_uri() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir_all(t.path().join("assets")).unwrap();
+        fs::write(t.path().join("assets/bad.svg"), "<svg><path <></svg>").unwrap();
+        let out = rewrite_asset_refs(
+            t.path(),
+            "<img src='assets/bad.svg'>",
+            ImagesConfig::default(),
+        )
+        .unwrap();
+        assert!(out.contains("data:image/svg+xml;base64,"), "{out}");
+    }
+
+    #[test]
+    fn non_img_svg_references_stay_data_uris() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir_all(t.path().join("assets")).unwrap();
+        fs::write(t.path().join("assets/icon.svg"), "<svg></svg>").unwrap();
+        let out = rewrite_asset_refs(
+            t.path(),
+            "<a href='assets/icon.svg'></a><source srcset='assets/icon.svg 1x'><div style='background:url(assets/icon.svg)'></div>",
+            ImagesConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            out.matches("data:image/svg+xml;base64,").count(),
+            3,
+            "{out}"
         );
     }
 
