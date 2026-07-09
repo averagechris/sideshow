@@ -1,0 +1,9 @@
+<div class="h-full p-16 flex flex-col justify-between">
+  <header><p class="kicker">single-file output</p><h2 class="mt-5">Inlining is a tradeoff, not a trophy.</h2></header>
+  <main class="panel text-3xl leading-snug max-w-6xl">
+    <p class="mb-8">Inline assets for portability. Re-encode rasters only when the result is smaller. Keep the size budget visible.</p>
+    <p class="quote text-muted">Dogfood failure: a 125 KB, 14.8 s GIF silently became a 7 KB one-frame WebP before animation detection was added.</p>
+  </main>
+  <footer class="text-2xl text-muted">A smaller file that stops moving is not an optimization.</footer>
+</div>
+<template data-notes>Jul 7 session ses_0c5ca67bbffe…: issue #59 captured the 125KB 14.8s GIF being converted to a 7KB single-frame WebP. Also in that period, Tailwind v4 ignored the old --content behavior and scanned cwd, so committed demo output fed classes back into builds.</template>

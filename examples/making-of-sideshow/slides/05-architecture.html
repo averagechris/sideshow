@@ -1,0 +1,10 @@
+<div class="h-full p-16 flex flex-col justify-between">
+  <header><p class="kicker">architecture</p><h2 class="mt-5">Slides stay flexible. Compilation stays deterministic.</h2></header>
+  <main class="panel">
+    <div class="flex items-center justify-between text-2xl leading-tight">
+      <div class="node">slide files</div><div class="arrow">→</div><div class="node">validate / render</div><div class="arrow">→</div><div class="node">Tailwind</div><div class="arrow">→</div><div class="node">asset rewrite</div><div class="arrow">→</div><div class="node">runtime</div><div class="arrow">→</div><div class="node">one HTML</div>
+    </div>
+  </main>
+  <footer class="text-3xl text-muted max-w-5xl">The compiler owns the repeatable parts: ordering, references, CSS build, asset policy, runtime packaging.</footer>
+</div>
+<template data-notes>This is the centerpiece. Keep the connectors thin and plain. The thesis is that authored HTML remains flexible while the compilation path is deterministic.</template>
