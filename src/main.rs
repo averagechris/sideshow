@@ -1,12 +1,20 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use flate2::{Compression, write::GzEncoder};
+use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use sideshow::find_tool;
 use std::{
     fs,
     io::{Cursor, Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
+    thread,
+    time::Duration,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -675,9 +683,10 @@ fn img(command: ImgCommand) -> anyhow::Result<()> {
 const CSP: &str = "default-src 'self' data: blob:; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; worker-src 'self' 'unsafe-eval' 'unsafe-inline' data: blob:; frame-src https:; img-src data: https:; media-src https:; object-src 'none'; sandbox allow-downloads allow-forms allow-modals allow-pointer-lock allow-popups allow-presentation allow-same-origin allow-scripts;";
 
 fn serve(dir: &Path, port: u16) -> anyhow::Result<()> {
-    let mut last = newest_mtime(dir)?;
     let out = sideshow::build_deck(dir)?;
     let root = dir.join("dist");
+    let generation = Arc::new(AtomicU64::new(0));
+    start_rebuild_watcher(dir.to_path_buf(), root.clone(), Arc::clone(&generation))?;
     let listener = TcpListener::bind(("127.0.0.1", port))?;
     println!("serving {} at http://localhost:{port}/", root.display());
     for stream in listener.incoming() {
@@ -688,16 +697,77 @@ fn serve(dir: &Path, port: u16) -> anyhow::Result<()> {
             .nth(1)
             .unwrap_or("/")
             .trim_start_matches('/');
-        if path.is_empty() || path.ends_with(".html") {
-            let now = newest_mtime(dir)?;
-            if now > last {
-                let _ = sideshow::build_deck(dir);
-                last = now;
-            }
+        if path == "__sideshow/reload" {
+            respond_reload(&mut stream, generation.load(Ordering::Relaxed))?;
+            continue;
         }
-        respond(&mut stream, &root, path, &out)?;
+        respond(
+            &mut stream,
+            &root,
+            path,
+            &out,
+            generation.load(Ordering::Relaxed),
+        )?;
     }
     Ok(())
+}
+
+fn start_rebuild_watcher(
+    dir: PathBuf,
+    dist: PathBuf,
+    generation: Arc<AtomicU64>,
+) -> anyhow::Result<()> {
+    let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
+    let mut watcher = RecommendedWatcher::new(
+        move |res| {
+            let _ = tx.send(res);
+        },
+        Config::default(),
+    )?;
+    watcher.watch(&dir, RecursiveMode::Recursive)?;
+    thread::spawn(move || {
+        let _watcher = watcher;
+        while let Ok(res) = rx.recv() {
+            let mut should_rebuild = event_is_relevant(res, &dir, &dist);
+            while let Ok(res) = rx.recv_timeout(Duration::from_millis(250)) {
+                should_rebuild |= event_is_relevant(res, &dir, &dist);
+            }
+            if should_rebuild {
+                eprintln!("change detected; rebuilding deck...");
+                match sideshow::build_deck(&dir) {
+                    Ok(path) => {
+                        generation.fetch_add(1, Ordering::Relaxed);
+                        eprintln!("rebuilt {}", path.display());
+                    }
+                    Err(err) => eprintln!("rebuild failed: {err:#}"),
+                }
+            }
+        }
+    });
+    Ok(())
+}
+
+fn event_is_relevant(res: notify::Result<Event>, deck_dir: &Path, dist: &Path) -> bool {
+    match res {
+        Ok(event) => event
+            .paths
+            .iter()
+            .any(|path| path != deck_dir && !is_in_dir(path, dist)),
+        Err(err) => {
+            eprintln!("watch error: {err}");
+            false
+        }
+    }
+}
+
+fn is_in_dir(path: &Path, dir: &Path) -> bool {
+    if path == dir || path.starts_with(dir) {
+        return true;
+    }
+    match (path.canonicalize(), dir.canonicalize()) {
+        (Ok(path), Ok(dir)) => path == dir || path.starts_with(dir),
+        _ => false,
+    }
 }
 
 fn read_req(stream: &mut TcpStream) -> anyhow::Result<String> {
@@ -705,13 +775,19 @@ fn read_req(stream: &mut TcpStream) -> anyhow::Result<String> {
     let n = stream.read(&mut b)?;
     Ok(String::from_utf8_lossy(&b[..n]).into())
 }
-fn respond(stream: &mut TcpStream, root: &Path, path: &str, default: &Path) -> anyhow::Result<()> {
+fn respond(
+    stream: &mut TcpStream,
+    root: &Path,
+    path: &str,
+    default: &Path,
+    generation: u64,
+) -> anyhow::Result<()> {
     let file = if path.is_empty() {
         default.to_path_buf()
     } else {
         root.join(path)
     };
-    let (code, body) = if file.is_file() {
+    let (code, mut body) = if file.is_file() {
         ("200 OK", fs::read(&file)?)
     } else {
         (
@@ -727,6 +803,9 @@ fn respond(stream: &mut TcpStream, root: &Path, path: &str, default: &Path) -> a
         "svg" => "image/svg+xml",
         _ => "application/octet-stream",
     };
+    if code == "200 OK" && mime.starts_with("text/html") {
+        body = inject_livereload(&body, generation);
+    }
     write!(
         stream,
         "HTTP/1.1 {code}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nContent-Security-Policy: {CSP}\r\naccess-control-allow-origin: *\r\nConnection: close\r\n\r\n",
@@ -735,27 +814,36 @@ fn respond(stream: &mut TcpStream, root: &Path, path: &str, default: &Path) -> a
     stream.write_all(&body)?;
     Ok(())
 }
-fn newest_mtime(dir: &Path) -> anyhow::Result<SystemTime> {
-    fn walk(p: &Path, max: &mut SystemTime) -> anyhow::Result<()> {
-        for e in fs::read_dir(p)? {
-            let e = e?;
-            let p = e.path();
-            if p.file_name().and_then(|s| s.to_str()) == Some("dist") {
-                continue;
-            }
-            if p.is_dir() {
-                walk(&p, max)?;
-            } else if let Ok(m) = e.metadata()?.modified()
-                && m > *max
-            {
-                *max = m;
-            }
-        }
-        Ok(())
+
+fn respond_reload(stream: &mut TcpStream, generation: u64) -> anyhow::Result<()> {
+    let body = generation.to_string();
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\naccess-control-allow-origin: *\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )?;
+    Ok(())
+}
+
+fn inject_livereload(body: &[u8], generation: u64) -> Vec<u8> {
+    let script = format!(
+        r#"<script>(()=>{{let g={generation};setInterval(async()=>{{try{{const r=await fetch('/__sideshow/reload',{{cache:'no-store'}});const n=Number(await r.text());if(n>g) location.reload();}}catch(_){{}}}},500);}})();</script>"#
+    );
+    let Ok(html) = std::str::from_utf8(body) else {
+        return body.to_vec();
+    };
+    if let Some(index) = html.rfind("</body>") {
+        let mut injected = String::with_capacity(html.len() + script.len());
+        injected.push_str(&html[..index]);
+        injected.push_str(&script);
+        injected.push_str(&html[index..]);
+        injected.into_bytes()
+    } else {
+        let mut injected = Vec::with_capacity(body.len() + script.len());
+        injected.extend_from_slice(body);
+        injected.extend_from_slice(script.as_bytes());
+        injected
     }
-    let mut max = SystemTime::UNIX_EPOCH;
-    walk(dir, &mut max)?;
-    Ok(max)
 }
 
 fn deck_sources_mtime(dir: &Path) -> anyhow::Result<SystemTime> {
@@ -789,6 +877,39 @@ fn deck_sources_mtime(dir: &Path) -> anyhow::Result<SystemTime> {
     walk(&dir.join("slides"), &mut max)?;
     walk(&dir.join("assets"), &mut max)?;
     Ok(max)
+}
+
+#[cfg(test)]
+mod serve_tests {
+    use super::*;
+
+    #[test]
+    fn inject_livereload_places_script_before_body_close() {
+        let html = b"<!doctype html><body><h1>Hi</h1></body>";
+
+        let injected = String::from_utf8(inject_livereload(html, 7)).unwrap();
+
+        assert!(injected.contains("let g=7"));
+        assert!(injected.contains("/__sideshow/reload"));
+        assert!(injected.contains("</script></body>"));
+    }
+
+    #[test]
+    fn inject_livereload_appends_when_body_close_is_missing() {
+        let html = b"<!doctype html><h1>Hi</h1>";
+
+        let injected = String::from_utf8(inject_livereload(html, 1)).unwrap();
+
+        assert!(injected.starts_with("<!doctype html><h1>Hi</h1>"));
+        assert!(injected.ends_with("</script>"));
+    }
+
+    #[test]
+    fn inject_livereload_leaves_non_utf8_unchanged() {
+        let body = b"\xff\xfe";
+
+        assert_eq!(inject_livereload(body, 1), body);
+    }
 }
 
 #[cfg(test)]
