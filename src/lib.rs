@@ -1,6 +1,7 @@
 use anyhow::{Context, bail};
 use base64::Engine;
 use comrak::{Options, Plugins, markdown_to_html_with_plugins};
+use lol_html::{RewriteStrSettings, element};
 use regex::{Captures, Regex};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -365,11 +366,19 @@ pub fn validate_fragment(path: &Path, html: &str) -> anyhow::Result<()> {
 }
 
 fn forbidden_tags(html: &str) -> anyhow::Result<Vec<String>> {
-    let re = Regex::new(r"(?i)<\s*/?\s*(html|head|script)\b")?;
-    Ok(re
-        .captures_iter(html)
-        .map(|c| c[1].to_ascii_lowercase())
-        .collect())
+    let mut tags = Vec::new();
+    let result = lol_html::rewrite_str(
+        html,
+        RewriteStrSettings {
+            element_content_handlers: vec![element!("html, head, script", |el| {
+                tags.push(el.tag_name().to_ascii_lowercase());
+                Ok(())
+            })],
+            ..RewriteStrSettings::default()
+        },
+    );
+    result.map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    Ok(tags)
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -388,13 +397,36 @@ pub enum FindingSeverity {
 }
 
 fn asset_refs(input: &str) -> anyhow::Result<Vec<String>> {
-    let attr = Regex::new(r#"\b(?:src|href)=["'](?P<path>assets/[^"']+)["']"#)?;
     let css = Regex::new(r#"url\(["']?(?P<path>assets/[^)'\"]+)["']?\)"#)?;
-    Ok(attr
-        .captures_iter(input)
-        .chain(css.captures_iter(input))
-        .map(|c| c["path"].to_string())
-        .collect())
+    let mut refs = Vec::new();
+    lol_html::rewrite_str(
+        input,
+        RewriteStrSettings {
+            element_content_handlers: vec![element!("*[src], *[href], *[srcset]", |el| {
+                for name in ["src", "href"] {
+                    if let Some(value) = el.get_attribute(name)
+                        && value.starts_with("assets/")
+                    {
+                        refs.push(value);
+                    }
+                }
+                if let Some(value) = el.get_attribute("srcset") {
+                    refs.extend(srcset_urls(&value).filter(|url| url.starts_with("assets/")));
+                }
+                Ok(())
+            })],
+            ..RewriteStrSettings::default()
+        },
+    )
+    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    refs.extend(css.captures_iter(input).map(|c| c["path"].to_string()));
+    Ok(refs)
+}
+
+fn srcset_urls(input: &str) -> impl Iterator<Item = String> + '_ {
+    input
+        .split(',')
+        .filter_map(|candidate| candidate.split_whitespace().next().map(str::to_string))
 }
 
 pub fn check_deck(dir: &Path) -> Vec<CheckFinding> {
@@ -609,9 +641,6 @@ pub fn rewrite_asset_refs(
     input: &str,
     images: ImagesConfig,
 ) -> anyhow::Result<String> {
-    // V1 intentionally handles common quoted src/href attributes and CSS url(assets/...).
-    // It is not a full CSS parser; future check/build passes should share an HTML/CSS AST.
-    let attr = Regex::new(r#"(?P<name>\b(?:src|href)=)(?P<q>["'])(?P<path>assets/[^"']+)["']"#)?;
     let css = Regex::new(r#"url\(["']?(?P<path>assets/[^)'\"]+)["']?\)"#)?;
     let replace_path = |rel: &str| -> anyhow::Result<String> {
         let mut bytes = fs::read(deck_dir.join(rel))
@@ -638,17 +667,8 @@ pub fn rewrite_asset_refs(
             base64::engine::general_purpose::STANDARD.encode(bytes)
         ))
     };
+    let out = rewrite_html_asset_attrs(input, &replace_path)?;
     let mut err = None;
-    let out = attr.replace_all(input, |c: &Captures| match replace_path(&c["path"]) {
-        Ok(uri) => format!("{}{}{}{}", &c["name"], &c["q"], uri, &c["q"]),
-        Err(e) => {
-            err = Some(e);
-            c[0].to_string()
-        }
-    });
-    if let Some(e) = err {
-        return Err(e);
-    }
     let out = css.replace_all(&out, |c: &Captures| match replace_path(&c["path"]) {
         Ok(uri) => format!("url({uri})"),
         Err(e) => {
@@ -660,6 +680,65 @@ pub fn rewrite_asset_refs(
         return Err(e);
     }
     Ok(out.into_owned())
+}
+
+fn rewrite_html_asset_attrs<F>(input: &str, replace_path: &F) -> anyhow::Result<String>
+where
+    F: Fn(&str) -> anyhow::Result<String>,
+{
+    let mut err = None;
+    let out = lol_html::rewrite_str(
+        input,
+        RewriteStrSettings {
+            element_content_handlers: vec![element!("*[src], *[href], *[srcset]", |el| {
+                for name in ["src", "href"] {
+                    if let Some(value) = el.get_attribute(name)
+                        && value.starts_with("assets/")
+                    {
+                        match replace_path(&value) {
+                            Ok(uri) => el.set_attribute(name, &uri)?,
+                            Err(e) => err = Some(e),
+                        }
+                    }
+                }
+                if let Some(value) = el.get_attribute("srcset") {
+                    let rewritten = rewrite_srcset(&value, replace_path, &mut err);
+                    el.set_attribute("srcset", &rewritten)?;
+                }
+                Ok(())
+            })],
+            ..RewriteStrSettings::default()
+        },
+    )
+    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    if let Some(e) = err { Err(e) } else { Ok(out) }
+}
+
+fn rewrite_srcset<F>(input: &str, replace_path: &F, err: &mut Option<anyhow::Error>) -> String
+where
+    F: Fn(&str) -> anyhow::Result<String>,
+{
+    input
+        .split(',')
+        .map(|candidate| {
+            let leading = candidate.len() - candidate.trim_start().len();
+            let trimmed = candidate.trim_start();
+            let url_len = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
+            let (url, rest) = trimmed.split_at(url_len);
+            if url.starts_with("assets/") {
+                match replace_path(url) {
+                    Ok(uri) => format!("{}{}{}", &candidate[..leading], uri, rest),
+                    Err(e) => {
+                        *err = Some(e);
+                        candidate.to_string()
+                    }
+                }
+            } else {
+                candidate.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 pub fn build_deck(dir: &Path) -> anyhow::Result<PathBuf> {
@@ -1207,7 +1286,58 @@ mod tests {
         )
         .unwrap();
         assert!(out.contains("src=\"data:video/webm;base64,d2VibQ==\""));
-        assert!(out.contains("src='data:video/mp4;base64,bXA0'"));
+        assert!(out.contains("src=\"data:video/mp4;base64,bXA0\""));
+    }
+
+    #[test]
+    fn asset_refs_parse_html_attrs_with_parser() {
+        let refs = asset_refs(
+            "<IMG SRC=assets/a.png><a HrEf='assets/b.svg'></a><source SrcSet=\"assets/s.png 1x, data:image/png;base64,AA 2x, assets/l.png 800w\"><div style='background:url(assets/bg.png)'>",
+        )
+        .unwrap();
+
+        assert_eq!(
+            refs,
+            vec![
+                "assets/a.png",
+                "assets/b.svg",
+                "assets/s.png",
+                "assets/l.png",
+                "assets/bg.png"
+            ]
+        );
+    }
+
+    #[test]
+    fn rewrites_unquoted_single_quoted_mixed_case_and_srcset_assets() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir_all(t.path().join("assets")).unwrap();
+        for name in ["a.txt", "b.txt", "s.txt", "l.txt"] {
+            fs::write(t.path().join("assets").join(name), name).unwrap();
+        }
+
+        let out = rewrite_asset_refs(
+            t.path(),
+            "<IMG SRC=assets/a.txt><a HrEf='assets/b.txt'></a><source SrcSet=\"assets/s.txt 1x, data:image/png;base64,AA 2x, assets/l.txt 800w\">",
+            ImagesConfig::default(),
+        )
+        .unwrap();
+
+        assert!(!out.contains("assets/a.txt"));
+        assert!(!out.contains("assets/b.txt"));
+        assert!(!out.contains("assets/s.txt"));
+        assert!(!out.contains("assets/l.txt"));
+        assert!(out.contains("data:image/png;base64,AA 2x"));
+        assert_eq!(
+            out.matches("data:application/octet-stream;base64,").count(),
+            4
+        );
+    }
+
+    #[test]
+    fn data_urls_are_ignored_by_asset_collection_and_rewrite() {
+        let input = "<img src='data:image/png;base64,AA'><source srcset='data:image/png;base64,AA 1x, assets/a.png 2x'>";
+        assert_eq!(asset_refs(input).unwrap(), vec!["assets/a.png"]);
     }
 
     #[test]
@@ -1393,7 +1523,7 @@ mod tests {
             .split("data:image/gif;base64,")
             .nth(1)
             .unwrap()
-            .split('\'')
+            .split('"')
             .next()
             .unwrap();
         let inlined = base64::engine::general_purpose::STANDARD

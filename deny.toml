@@ -3,11 +3,16 @@ allow = [
   "Apache-2.0",
   "BSD-2-Clause",
   "BSD-3-Clause",
+  "CC0-1.0",
   "CDLA-Permissive-2.0",
   "ISC",
   "MIT",
+  # MPL-2.0 is file-level weak copyleft; fine for unmodified deps
+  # (cssparser/dtoa-short via lol_html).
+  "MPL-2.0",
   "Unicode-3.0",
   "Unlicense",
+  "Zlib",
 ]
 confidence-threshold = 0.8
 
