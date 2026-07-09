@@ -5,10 +5,11 @@ use lol_html::{RewriteStrSettings, element, html_content::ContentType};
 use regex::{Captures, Regex};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     process::Command,
+    sync::LazyLock,
 };
 
 mod highlight;
@@ -20,6 +21,17 @@ const SIGNAL_CSS: &str = include_str!("themes/signal.css");
 const LEDGER_CSS: &str = include_str!("themes/ledger.css");
 const TERMINAL_CSS: &str = include_str!("themes/terminal.css");
 const POSTER_CSS: &str = include_str!("themes/poster.css");
+static CSS_URL_ASSET_RE: LazyLock<Regex> = LazyLock::new(|| {
+    // Accepted grammar is intentionally narrow: case-insensitive CSS url(...)
+    // with an assets/... path that is either unquoted with no CSS whitespace, or
+    // quoted with any non-quote characters. Query/fragment suffixes are stripped
+    // by asset_ref_without_suffix for filesystem resolution.
+    Regex::new(r#"(?i)url\(\s*(?:\"(?P<dq>assets/[^\"]+)\"|'(?P<sq>assets/[^']+)'|(?P<bare>assets/[^)'\"\s]+))\s*\)"#).unwrap()
+});
+static CSS_COMMENT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?s)/\*.*?\*/"#).unwrap());
+static LOCAL_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"url\(\s*['\"]?\s*#([A-Za-z_][A-Za-z0-9_.:-]*)\s*['\"]?\s*\)"#).unwrap()
+});
 
 pub fn find_tool(
     binary: &str,
@@ -398,7 +410,6 @@ pub enum FindingSeverity {
 }
 
 fn asset_refs(input: &str) -> anyhow::Result<Vec<String>> {
-    let css = Regex::new(r#"url\(["']?(?P<path>assets/[^)'\"]+)["']?\)"#)?;
     let mut refs = Vec::new();
     lol_html::rewrite_str(
         input,
@@ -406,13 +417,15 @@ fn asset_refs(input: &str) -> anyhow::Result<Vec<String>> {
             element_content_handlers: vec![element!("*[src], *[href], *[srcset]", |el| {
                 for name in ["src", "href"] {
                     if let Some(value) = el.get_attribute(name)
-                        && value.starts_with("assets/")
+                        && let Some(value) = asset_ref_without_suffix(&value)
                     {
                         refs.push(value);
                     }
                 }
                 if let Some(value) = el.get_attribute("srcset") {
-                    refs.extend(srcset_urls(&value).filter(|url| url.starts_with("assets/")));
+                    refs.extend(
+                        srcset_urls(&value).filter_map(|url| asset_ref_without_suffix(&url)),
+                    );
                 }
                 Ok(())
             })],
@@ -420,41 +433,140 @@ fn asset_refs(input: &str) -> anyhow::Result<Vec<String>> {
         },
     )
     .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    refs.extend(css.captures_iter(input).map(|c| c["path"].to_string()));
+    refs.extend(
+        CSS_URL_ASSET_RE
+            .captures_iter(input)
+            .filter_map(|c| css_asset_capture_path(&c).and_then(asset_ref_without_suffix)),
+    );
     Ok(refs)
 }
 
+fn css_asset_capture_path<'a>(captures: &'a Captures<'a>) -> Option<&'a str> {
+    captures
+        .name("dq")
+        .or_else(|| captures.name("sq"))
+        .or_else(|| captures.name("bare"))
+        .map(|m| m.as_str())
+}
+
+fn asset_ref_without_suffix(value: &str) -> Option<String> {
+    if !value.starts_with("assets/") {
+        return None;
+    }
+    let end = value.find(['?', '#']).unwrap_or(value.len());
+    Some(normalize_asset_ref(&value[..end]).unwrap_or_else(|_| value[..end].to_string()))
+}
+
+fn normalize_asset_ref(value: &str) -> anyhow::Result<String> {
+    if value.starts_with('/') || value.contains(':') || !value.starts_with("assets/") {
+        bail!("asset reference must be relative and start with assets/: {value}");
+    }
+    let mut parts = Vec::new();
+    for part in value.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => bail!("asset reference may not contain parent traversal: {value}"),
+            p => parts.push(p),
+        }
+    }
+    if parts.first() != Some(&"assets") || parts.len() < 2 {
+        bail!("asset reference must name a file under assets/: {value}");
+    }
+    Ok(parts.join("/"))
+}
+
+fn validate_asset_path(deck_dir: &Path, rel: &str) -> anyhow::Result<PathBuf> {
+    let rel = normalize_asset_ref(rel)?;
+    let assets = fs::canonicalize(deck_dir.join("assets"))?;
+    let path = deck_dir.join(&rel);
+    let canon =
+        fs::canonicalize(&path).with_context(|| format!("missing asset reference: {rel}"))?;
+    if !canon.starts_with(&assets) {
+        bail!("asset reference escapes assets directory: {rel}");
+    }
+    Ok(canon)
+}
+
 fn srcset_urls(input: &str) -> impl Iterator<Item = String> + '_ {
-    input
-        .split(',')
+    split_srcset(input)
+        .into_iter()
         .filter_map(|candidate| candidate.split_whitespace().next().map(str::to_string))
+}
+
+fn split_srcset(input: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut in_data = false;
+    for (i, ch) in input.char_indices() {
+        if input[i..].starts_with("data:") {
+            in_data = true;
+        }
+        if in_data && ch.is_whitespace() {
+            in_data = false;
+        }
+        if ch == ',' && !in_data {
+            out.push(&input[start..i]);
+            start = i + 1;
+        }
+    }
+    out.push(&input[start..]);
+    out
 }
 
 fn color_literals(input: &str) -> anyhow::Result<Vec<String>> {
     let color = Regex::new(
         r#"(?ix)
-        \#(?:[0-9a-f]{8}|[0-9a-f]{6}|[0-9a-f]{3})\b
-        |\b(?:rgb|rgba|hsl|hsla|oklch)\([^)]*\)
+        \#(?:[0-9a-f]{8}|[0-9a-f]{6}|[0-9a-f]{4}|[0-9a-f]{3})\b
+        |\b(?:rgb|rgba|hsl|hsla|hwb|lab|lch|oklab|oklch|color|color-mix)\([^)]*\)
         "#,
     )?;
-    let style_attr = Regex::new(r#"(?is)\sstyle\s*=\s*(?:"([^"]*)"|'([^']*)')"#)?;
-    let class_attr = Regex::new(r#"(?is)\sclass\s*=\s*(?:"([^"]*)"|'([^']*)')"#)?;
     let style_block = Regex::new(r#"(?is)<style\b[^>]*>(.*?)</style>"#)?;
     let mut literals = BTreeSet::new();
-    for captures in style_attr
-        .captures_iter(input)
-        .chain(class_attr.captures_iter(input))
-        .chain(style_block.captures_iter(input))
-    {
-        if let Some(scope) = captures.get(1).or_else(|| captures.get(2)) {
-            literals.extend(
-                color
-                    .find_iter(scope.as_str())
-                    .map(|m| m.as_str().to_string()),
-            );
+    for captures in style_block.captures_iter(input) {
+        if let Some(scope) = captures.get(1) {
+            collect_colors_from_scope(&color, &strip_css_comments(scope.as_str()), &mut literals);
         }
     }
+    lol_html::rewrite_str(
+        input,
+        RewriteStrSettings {
+            element_content_handlers: vec![element!("*", |el| {
+                for attr in el.attributes() {
+                    let name = attr.name().to_ascii_lowercase();
+                    if name == "style"
+                        || name == "class"
+                        || matches!(
+                            name.as_str(),
+                            "fill"
+                                | "stroke"
+                                | "stop-color"
+                                | "flood-color"
+                                | "lighting-color"
+                                | "color"
+                        )
+                    {
+                        collect_colors_from_scope(
+                            &color,
+                            &strip_css_comments(&attr.value()),
+                            &mut literals,
+                        );
+                    }
+                }
+                Ok(())
+            })],
+            ..RewriteStrSettings::default()
+        },
+    )
+    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     Ok(literals.into_iter().collect())
+}
+
+fn collect_colors_from_scope(color: &Regex, scope: &str, literals: &mut BTreeSet<String>) {
+    literals.extend(color.find_iter(scope).map(|m| m.as_str().to_string()));
+}
+
+fn strip_css_comments(input: &str) -> String {
+    CSS_COMMENT_RE.replace_all(input, "").into_owned()
 }
 
 fn orphaned_assets(dir: &Path, refs: &BTreeSet<String>) -> Vec<String> {
@@ -469,10 +581,6 @@ fn orphaned_assets(dir: &Path, refs: &BTreeSet<String>) -> Vec<String> {
                 .and_then(|n| n.to_str())
                 .is_some_and(|n| n.starts_with('.'))
             {
-                continue;
-            }
-            // .tape files are vhs build inputs, not slide assets; never orphans.
-            if path.extension().and_then(|s| s.to_str()) == Some("tape") {
                 continue;
             }
             if path.is_dir() {
@@ -590,15 +698,35 @@ pub fn check_deck(dir: &Path) -> Vec<CheckFinding> {
                 continue;
             }
         };
-        for tag in unique_forbidden_tags(&raw) {
-            findings.push(CheckFinding {
+        match forbidden_tags(&raw) {
+            Ok(mut tags) => {
+                tags.sort();
+                tags.dedup();
+                for tag in tags {
+                    findings.push(CheckFinding {
+                        path: rel.clone(),
+                        severity: FindingSeverity::Error,
+                        kind: "fragment_contract".into(),
+                        message: format!("forbidden <{tag}> tag"),
+                    });
+                }
+            }
+            Err(e) => findings.push(CheckFinding {
                 path: rel.clone(),
                 severity: FindingSeverity::Error,
-                kind: "fragment_contract".into(),
-                message: format!("forbidden <{tag}> tag"),
-            });
+                kind: "fragment_parser".into(),
+                message: format!("could not parse slide fragment: {e}"),
+            }),
         }
-        if let Ok(literals) = color_literals(&raw) {
+        let rendered = if p.extension().and_then(|s| s.to_str()) == Some("md") {
+            let mut plugins = Plugins::default();
+            let adapter = highlight::Highlighter;
+            plugins.render.codefence_syntax_highlighter = Some(&adapter);
+            markdown_to_html_with_plugins(&raw, &Options::default(), &plugins)
+        } else {
+            raw.clone()
+        };
+        if let Ok(literals) = color_literals(&rendered) {
             for literal in literals {
                 findings.push(CheckFinding {
                     path: rel.clone(),
@@ -608,32 +736,42 @@ pub fn check_deck(dir: &Path) -> Vec<CheckFinding> {
                 });
             }
         }
-        if let Ok(refs) = asset_refs(&raw) {
-            for r in refs {
-                all_refs.insert(r.clone());
-                let asset = dir.join(&r);
-                if !asset.is_file() {
-                    findings.push(CheckFinding {
-                        path: rel.clone(),
-                        severity: FindingSeverity::Error,
-                        kind: "missing_asset".into(),
-                        message: format!("asset reference not found: {r}"),
-                    });
-                } else if let Ok(size) = fs::metadata(&asset).map(|m| m.len()) {
-                    let projected = projected_data_uri_size(size, mime_for(&r));
-                    if projected > 500 * 1024 {
-                        findings.push(CheckFinding {
-                            path: r.clone(),
-                            severity: FindingSeverity::Warning,
-                            kind: "asset_size_budget".into(),
-                            message: format!(
-                                "projected inlined asset size is {} bytes (> 500KB)",
-                                projected
-                            ),
-                        });
+        match asset_refs(&rendered) {
+            Ok(refs) => {
+                for r in refs {
+                    all_refs.insert(r.clone());
+                    match validate_asset_path(dir, &r) {
+                        Err(e) => findings.push(CheckFinding {
+                            path: rel.clone(),
+                            severity: FindingSeverity::Error,
+                            kind: "missing_asset".into(),
+                            message: format!("invalid asset reference {r}: {e}"),
+                        }),
+                        Ok(asset) => {
+                            if let Ok(size) = fs::metadata(asset).map(|m| m.len()) {
+                                let projected = projected_data_uri_size(size, mime_for(&r));
+                                if projected > 500 * 1024 {
+                                    findings.push(CheckFinding {
+                                        path: r.clone(),
+                                        severity: FindingSeverity::Warning,
+                                        kind: "asset_size_budget".into(),
+                                        message: format!(
+                                            "projected inlined asset size is {} bytes (> 500KB)",
+                                            projected
+                                        ),
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
             }
+            Err(e) => findings.push(CheckFinding {
+                path: rel.clone(),
+                severity: FindingSeverity::Error,
+                kind: "asset_parser".into(),
+                message: format!("could not parse asset references: {e}"),
+            }),
         }
     }
     for orphan in orphaned_assets(dir, &all_refs) {
@@ -647,8 +785,9 @@ pub fn check_deck(dir: &Path) -> Vec<CheckFinding> {
     let total: u64 = all_refs
         .iter()
         .filter_map(|r| {
-            fs::metadata(dir.join(r))
+            validate_asset_path(dir, r)
                 .ok()
+                .and_then(|p| fs::metadata(p).ok())
                 .map(|m| projected_data_uri_size(m.len(), mime_for(r)))
         })
         .sum();
@@ -707,12 +846,6 @@ fn tape_finding(dir: &Path, tape: &Path) -> Option<CheckFinding> {
     })
 }
 
-fn unique_forbidden_tags(html: &str) -> Vec<String> {
-    let mut v = forbidden_tags(html).unwrap_or_default();
-    v.sort();
-    v.dedup();
-    v
-}
 fn projected_data_uri_size(bytes: u64, mime: &str) -> u64 {
     ("data:;base64,".len() + mime.len()) as u64 + bytes.div_ceil(3) * 4
 }
@@ -722,15 +855,30 @@ pub fn rewrite_asset_refs(
     input: &str,
     images: ImagesConfig,
 ) -> anyhow::Result<String> {
-    let css = Regex::new(r#"url\(["']?(?P<path>assets/[^)'\"]+)["']?\)"#)?;
+    let mut state = RewriteState::default();
+    rewrite_asset_refs_with_state(deck_dir, input, images, &mut state)
+}
+
+#[derive(Default)]
+struct RewriteState {
+    svg_instance: usize,
+    authored_ids: BTreeSet<String>,
+}
+
+fn rewrite_asset_refs_with_state(
+    deck_dir: &Path,
+    input: &str,
+    images: ImagesConfig,
+    state: &mut RewriteState,
+) -> anyhow::Result<String> {
     let replace_path = |rel: &str| -> anyhow::Result<String> {
-        let mut bytes = fs::read(deck_dir.join(rel))
-            .with_context(|| format!("missing asset reference: {rel}"))?;
-        let mut mime = mime_for(rel);
-        if !rel.ends_with(".svg") && images.optimize && is_raster(rel) {
+        let normalized = normalize_asset_ref(rel)?;
+        let mut bytes = fs::read(validate_asset_path(deck_dir, &normalized)?)?;
+        let mut mime = mime_for(&normalized);
+        if !normalized.ends_with(".svg") && images.optimize && is_raster(&normalized) {
             if is_animated(&bytes) {
                 eprintln!(
-                    "warning: {rel} is animated; skipping optimization to preserve animation"
+                    "warning: {normalized} is animated; skipping optimization to preserve animation"
                 );
             } else if let Ok(opt) = optimize_bytes(&bytes, images.quality, images.max_dim)
                 && opt.len() < bytes.len()
@@ -744,13 +892,18 @@ pub fn rewrite_asset_refs(
             base64::engine::general_purpose::STANDARD.encode(bytes)
         ))
     };
-    let out = rewrite_html_asset_attrs(deck_dir, input, &replace_path)?;
+    let out = rewrite_html_asset_attrs(deck_dir, input, &replace_path, state)?;
     let mut err = None;
-    let out = css.replace_all(&out, |c: &Captures| match replace_path(&c["path"]) {
-        Ok(uri) => format!("url({uri})"),
-        Err(e) => {
-            err = Some(e);
-            c[0].to_string()
+    let out = CSS_URL_ASSET_RE.replace_all(&out, |c: &Captures| {
+        let path = css_asset_capture_path(c).unwrap_or("");
+        match asset_ref_without_suffix(path)
+            .map_or_else(|| replace_path(path), |p| replace_path(&p))
+        {
+            Ok(uri) => format!("url({uri})"),
+            Err(e) => {
+                err = Some(e);
+                c[0].to_string()
+            }
         }
     });
     if let Some(e) = err {
@@ -763,36 +916,36 @@ fn rewrite_html_asset_attrs<F>(
     deck_dir: &Path,
     input: &str,
     replace_path: &F,
+    state: &mut RewriteState,
 ) -> anyhow::Result<String>
 where
     F: Fn(&str) -> anyhow::Result<String>,
 {
     let mut err = None;
-    let mut svg_instance = 0usize;
     let out = lol_html::rewrite_str(
         input,
         RewriteStrSettings {
             element_content_handlers: vec![element!("*[src], *[href], *[srcset]", |el| {
                 if el.tag_name().eq_ignore_ascii_case("img")
                     && let Some(src) = el.get_attribute("src")
-                    && src.starts_with("assets/")
-                    && src.to_ascii_lowercase().ends_with(".svg")
+                    && asset_ref_without_suffix(&src)
+                        .is_some_and(|s| s.to_ascii_lowercase().ends_with(".svg"))
                 {
-                    svg_instance += 1;
-                    match inline_svg_for_img(deck_dir, &src, svg_instance, el) {
+                    state.svg_instance += 1;
+                    match inline_svg_for_img(deck_dir, &src, state.svg_instance, el, state) {
                         Ok(Some(svg)) => {
                             el.replace(&svg, ContentType::Html);
                             return Ok(());
                         }
                         Ok(None) => {}
-                        Err(_) => {}
+                        Err(e) => eprintln!("warning: SVG {} kept passive: {e}", src),
                     }
                 }
                 for name in ["src", "href"] {
                     if let Some(value) = el.get_attribute(name)
-                        && value.starts_with("assets/")
+                        && let Some(path) = asset_ref_without_suffix(&value)
                     {
-                        match replace_path(&value) {
+                        match replace_path(&path) {
                             Ok(uri) => el.set_attribute(name, &uri)?,
                             Err(e) => err = Some(e),
                         }
@@ -816,129 +969,289 @@ fn inline_svg_for_img(
     rel: &str,
     instance: usize,
     img: &mut lol_html::html_content::Element,
+    state: &RewriteState,
 ) -> anyhow::Result<Option<String>> {
-    let raw = fs::read_to_string(deck_dir.join(rel))?;
-    if !raw.to_ascii_lowercase().contains("<svg") || raw.contains("<>") {
-        return Ok(None);
-    }
-    let prefix = format!("sideshow-svg-{instance}-");
+    let rel = asset_ref_without_suffix(rel).context("invalid svg asset reference")?;
+    let raw = fs::read_to_string(validate_asset_path(deck_dir, &rel)?)?;
+    validate_static_svg(&raw)?;
+    let prefix = svg_prefix(
+        &raw,
+        instance,
+        &img.get_attribute("id"),
+        &state.authored_ids,
+    )?;
     let mut svg = sanitize_svg_markup(&raw, &prefix)?;
     svg = carry_img_attrs_to_svg(svg, img)?;
     Ok(Some(svg))
 }
 
+fn validate_static_svg(input: &str) -> anyhow::Result<()> {
+    let doc = roxmltree::Document::parse(input).context("SVG must be well-formed XML")?;
+    let root = doc.root_element();
+    if root.tag_name().name() != "svg"
+        || root
+            .tag_name()
+            .namespace()
+            .unwrap_or("http://www.w3.org/2000/svg")
+            != "http://www.w3.org/2000/svg"
+    {
+        bail!("SVG must have one <svg> root");
+    }
+    for n in doc.descendants().filter(|n| n.is_element()) {
+        let name = n.tag_name().name().to_ascii_lowercase();
+        let ns = n.tag_name().namespace().unwrap_or("");
+        if !ns.is_empty()
+            && ns != "http://www.w3.org/2000/svg"
+            && ns != "http://www.w3.org/1999/xlink"
+        {
+            bail!("SVG contains foreign namespace");
+        }
+        if matches!(
+            name.as_str(),
+            "script"
+                | "foreignobject"
+                | "iframe"
+                | "object"
+                | "embed"
+                | "audio"
+                | "video"
+                | "canvas"
+                | "set"
+                | "discard"
+        ) {
+            bail!("SVG contains active or embedded document element <{name}>");
+        }
+        if name.starts_with("animate") {
+            bail!("SVG contains animation/mutation element <{name}>");
+        }
+        if name == "style" {
+            bail!("SVG contains <style>; keeping passive image instead of sanitizing SVG CSS");
+        }
+        for a in n.attributes() {
+            let an = a.name().to_ascii_lowercase();
+            let v = a.value().trim();
+            let vl = v.to_ascii_lowercase();
+            if an == "style" {
+                bail!(
+                    "SVG contains source style attribute; keeping passive image instead of sanitizing SVG CSS"
+                );
+            }
+            if an.starts_with("on") {
+                bail!("SVG contains event handler attribute {an}");
+            }
+            if matches!(
+                an.as_str(),
+                "href" | "xlink:href" | "src" | "action" | "formaction"
+            ) && !(v.is_empty() || v.starts_with('#'))
+            {
+                bail!("SVG contains external resource/navigation reference in {an}");
+            }
+            if vl.contains("url(") && !LOCAL_URL_RE.is_match(v) {
+                bail!("SVG contains unsupported external url() reference");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn svg_prefix(
+    input: &str,
+    instance: usize,
+    img_id: &Option<String>,
+    authored_ids: &BTreeSet<String>,
+) -> anyhow::Result<String> {
+    let doc = roxmltree::Document::parse(input)?;
+    let mut existing = doc
+        .descendants()
+        .filter_map(|n| n.attribute("id"))
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+    existing.extend(authored_ids.iter().cloned());
+    if let Some(id) = img_id {
+        existing.insert(id.clone());
+    }
+    for salt in 0..1000 {
+        let prefix = if salt == 0 {
+            format!("sideshow-svg-{instance}-")
+        } else {
+            format!("sideshow-svg-{instance}-{salt}-")
+        };
+        if existing.iter().all(|id| !id.starts_with(&prefix)) {
+            return Ok(prefix);
+        }
+    }
+    bail!("could not allocate collision-free SVG id prefix")
+}
+
 fn sanitize_svg_markup(input: &str, prefix: &str) -> anyhow::Result<String> {
-    let id_re = Regex::new(r#"\bid\s*=\s*['\"]([^'\"]+)['\"]"#)?;
-    let ids = id_re
-        .captures_iter(input)
-        .map(|c| c[1].to_string())
-        .collect::<Vec<_>>();
-    let mut out = lol_html::rewrite_str(
+    let doc = roxmltree::Document::parse(input).context("SVG must be well-formed XML")?;
+    let ids = doc
+        .descendants()
+        .filter_map(|n| n.attribute("id"))
+        .map(|id| (id.to_string(), format!("{prefix}{id}")))
+        .collect::<BTreeMap<_, _>>();
+    lol_html::rewrite_str(
         input,
         RewriteStrSettings {
             element_content_handlers: vec![element!("*", |el| {
-                if el.tag_name().eq_ignore_ascii_case("script") {
-                    el.remove();
-                    return Ok(());
-                }
-                let remove_attrs = el
+                let attrs = el
                     .attributes()
                     .iter()
-                    .filter_map(|attr| {
-                        let name = attr.name();
-                        let value = attr.value();
-                        let lower = name.to_ascii_lowercase();
-                        (lower.starts_with("on")
-                            || ((lower == "href" || lower == "xlink:href")
-                                && !value.starts_with('#')))
-                        .then_some(name)
-                    })
+                    .map(|a| (a.name(), a.value()))
                     .collect::<Vec<_>>();
-                for name in remove_attrs {
-                    el.remove_attribute(&name);
+                for (name, value) in attrs {
+                    let lower = name.to_ascii_lowercase();
+                    let rewritten = if lower == "id" {
+                        ids.get(&value).cloned()
+                    } else if matches!(lower.as_str(), "href" | "xlink:href") {
+                        rewrite_fragment_ref(&value, &ids)
+                    } else if matches!(
+                        lower.as_str(),
+                        "aria-labelledby" | "aria-describedby" | "aria-controls" | "aria-owns"
+                    ) {
+                        Some(rewrite_idref_list(&value, &ids))
+                    } else if lower == "style" || value.contains("url(") {
+                        rewrite_local_url_refs(&value, &ids)
+                    } else {
+                        None
+                    };
+                    if let Some(new_value) = rewritten {
+                        el.set_attribute(&name, &new_value)?;
+                    }
                 }
                 Ok(())
             })],
             ..RewriteStrSettings::default()
         },
     )
-    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    for id in ids {
-        let new = format!("{prefix}{id}");
-        out = out.replace(&format!("id=\"{id}\""), &format!("id=\"{new}\""));
-        out = out.replace(&format!("id='{id}'"), &format!("id=\"{new}\""));
-        out = out.replace(&format!("url(#{id})"), &format!("url(#{new})"));
-        out = out.replace(&format!("href=\"#{id}\""), &format!("href=\"#{new}\""));
-        out = out.replace(&format!("href='#{id}'"), &format!("href=\"#{new}\""));
-        out = out.replace(
-            &format!("xlink:href=\"#{id}\""),
-            &format!("xlink:href=\"#{new}\""),
-        );
-        out = out.replace(
-            &format!("xlink:href='#{id}'"),
-            &format!("xlink:href=\"#{new}\""),
-        );
-    }
-    Ok(out)
+    .map_err(|e| anyhow::anyhow!(e.to_string()))
+}
+
+fn rewrite_fragment_ref(value: &str, ids: &BTreeMap<String, String>) -> Option<String> {
+    value
+        .strip_prefix('#')
+        .and_then(|id| ids.get(id))
+        .map(|new| format!("#{new}"))
+}
+
+fn rewrite_idref_list(value: &str, ids: &BTreeMap<String, String>) -> String {
+    value
+        .split_whitespace()
+        .map(|id| ids.get(id).map(String::as_str).unwrap_or(id))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn rewrite_local_url_refs(value: &str, ids: &BTreeMap<String, String>) -> Option<String> {
+    let mut changed = false;
+    let out = LOCAL_URL_RE.replace_all(value, |c: &Captures| {
+        if let Some(new) = ids.get(&c[1]) {
+            changed = true;
+            format!("url(#{new})")
+        } else {
+            c[0].to_string()
+        }
+    });
+    changed.then(|| out.into_owned())
 }
 
 fn carry_img_attrs_to_svg(
     svg: String,
     img: &mut lol_html::html_content::Element,
 ) -> anyhow::Result<String> {
-    let mut attrs = Vec::new();
-    for name in ["class", "width", "height"] {
-        if let Some(value) = img.get_attribute(name) {
-            attrs.push((name.to_string(), value));
+    let doc = roxmltree::Document::parse(&svg).context("SVG must be well-formed XML")?;
+    let root = doc.root_element();
+    let root_attrs = root
+        .attributes()
+        .map(|a| (a.name().to_ascii_lowercase(), a.value().to_string()))
+        .collect::<BTreeMap<_, _>>();
+    let mut attrs = BTreeMap::<String, String>::new();
+    for attr in img.attributes() {
+        let name = attr.name();
+        let lower = name.to_ascii_lowercase();
+        if matches!(lower.as_str(), "src" | "alt") {
+            continue;
+        }
+        if matches!(
+            lower.as_str(),
+            "class" | "id" | "style" | "width" | "height"
+        ) || lower.starts_with("data-")
+            || lower.starts_with("aria-")
+        {
+            attrs.insert(lower, attr.value());
         }
     }
-    if let Some(alt) = img.get_attribute("alt")
-        && !alt.is_empty()
+    if let (Some(svg_id), Some(img_id)) = (root_attrs.get("id"), attrs.get("id"))
+        && svg_id != img_id
     {
-        attrs.push(("role".into(), "img".into()));
-        attrs.push(("aria-label".into(), alt));
+        bail!("SVG root id conflicts with img id; keeping passive image");
     }
-    let Some(pos) = svg.find("<svg") else {
-        return Ok(svg);
-    };
-    let Some(end) = svg[pos..].find('>') else {
-        return Ok(svg);
-    };
-    let insert_at = pos + end;
-    let mut attr_text = String::new();
-    for (name, value) in attrs {
-        attr_text.push(' ');
-        attr_text.push_str(&name);
-        attr_text.push_str("=\"");
-        attr_text.push_str(&html_escape_attr(&value));
-        attr_text.push('"');
+    if let Some(alt) = img.get_attribute("alt") {
+        if alt.is_empty() {
+            attrs.insert("aria-hidden".into(), "true".into());
+            attrs.insert("focusable".into(), "false".into());
+        } else {
+            attrs.insert("role".into(), "img".into());
+            attrs.insert("aria-label".into(), alt);
+        }
     }
-    let mut out = svg;
-    out.insert_str(insert_at, &attr_text);
-    Ok(out)
-}
-
-fn html_escape_attr(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
+    let mut done = false;
+    lol_html::rewrite_str(
+        &svg,
+        RewriteStrSettings {
+            element_content_handlers: vec![element!("svg", |el| {
+                if done {
+                    return Ok(());
+                }
+                done = true;
+                for (name, value) in &attrs {
+                    let value = if name == "class" {
+                        match el.get_attribute("class") {
+                            Some(existing) if !existing.is_empty() => format!("{existing} {value}"),
+                            _ => value.clone(),
+                        }
+                    } else if name == "style" {
+                        match el.get_attribute("style") {
+                            Some(existing) if !existing.trim().is_empty() => {
+                                format!("{}; {}", existing.trim_end_matches(';'), value)
+                            }
+                            _ => value.clone(),
+                        }
+                    } else {
+                        value.clone()
+                    };
+                    if let Some(existing) = el
+                        .attributes()
+                        .iter()
+                        .find(|a| a.name().eq_ignore_ascii_case(name))
+                        .map(|a| a.name())
+                    {
+                        el.set_attribute(&existing, &value)?;
+                    } else {
+                        el.set_attribute(name, &value)?;
+                    }
+                }
+                Ok(())
+            })],
+            ..RewriteStrSettings::default()
+        },
+    )
+    .map_err(|e| anyhow::anyhow!(e.to_string()))
 }
 
 fn rewrite_srcset<F>(input: &str, replace_path: &F, err: &mut Option<anyhow::Error>) -> String
 where
     F: Fn(&str) -> anyhow::Result<String>,
 {
-    input
-        .split(',')
+    split_srcset(input)
+        .into_iter()
         .map(|candidate| {
             let leading = candidate.len() - candidate.trim_start().len();
             let trimmed = candidate.trim_start();
             let url_len = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
             let (url, rest) = trimmed.split_at(url_len);
-            if url.starts_with("assets/") {
-                match replace_path(url) {
+            if let Some(path) = asset_ref_without_suffix(url) {
+                match replace_path(&path) {
                     Ok(uri) => format!("{}{}{}", &candidate[..leading], uri, rest),
                     Err(e) => {
                         *err = Some(e);
@@ -953,28 +1266,54 @@ where
         .join(",")
 }
 
+fn html_ids(input: &str) -> anyhow::Result<BTreeSet<String>> {
+    let mut ids = BTreeSet::new();
+    lol_html::rewrite_str(
+        input,
+        RewriteStrSettings {
+            element_content_handlers: vec![element!("*[id]", |el| {
+                if let Some(id) = el.get_attribute("id") {
+                    ids.insert(id);
+                }
+                Ok(())
+            })],
+            ..RewriteStrSettings::default()
+        },
+    )
+    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    Ok(ids)
+}
+
 pub fn build_deck(dir: &Path) -> anyhow::Result<PathBuf> {
     let deck = parse_deck_toml(&fs::read_to_string(dir.join("deck.toml"))?)?;
     let mut sections = String::new();
-    for p in slide_order(dir, &deck)? {
-        let rel = p.strip_prefix(dir).unwrap_or(&p).to_string_lossy();
+    let mut rewrite_state = RewriteState::default();
+    let slides = slide_order(dir, &deck)?;
+    let mut rendered_slides = Vec::new();
+    for p in &slides {
+        let rel = p.strip_prefix(dir).unwrap_or(p).to_string_lossy();
         let stem = p.file_stem().unwrap().to_string_lossy();
-        let raw = fs::read_to_string(&p)?;
+        let raw = fs::read_to_string(p)?;
         let html = if p.extension().and_then(|s| s.to_str()) == Some("md") {
             let mut plugins = Plugins::default();
             let adapter = highlight::Highlighter;
             plugins.render.codefence_syntax_highlighter = Some(&adapter);
             markdown_to_html_with_plugins(&raw, &Options::default(), &plugins)
         } else {
-            validate_fragment(&p, &raw)?;
+            validate_fragment(p, &raw)?;
             raw
         };
-        let html = rewrite_asset_refs(dir, &html, deck.images)?;
-        let class = if p.extension().and_then(|s| s.to_str()) == Some("md") {
-            "slide slide-md"
-        } else {
-            "slide"
-        };
+        rewrite_state.authored_ids.extend(html_ids(&html)?);
+        rendered_slides.push((
+            rel.to_string(),
+            stem.to_string(),
+            p.extension().and_then(|s| s.to_str()) == Some("md"),
+            html,
+        ));
+    }
+    for (rel, stem, is_md, html) in rendered_slides {
+        let html = rewrite_asset_refs_with_state(dir, &html, deck.images, &mut rewrite_state)?;
+        let class = if is_md { "slide slide-md" } else { "slide" };
         sections.push_str(&format!(
             "<section class=\"{class}\" id=\"s-{stem}\" data-src=\"{rel}\">\n{html}\n</section>\n"
         ));
@@ -983,18 +1322,33 @@ pub fn build_deck(dir: &Path) -> anyhow::Result<PathBuf> {
     let out_dir = dir.join("dist");
     fs::create_dir_all(&out_dir)?;
     let out = out_dir.join(format!("{}.html", slug(&deck.deck.title)));
-    fs::write(
-        &out,
-        format!(
-            "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>{}</title>\n<style>\n{}\n</style>\n</head>\n<body data-runtime=\"{}\">\n<main id=\"stage\" aria-live=\"polite\">\n{}\n</main>\n<script>\n{}\n</script>\n</body>\n</html>\n",
-            escape(&deck.deck.title),
-            css,
-            RUNTIME_MARKER,
-            sections,
-            RUNTIME_JS
-        ),
-    )?;
+    let body = format!(
+        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>{}</title>\n<style>\n{}\n</style>\n</head>\n<body data-runtime=\"{}\">\n<main id=\"stage\" aria-live=\"polite\">\n{}\n</main>\n<script>\n{}\n</script>\n</body>\n</html>\n",
+        escape(&deck.deck.title),
+        css,
+        RUNTIME_MARKER,
+        sections,
+        RUNTIME_JS
+    );
+    atomic_write(&out, body.as_bytes())?;
     Ok(out)
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let tmp = path.with_file_name(format!(
+        ".{}.{}.tmp",
+        path.file_name().and_then(|s| s.to_str()).unwrap_or("out"),
+        std::process::id()
+    ));
+    let result = (|| -> anyhow::Result<()> {
+        fs::write(&tmp, bytes)?;
+        fs::rename(&tmp, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
 }
 
 pub fn deck_dist_path(dir: &Path) -> anyhow::Result<PathBuf> {
@@ -1040,16 +1394,18 @@ fn compile_css(dir: &Path) -> anyhow::Result<String> {
 }
 
 fn strip_leading_css_banner_comments(mut css: &str) -> &str {
-    loop {
-        let trimmed = css.trim_start();
-        let Some(after_open) = trimmed.strip_prefix("/*!") else {
-            return trimmed;
-        };
-        let Some(end) = after_open.find("*/") else {
-            return trimmed;
-        };
+    let trimmed = css.trim_start();
+    let Some(after_open) = trimmed.strip_prefix("/*!") else {
+        return css;
+    };
+    let Some(end) = after_open.find("*/") else {
+        return css;
+    };
+    let banner = &after_open[..end].to_ascii_lowercase();
+    if banner.contains("tailwindcss") {
         css = &after_open[end + 2..];
     }
+    css
 }
 
 fn css_string(value: &str) -> String {
@@ -1394,7 +1750,11 @@ mod tests {
             strip_leading_css_banner_comments(
                 "/*! tailwindcss v4.1.11 | MIT License | https://tailwindcss.com */\n/*! other */.slide{display:block}"
             ),
-            ".slide{display:block}"
+            "\n/*! other */.slide{display:block}"
+        );
+        assert_eq!(
+            strip_leading_css_banner_comments("/*! author license */.slide{}"),
+            "/*! author license */.slide{}"
         );
         assert_eq!(
             strip_leading_css_banner_comments("/* regular comment */.slide{}"),
@@ -1513,6 +1873,30 @@ mod tests {
     }
 
     #[test]
+    fn rewrites_css_url_whitespace_quotes_suffixes_and_srcset_suffixes() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir_all(t.path().join("assets")).unwrap();
+        fs::write(t.path().join("assets/a.png"), "hi").unwrap();
+        fs::write(t.path().join("assets/my image.png"), "hi").unwrap();
+        let out = rewrite_asset_refs(
+            t.path(),
+            "<div style='background:url( assets/a.png )'></div><div style='background:url(\"assets/a.png\" )'></div><div style='background:url(assets/a.png?x=1#f)'></div><div style='background:URL(assets/a.png)'></div><div style='background:url(\"assets/my image.png\")'></div><img srcset='assets/a.png?x=1 1x, assets/a.png#f 2x'>",
+            ImagesConfig { optimize: false, ..Default::default() },
+        ).unwrap();
+        assert!(!out.contains("assets/a.png"), "{out}");
+        assert!(!out.contains("assets/my image.png"), "{out}");
+        assert_eq!(
+            out.matches("data:image/png;base64,aGk=").count(),
+            7,
+            "{out}"
+        );
+        assert_eq!(
+            asset_refs("<div style='background:URL( assets/a.png?x=1#f )'></div><div style='background:url(\"assets/my image.png\")'></div>").unwrap(),
+            vec!["assets/a.png", "assets/my image.png"]
+        );
+    }
+
+    #[test]
     fn inline_svg_img_replaces_with_markup_and_carries_attrs() {
         let t = tempfile::tempdir().unwrap();
         fs::create_dir_all(t.path().join("assets")).unwrap();
@@ -1537,7 +1921,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_svg_sanitizes_scripts_handlers_external_refs_and_ids() {
+    fn unsafe_svg_falls_back_to_passive_data_uri() {
         let t = tempfile::tempdir().unwrap();
         fs::create_dir_all(t.path().join("assets")).unwrap();
         fs::write(
@@ -1551,13 +1935,8 @@ mod tests {
             ImagesConfig::default(),
         )
         .unwrap();
-        assert!(!out.contains("script"), "{out}");
-        assert!(!out.contains("onload"), "{out}");
-        assert!(!out.contains("https://example.com"), "{out}");
-        assert!(!out.contains("http://example.com"), "{out}");
-        assert!(out.contains("id=\"sideshow-svg-1-g\""), "{out}");
-        assert!(out.contains("url(#sideshow-svg-1-g)"), "{out}");
-        assert!(out.contains("href=\"#sideshow-svg-1-g\""), "{out}");
+        assert!(out.contains("data:image/svg+xml;base64,"), "{out}");
+        assert!(!out.contains("<svg"), "{out}");
     }
 
     #[test]
@@ -1579,6 +1958,169 @@ mod tests {
         assert!(out.contains("id=\"sideshow-svg-2-a\""), "{out}");
         assert!(out.contains("href=\"#sideshow-svg-1-a\""), "{out}");
         assert!(out.contains("href=\"#sideshow-svg-2-a\""), "{out}");
+    }
+
+    #[test]
+    fn inline_svg_rewrites_url_quotes_whitespace_and_aria_idrefs() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir_all(t.path().join("assets")).unwrap();
+        fs::write(
+            t.path().join("assets/icon.svg"),
+            r##"<svg xmlns='http://www.w3.org/2000/svg' aria-labelledby='title desc'><title id='title'>T</title><desc id='desc'>D</desc><defs><linearGradient id='g'/><filter id='f'/></defs><rect fill="url('#g')" stroke='url( "#g" )' filter='url( #f )'/></svg>"##,
+        ).unwrap();
+        let out = rewrite_asset_refs(
+            t.path(),
+            "<img src='assets/icon.svg'>",
+            ImagesConfig::default(),
+        )
+        .unwrap();
+        assert!(
+            out.contains("aria-labelledby=\"sideshow-svg-1-title sideshow-svg-1-desc\""),
+            "{out}"
+        );
+        assert!(out.contains("url(#sideshow-svg-1-g)"), "{out}");
+        assert!(out.contains("url(#sideshow-svg-1-f)"), "{out}");
+    }
+
+    #[test]
+    fn inline_svg_rejects_style_id_selectors_and_animation() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir_all(t.path().join("assets")).unwrap();
+        fs::write(t.path().join("assets/style.svg"), "<svg xmlns='http://www.w3.org/2000/svg'><style>#g { fill: red } .x{color:#fff}</style><g id='g'/></svg>").unwrap();
+        fs::write(t.path().join("assets/anim.svg"), "<svg xmlns='http://www.w3.org/2000/svg'><rect><animate attributeName='fill' to='url(#g)'/></rect></svg>").unwrap();
+        let out = rewrite_asset_refs(
+            t.path(),
+            "<img src='assets/style.svg'><img src='assets/anim.svg'>",
+            ImagesConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            out.matches("data:image/svg+xml;base64,").count(),
+            2,
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn inline_svg_rejects_style_url_bypasses_and_compound_id_selectors() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir_all(t.path().join("assets")).unwrap();
+        fs::write(t.path().join("assets/https.svg"), r#"<svg xmlns='http://www.w3.org/2000/svg'><rect style='fill: url( "https://evil.test/x" )'/></svg>"#).unwrap();
+        fs::write(t.path().join("assets/style-url.svg"), "<svg xmlns='http://www.w3.org/2000/svg'><style>.x{fill:url(#gradient)}</style><linearGradient id='gradient'/></svg>").unwrap();
+        fs::write(t.path().join("assets/selector.svg"), "<svg xmlns='http://www.w3.org/2000/svg'><style>g#gradient.x{fill:red}</style><g id='gradient'/></svg>").unwrap();
+        let out = rewrite_asset_refs(t.path(), "<img src='assets/https.svg'><img src='assets/style-url.svg'><img src='assets/selector.svg'>", ImagesConfig::default()).unwrap();
+        assert_eq!(
+            out.matches("data:image/svg+xml;base64,").count(),
+            3,
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn inline_svg_conservative_fallback_for_escaped_css_in_source_styles() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir_all(t.path().join("assets")).unwrap();
+        fs::write(t.path().join("assets/block.svg"), r#"<svg xmlns='http://www.w3.org/2000/svg'><style>.x{fill:u\72l(#g);@im\70ort "https://evil.test/x.css"}</style></svg>"#).unwrap();
+        fs::write(t.path().join("assets/attr.svg"), r#"<svg xmlns='http://www.w3.org/2000/svg'><rect style='fill:u\72l(#g); color:red'/></svg>"#).unwrap();
+        let out = rewrite_asset_refs(
+            t.path(),
+            "<img src='assets/block.svg'><img src='assets/attr.svg' style='color: red'>",
+            ImagesConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            out.matches("data:image/svg+xml;base64,").count(),
+            2,
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn inline_svg_prefix_avoids_authored_reserved_id_collision() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir_all(t.path().join("assets")).unwrap();
+        fs::write(t.path().join("assets/icon.svg"), "<svg xmlns='http://www.w3.org/2000/svg'><g id='sideshow-svg-1-g'/><g id='g'/><use href='#g'/></svg>").unwrap();
+        let out = rewrite_asset_refs(
+            t.path(),
+            "<img src='assets/icon.svg'>",
+            ImagesConfig::default(),
+        )
+        .unwrap();
+        assert!(out.contains("id=\"sideshow-svg-1-1-g\""), "{out}");
+        assert!(out.contains("href=\"#sideshow-svg-1-1-g\""), "{out}");
+    }
+
+    #[test]
+    fn inline_svg_merges_root_class_style_and_img_attrs_take_precedence() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir_all(t.path().join("assets")).unwrap();
+        fs::write(
+            t.path().join("assets/icon.svg"),
+            "<svg xmlns='http://www.w3.org/2000/svg' class='svg-class' width='1' height='2'></svg>",
+        )
+        .unwrap();
+        let out = rewrite_asset_refs(t.path(), "<img src='assets/icon.svg' class='img-class' style='color: red' width='10' height='20' data-step='1' aria-describedby='x' alt=''>", ImagesConfig::default()).unwrap();
+        assert!(out.contains("class=\"svg-class img-class\""), "{out}");
+        assert!(out.contains("style=\"color: red\""), "{out}");
+        assert!(out.contains("width=\"10\""), "{out}");
+        assert!(out.contains("height=\"20\""), "{out}");
+        assert!(out.contains("data-step=\"1\""), "{out}");
+        assert!(out.contains("aria-hidden=\"true\""), "{out}");
+    }
+
+    #[test]
+    fn inline_svg_root_id_conflict_falls_back() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir_all(t.path().join("assets")).unwrap();
+        fs::write(
+            t.path().join("assets/icon.svg"),
+            "<svg xmlns='http://www.w3.org/2000/svg' id='root'><use href='#root'/></svg>",
+        )
+        .unwrap();
+        let out = rewrite_asset_refs(
+            t.path(),
+            "<img src='assets/icon.svg' id='img-id'>",
+            ImagesConfig::default(),
+        )
+        .unwrap();
+        assert!(out.contains("data:image/svg+xml;base64,"), "{out}");
+    }
+
+    #[test]
+    fn inline_svg_rejects_foreign_object_and_external_css_url() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir_all(t.path().join("assets")).unwrap();
+        for (name, svg) in [
+            (
+                "foreign.svg",
+                "<svg xmlns='http://www.w3.org/2000/svg'><foreignObject/></svg>",
+            ),
+            (
+                "css.svg",
+                "<svg xmlns='http://www.w3.org/2000/svg'><style>@import url(https://e.test/a.css)</style></svg>",
+            ),
+        ] {
+            fs::write(t.path().join("assets").join(name), svg).unwrap();
+        }
+        let out = rewrite_asset_refs(
+            t.path(),
+            "<img src='assets/foreign.svg'><img src='assets/css.svg'>",
+            ImagesConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            out.matches("data:image/svg+xml;base64,").count(),
+            2,
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn asset_refs_normalize_dot_and_strip_query_fragment() {
+        let refs = asset_refs("<img src='assets/./a.png?cache=1#frag'><source srcset='assets/./b.png#x 1x, data:image/svg+xml,<svg></svg> 2x'>").unwrap();
+        assert_eq!(refs, vec!["assets/a.png", "assets/b.png"]);
+        assert!(normalize_asset_ref("assets/../secret.png").is_err());
+        assert!(normalize_asset_ref("/assets/a.png").is_err());
     }
 
     #[test]
@@ -1722,6 +2264,41 @@ mod tests {
         }
     }
 
+    #[test]
+    fn build_avoids_generated_svg_ids_colliding_with_later_authored_slide_ids() {
+        if which::which("tailwindcss").is_err() {
+            eprintln!("skipping build SVG id collision test: tailwindcss not on PATH");
+            return;
+        }
+        let t = tempfile::tempdir().unwrap();
+        minimal_deck(&t);
+        fs::write(t.path().join("theme.css"), "").unwrap();
+        fs::write(
+            t.path().join("assets/icon.svg"),
+            "<svg xmlns='http://www.w3.org/2000/svg'><g id='g'/><use href='#g'/></svg>",
+        )
+        .unwrap();
+        fs::write(
+            t.path().join("slides/01.html"),
+            "<img src='assets/icon.svg'>",
+        )
+        .unwrap();
+        fs::write(
+            t.path().join("slides/02.html"),
+            "<div id='sideshow-svg-1-g'></div>",
+        )
+        .unwrap();
+
+        let out = fs::read_to_string(build_deck(t.path()).unwrap()).unwrap();
+
+        assert!(out.contains("id=\"sideshow-svg-1-1-g\""), "{out}");
+        assert!(out.contains("href=\"#sideshow-svg-1-1-g\""), "{out}");
+        assert!(
+            out.contains("id='sideshow-svg-1-g'") || out.contains("id=\"sideshow-svg-1-g\""),
+            "{out}"
+        );
+    }
+
     fn minimal_deck(t: &tempfile::TempDir) {
         fs::create_dir_all(t.path().join("slides")).unwrap();
         fs::create_dir_all(t.path().join("assets")).unwrap();
@@ -1775,6 +2352,31 @@ mod tests {
                 .filter(|f| f.kind == "missing_asset")
                 .count(),
             2
+        );
+    }
+
+    #[test]
+    fn check_uses_rendered_markdown_asset_refs_and_orphans() {
+        let t = tempfile::tempdir().unwrap();
+        minimal_deck(&t);
+        fs::write(t.path().join("assets/used.png"), b"used").unwrap();
+        fs::write(t.path().join("assets/orphan.png"), b"orphan").unwrap();
+        fs::write(
+            t.path().join("slides/01.md"),
+            "![alt](assets/used.png?x=1)\n",
+        )
+        .unwrap();
+        let findings = check_deck(t.path());
+        assert!(!findings.iter().any(|f| f.kind == "missing_asset"));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.kind == "orphaned_asset" && f.path == "assets/orphan.png")
+        );
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.kind == "orphaned_asset" && f.path == "assets/used.png")
         );
     }
 
@@ -1943,8 +2545,13 @@ mod tests {
             && (f.path == "assets/used.png"
                 || f.path == "assets/srcset.png"
                 || f.path == "assets/nested/css.png"
-                || f.path == "assets/demo.tape"
+                // .tape files are now treated like normal assets when placed under assets/.
                 || f.path == "assets/.scratch.png")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.kind == "orphaned_asset" && f.path == "assets/demo.tape")
+        );
     }
 
     #[test]
@@ -1957,6 +2564,7 @@ mod tests {
             <section style="color: #fff; border-color: rgb(1, 2, 3); background: var(--color-bg)">
               <style>.x { color: oklch(70% 0.2 140); background: var(--color-accent); }</style>
               <div class="text-[#ff0000] bg-[rgb(1,2,3)] border-[var(--color-panel)]"></div>
+              <svg><path fill=#abcd stroke="lab(50% 0 0)" /></svg>
               <pre><code>.demo { color: #123456; }</code></pre>
             </section>
             "##,
@@ -1974,6 +2582,8 @@ mod tests {
         assert!(off_token.iter().any(|m| m.contains("oklch(70% 0.2 140)")));
         assert!(off_token.iter().any(|m| m.contains("#ff0000")));
         assert!(off_token.iter().any(|m| m.contains("rgb(1,2,3)")));
+        assert!(off_token.iter().any(|m| m.contains("#abcd")));
+        assert!(off_token.iter().any(|m| m.contains("lab(50% 0 0)")));
         assert!(!off_token.iter().any(|m| m.contains("var(--color")));
         assert!(!off_token.iter().any(|m| m.contains("#123456")));
     }
