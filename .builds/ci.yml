@@ -32,7 +32,9 @@ tasks:
   - cache-warm: |
       cd sideshow
       if [ ! -f ~/.ci_secrets/cachix_token ]; then echo "no cachix token available; skipping cache warm"; exit 0; fi
+      set +x
       CACHIX_AUTH_TOKEN="$(cat ~/.ci_secrets/cachix_token)"; export CACHIX_AUTH_TOKEN
+      set -x
       # Push only the sideshow output path, not the runtime closure: the
       # tailwindcss_4 PATH wrapper drags an ~830MB closure (clang/llvm libs)
       # that is already substitutable from cache.nixos.org.
