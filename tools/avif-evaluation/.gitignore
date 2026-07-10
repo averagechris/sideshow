@@ -1,0 +1,4 @@
+__pycache__/
+encoder/target/
+artifacts*/
+*.json

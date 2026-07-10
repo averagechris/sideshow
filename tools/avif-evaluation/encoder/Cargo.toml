@@ -1,0 +1,16 @@
+[package]
+name = "sideshow-avif-evaluation-encoder"
+version = "1.0.0"
+edition = "2024"
+publish = false
+
+[features]
+avif = ["image/avif"]
+
+[dependencies]
+image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png"] }
+webp = "=0.3.1"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"

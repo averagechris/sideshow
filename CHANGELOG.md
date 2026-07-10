@@ -17,6 +17,9 @@
 - Specify the future two-dimensional deck navigation model, including author
   syntax, source/DOM/print/accessibility order, stable deep links, input
   behavior, automation, and review annotation identity.
+- Document the AVIF optimization no-go decision and add a pinned, reproducible
+  WebP/AVIF evaluation harness without changing production image behavior or
+  dependencies.
 
 ## v0.4.0 - 2026-07-10
 

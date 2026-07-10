@@ -107,6 +107,10 @@ quality = 80
 max_dim = 3840
 ```
 
+AVIF remains an evaluated no-go for automatic optimization. See
+[`docs/AVIF-EVALUATION.md`](docs/AVIF-EVALUATION.md) for the reproducible
+WebP/AVIF quality, size, timing, browser, closure, and platform comparison.
+
 ## Custom fonts
 
 Decks use system font stacks unless they explicitly declare one or more

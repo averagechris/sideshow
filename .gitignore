@@ -4,3 +4,7 @@
 /dist
 dist/
 /.direnv
+/.avif-evaluation/
+/avif-results*.json
+/darwin-results.json
+/darwin-q95-results.json

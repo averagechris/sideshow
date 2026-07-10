@@ -61,6 +61,29 @@
       mkToolApp system "ci-sort" [(pkgsFor system).cargo (pkgsFor system).cargo-sort] ''
         cargo sort --workspace --check
       '';
+    avifEvaluationEncoder = system: enableAvif: let
+      pkgs = pkgsFor system;
+    in
+      pkgs.rustPlatform.buildRustPackage {
+        pname = "sideshow-avif-evaluation-encoder${
+          if enableAvif
+          then ""
+          else "-webp-only"
+        }";
+        version = "1";
+        src = ./tools/avif-evaluation/encoder;
+        cargoLock.lockFile = ./tools/avif-evaluation/encoder/Cargo.lock;
+        buildFeatures = pkgs.lib.optional enableAvif "avif";
+      };
+    avifEvaluation = system:
+      mkToolApp system "avif-evaluation" [
+        (avifEvaluationEncoder system true)
+        (pkgsFor system).cacert
+        (pkgsFor system).ffmpeg
+        (pkgsFor system).python3
+      ] ''
+        exec python3 ${./tools/avif-evaluation/run.py} "$@"
+      '';
     nixFormatter = system: let
       pkgs = pkgsFor system;
     in
@@ -104,6 +127,8 @@
       ci-deny = ciDeny system;
       ci-machete = ciMachete system;
       ci-sort = ciSort system;
+      avif-evaluation-encoder = avifEvaluationEncoder system true;
+      avif-evaluation-encoder-webp-only = avifEvaluationEncoder system false;
       release-artifact = (fleetApps system).releaseArtifact system;
     });
 
@@ -128,6 +153,10 @@
       ci-sort = {
         type = "app";
         program = "${self.packages.${system}.ci-sort}/bin/ci-sort";
+      };
+      avif-evaluation = {
+        type = "app";
+        program = "${avifEvaluation system}/bin/avif-evaluation";
       };
       inherit ((fleetApps system).apps) prepare-release release-tag release ci-fmt ci-clippy static-checks ci-test;
     });
