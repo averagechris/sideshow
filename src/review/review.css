@@ -52,11 +52,15 @@
 .sideshow-review-list { overflow: auto; padding-right: 2px; min-height: 0; }
 .sideshow-review h2 { margin: 12px 0 6px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: #cbd5e1; }
 .sideshow-review-empty { color: #9ca3af; margin: 8px 0; }
-.sideshow-review-item { margin: 8px 0; padding: 10px; border: 1px solid #374151; border-radius: 10px; background: #0f172a; }
+.sideshow-review-item { margin: 8px 0; padding: 10px; border: 1px solid #374151; border-left-width: 4px; border-radius: 10px; background: #0f172a; }
 .sideshow-review-item.is-selected { border-color: #fbbf24; }
 .sideshow-review-item.is-orphan { border-style: dashed; }
+.sideshow-review-item.is-current { border-left-color: #34d399; }
+.sideshow-review-item.is-stale { border-left-color: #f59e0b; }
+.sideshow-review-item.is-orphaned { border-left-color: #94a3b8; }
 .sideshow-review-meta { color: #cbd5e1; font-size: 12px; text-transform: capitalize; }
 .sideshow-review-body { margin: 6px 0 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.sideshow-review-disposition-note { margin: -6px 0 10px; color: #fde68a; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .sideshow-review-editor { display: none; gap: 8px; border-top: 1px solid #374151; padding-top: 10px; }
 .sideshow-review-editor.is-open { display: grid; }
 .sideshow-review-editor-target { color: #fde68a; font-size: 12px; overflow-wrap: anywhere; }

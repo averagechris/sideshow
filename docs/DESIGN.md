@@ -119,9 +119,14 @@ v1:
 - `sideshow new <dir> [--theme <name>]` — scaffold deck source.
 - `sideshow build <dir>` — compile to `dist/<slug-of-deck-title>.html` and print the path (single file).
 - `sideshow serve <dir>` — build + local server with srht-pages-like
-  headers (CSP, MIME), rebuild on change. `--review` injects local-only point
-  and logical-region annotation controls into served HTML; build output remains
-  unchanged.
+   headers (CSP, MIME), rebuild on change. `--review` injects local-only point
+   and logical-region annotation controls into served HTML; build output remains
+   unchanged.
+- `sideshow review artifact <dir>` / `list` / `export [--format json|markdown]
+  [--output <path>]` / `resolve <dir> <id> --revision <n>` / `reopen <dir> <id>
+  --revision <n>` / `disposition <dir> <id> --status
+  pending|addressed|wont-fix|deferred [--note <text>] --revision <n>` / `clear
+  <dir> --revision <n> --yes` — inspect and manage persistent review artifacts.
 - `sideshow check <dir>` — static deck linter: fragment contract
   violations, broken asset refs, deck.toml validity, duplicate slide ids.
   Dynamic checks (overflow, image rendering) are `sideshow.audit()` via
@@ -137,6 +142,34 @@ fast-follow:
 
 Screenshots/visual QA are deliberately **not** CLI subcommands — see
 invariant 2.
+
+## Review artifact contract
+
+- Review state is a tool-neutral JSON artifact, currently `schema_version: 2`,
+  stored outside deck source under `$XDG_STATE_HOME/sideshow/reviews/` or
+  `$HOME/.local/state/sideshow/reviews/` when `XDG_STATE_HOME` is unset.
+- Artifacts are keyed by the lowercase SHA-256 of the canonical absolute deck
+  root: `<root-key>.json`; process-safe writes use a sibling `<root-key>.lock`,
+  a synced temporary file, atomic rename, and directory sync.
+- The artifact records deck identity, revision, optional build manifest, and
+  annotations. Build manifests carry `build_id`, `built_at_ms`, slide IDs,
+  source paths, source digests, and verification commands.
+- Rebuilds update freshness only. Annotations are not dropped when slides change:
+  `freshness` (`current`, `stale`, `orphaned`) is derived from the latest build
+  manifest and remains orthogonal to workflow `state` (`todo`, `resolved`) and
+  explicit `disposition` (`pending`, `addressed`, `wont_fix`, `deferred`). Served
+  schema v2 clients treat that freshness as authoritative, using DOM identity
+  only when the value is missing or invalid, and display non-pending dispositions
+  with their optional notes.
+- HTTP review mutations are JSON and revision-guarded. GET/HEAD return a quoted
+  revision ETag; POST requires same-origin, the review nonce, `application/json`,
+  and `If-Match` equal to the mutation `revision`. Conflicts return the latest
+  snapshot for reload/retry. Successful CLI and HTTP mutations return the
+  refreshed artifact; its new revision must guard the next mutation.
+- `sideshow build` never emits review UI, nonce, annotations, or artifact paths.
+  Review exports also refuse output paths inside the deck.
+- JSON export is canonical for machines; Markdown export is a prompt-oriented
+  handoff for agents.
 
 ## Dependencies (Rust)
 

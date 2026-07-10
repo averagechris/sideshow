@@ -35,12 +35,21 @@
   await waitFor(() => !panel.classList.contains("is-collapsed"), "R panel open");
 
   const headers = { "X-Sideshow-Review": nonce };
-  const snapshot = () => fetch("/__sideshow/review", { headers }).then((response) => response.json());
+  let apiEtag = null;
+  const captureEtag = (response) => {
+    const etag = response.headers.get("ETag");
+    if (/^"\d+"$/.test(etag || "")) apiEtag = etag;
+  };
+  const snapshot = async () => {
+    const response = await fetch("/__sideshow/review", { headers });
+    captureEtag(response);
+    return response.json();
+  };
   const mutate = (payload) => fetch("/__sideshow/review", {
     method: "POST",
-    headers: { ...headers, "Content-Type": "application/json" },
+    headers: { ...headers, "Content-Type": "application/json", ...(apiEtag ? { "If-Match": apiEtag } : {}) },
     body: JSON.stringify(payload),
-  });
+  }).then((response) => { captureEtag(response); return response; });
   const enterBody = (value) => {
     body.value = value;
     body.dispatchEvent(new Event("input", { bubbles: true }));
@@ -84,6 +93,26 @@
   save();
   await waitFor(() => articleWithBody(editedBody), "annotation edit");
 
+  const beforeDisposition = await snapshot();
+  const editedAnnotation = beforeDisposition.annotations.find((item) => item.body === editedBody);
+  const dispositionNote = `verified by ${unique}`;
+  assert(editedAnnotation, "edited annotation missing before disposition");
+  assert(editedAnnotation.freshness === "current", "new annotation did not receive server freshness");
+  const dispositioned = await mutate({
+    operation: "set_disposition",
+    revision: beforeDisposition.revision,
+    id: editedAnnotation.id,
+    disposition: "addressed",
+    note: dispositionNote,
+  });
+  assert(dispositioned.status === 200, "annotation disposition failed");
+  document.querySelector('[aria-label="Reload annotations"]').click();
+  await waitFor(() => {
+    const article = articleWithBody(editedBody);
+    return article?.querySelector(".sideshow-review-meta")?.textContent.includes("disposition: addressed")
+      && article.querySelector(".sideshow-review-disposition-note")?.textContent === `Disposition note: ${dispositionNote}`;
+  }, "annotation disposition display");
+
   articleWithBody(editedBody).querySelector('[aria-label="Toggle resolution"]').click();
   await waitFor(
     () => articleWithBody(editedBody)?.querySelector(".sideshow-review-meta")?.textContent.includes("resolved"),
@@ -94,11 +123,10 @@
   const originalSource = slide.dataset.src;
   slide.dataset.src = `${originalSource}.removed`;
   window.dispatchEvent(new HashChangeEvent("hashchange"));
-  await waitFor(() => Array.from(document.querySelectorAll(".sideshow-review h2")).some((heading) => heading.textContent === "Orphaned annotations"), "orphan display");
-  assert(document.querySelector(".sideshow-review-detail summary").textContent.includes("orphaned"), "orphan does not expose source identity");
+  await waitFor(() => !articleWithBody(editedBody), "server freshness authority over DOM inference");
   slide.dataset.src = originalSource;
   window.dispatchEvent(new HashChangeEvent("hashchange"));
-  await waitFor(() => articleWithBody(editedBody), "orphan recovery");
+  await waitFor(() => articleWithBody(editedBody), "DOM identity recovery");
 
   articleWithBody(editedBody).querySelector('[aria-label="Edit annotation"]').click();
   const recoveredBody = `${unique}-recovered`;
@@ -153,7 +181,7 @@
 
   return JSON.stringify({
     ok: true,
-    operations: ["create", "edit", "resolve", "orphan", "conflict-recover", "region", "delete"],
+    operations: ["create", "edit", "disposition", "resolve", "freshness-authority", "conflict-recover", "region", "delete"],
     final_revision: cleanup.revision,
   });
 })()

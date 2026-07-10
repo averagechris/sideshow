@@ -172,13 +172,52 @@ sideshow serve mydeck --review --port 8000
 
 Review mode adds comments to the local preview only: click to pin a point, or
 drag to mark a region. The comment is the only required input; optional intent
-fields can record a type or suggested response when that context is useful. Comments
-carry the generated slide ID, source path, and 1920×1080 logical coordinates;
-they can be edited, resolved, reopened, or deleted. They survive rebuilds and
-live reloads while the server is running, and comments whose slide ID/source
-pair disappears remain visible as orphaned annotations. They are currently
-in-memory session state and are lost when the server exits. `sideshow build`
-output never contains the review UI, nonce, or comments.
+fields can record a type or suggested response when that context is useful.
+Comments carry the generated slide ID, source path, and 1920×1080 logical
+coordinates; they can be edited, resolved, reopened, deleted, or given an
+explicit disposition.
+
+Review annotations persist across server restarts and rebuilds in a tool-neutral
+schema v2 JSON artifact under `$XDG_STATE_HOME/sideshow/reviews/`, falling back
+to `$HOME/.local/state/sideshow/reviews/`. The file is keyed by the lowercase
+SHA-256 of the canonical deck root: `<root-key>.json` with a sibling
+`<root-key>.lock`; no review state is written inside the deck. Each build records
+the current slide/source manifest. Existing annotations are preserved, including
+unresolved annotations whose slide/source disappears. Freshness (`current`,
+`stale`, `orphaned`) is derived from that manifest and is independent of workflow
+state (`todo`, `resolved`) and disposition (`pending`, `addressed`, `wont_fix`,
+`deferred`). The schema v2 freshness value is authoritative in the review panel;
+page-DOM matching is only a fallback when freshness is absent or invalid. The
+panel also displays every non-pending disposition and its optional note.
+`sideshow build` output never contains the review UI, nonce, or comments.
+
+The review server uses JSON-first optimistic transactions: reads return the
+current revision as a quoted ETag, and writes require an `If-Match` header that
+matches the mutation's `revision`. Stale writes return the latest snapshot so a
+client or agent can reload and retry.
+
+Manage artifacts from the terminal:
+
+```sh
+sideshow review artifact mydeck
+sideshow review list mydeck
+sideshow review export mydeck                 # canonical JSON handoff
+sideshow review export mydeck --format markdown
+sideshow review export mydeck --output /tmp/review.json
+annotation_id="<id>"
+revision=$(sideshow review list mydeck | jq -r '.revision')
+revision=$(sideshow review disposition mydeck "$annotation_id" --status addressed --note "verified" --revision "$revision" | jq -r '.revision')
+revision=$(sideshow review resolve mydeck "$annotation_id" --revision "$revision" | jq -r '.revision')
+sideshow review reopen mydeck "$annotation_id" --revision "$revision"
+```
+
+Each successful mutation prints the refreshed artifact. Use its new `revision`
+for the next write; do not reuse the revision consumed by an earlier mutation.
+
+JSON export is the canonical machine-readable handoff. Markdown export is a
+prompt-oriented summary for agents; export outputs are rejected when the target
+path is inside the deck to avoid leaking review state into source or build
+artifacts.
 
 Region anchors are intentionally visual rather than DOM-relative. They remain
 stable across text and style edits that preserve the slide's composition, but
@@ -225,8 +264,8 @@ nix run .#ci-test
 To exercise the served review UI against the dogfood deck, start
 `sideshow serve examples/making-of-sideshow --review`, open it in an `rdny`
 browser session, then run `rdny js - < tests/review-smoke.js`. The smoke covers
-point and region creation, edit/resolve/delete, orphan display, and recovery
-from a concurrent delete conflict.
+point and region creation, edit/disposition/resolve/delete, authoritative server
+freshness, and recovery from a concurrent delete conflict.
 
 ## Examples
 

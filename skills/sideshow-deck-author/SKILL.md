@@ -17,6 +17,7 @@ Commands below assume `sideshow` is on PATH. When working inside the sideshow re
 - The stage scales as a whole in the browser; slides must not rely on responsive reflow.
 - Visual QA is the agent's job: build, open in a browser with rodney, call `window.sideshow`, screenshot, inspect, iterate.
 - Do not edit generated `dist/*.html` directly. Fix source fragments, `deck.toml`, `theme.css`, or `assets/`.
+- Review commands are for consuming, exporting, and explicitly marking feedback only. They never imply source edits, and stale/orphaned unresolved feedback must be preserved until a human or verified agent resolution says otherwise.
 
 ## Phase 1 — Content discovery
 
@@ -206,6 +207,54 @@ rodney screenshot -w 1280 -h 720 /tmp/sideshow-slide-N.png
 Inspect screenshots for hierarchy, alignment, clipped text, awkward wrapping, contrast, accidental internal notes, broken SVG geometry, and whether the slide communicates the intended single idea. For reveal-heavy slides, call `rodney js 'sideshow.next()'` between screenshots to inspect each step.
 
 Repeat: edit source → `sideshow check` → `sideshow build` → `rodney reload --hard` or `rodney open ...` → audit → screenshots.
+
+### 4.5 Review feedback consume loop
+
+When the user asks you to address served review feedback, use this strict bounded loop. Do not infer hidden source changes from review commands; source edits happen only in named deck source files after you inspect the feedback.
+
+1. **Consume once, JSON-first:**
+
+   ```bash
+   sideshow review artifact mydeck
+   sideshow review list mydeck
+   sideshow review export mydeck --format json --output /tmp/sideshow-review.json
+   sideshow review export mydeck --format markdown --output /tmp/sideshow-review.md
+   ```
+
+   Use JSON as canonical data. Use Markdown only as a prompt handoff. Write exports outside the deck; the CLI rejects deck-internal output to prevent review-state leakage.
+
+2. **Triage intentionally:** for each annotation, note `id`, `source_path`, `slide_id`, workflow `state`, `freshness`, and `disposition`. Treat `todo`/`resolved`, `current`/`stale`/`orphaned`, and disposition as independent axes. Do not discard unresolved `stale` or `orphaned` annotations; relocate or explain them if possible, otherwise leave them unresolved for follow-up.
+
+3. **Edit only named source:** change only the relevant `slides/*`, `theme.css`, `deck.toml`, or `assets/*` source named by the annotation or by your explicit triage. Never edit `dist/*.html` and never let `resolve`, `reopen`, `disposition`, `export`, `list`, or `clear` stand in for a source edit.
+
+4. **Check, build, audit:** run the normal verification loop:
+
+   ```bash
+   sideshow check mydeck
+   sideshow build mydeck
+   rodney open file://<exact path printed by sideshow build>
+   rodney waitload
+   rodney js 'JSON.stringify(sideshow.audit())'
+   ```
+
+   Fix errors, overflow, broken images, and visual regressions before marking anything addressed.
+
+5. **Verify visually:** navigate to each affected slide, screenshot it, inspect with vision, and confirm the annotation's requested outcome is actually satisfied. For reveal changes, inspect each reveal step.
+
+6. **Mark explicitly, only after verification:** reload the current revision, then chain the refreshed revision returned by every mutation into the next write:
+
+   ```bash
+   annotation_id="<id>"
+   revision=$(sideshow review list mydeck | jq -r '.revision')
+   revision=$(sideshow review disposition mydeck "$annotation_id" --status addressed --note "verified by check/build/audit/screenshot" --revision "$revision" | jq -r '.revision')
+   revision=$(sideshow review resolve mydeck "$annotation_id" --revision "$revision" | jq -r '.revision')
+   ```
+
+   Continue with the latest `$revision` for each additional mutation. If another writer causes a conflict, list and triage the refreshed artifact before retrying. Use `--status wont-fix` or `--status deferred` only with a concise note. Use `sideshow review reopen mydeck "$annotation_id" --revision "$revision"` if verification fails or the issue recurs, and capture its returned revision before another write. Avoid `sideshow review clear ... --yes` except when the user explicitly asks to delete all annotations.
+
+7. **Report:** summarize changed source files, verification commands and results, annotation IDs resolved/deferred/wont-fix, and any remaining unresolved stale/orphaned feedback.
+
+Dogfood this workflow when changing review behavior or review docs: create a small deck, serve with `--review`, add current/stale/orphaned comments, restart the server, rebuild after changing a slide, export JSON and Markdown outside the deck, then run check/build/audit and explicitly disposition/resolve only the comments you verified. Confirm the built `dist/*.html` contains no review UI, nonce, comments, artifact path, or exported handoff text.
 
 ## Phase 5 — Delivery
 

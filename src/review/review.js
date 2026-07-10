@@ -11,6 +11,7 @@
 
   const state = {
     revision: 0,
+    etag: null,
     annotations: [],
     selectedId: null,
     editing: null,
@@ -101,6 +102,7 @@
   function activeSlide() { return document.querySelector(".slide.is-active") || slides[0]; }
   function slideKey(slide) { return { slide_id: slide.id || "", source_path: slide.dataset.src || "" }; }
   function matchesSlide(a, slide) { const k = slideKey(slide); return a.slide_id === k.slide_id && a.source_path === k.source_path; }
+  function matchesSlideId(a, slide) { return !!slide && a.slide_id === (slide.id || ""); }
   function knownPair(a) { return slides.some((s) => matchesSlide(a, s)); }
 
   async function load() {
@@ -108,35 +110,43 @@
       setStatus("Loading annotations…");
       const res = await fetch("/__sideshow/review", { headers: { "X-Sideshow-Review": nonce } });
       if (!res.ok) throw new Error(`GET failed (${res.status})`);
-      applySnapshot(await res.json());
+      applySnapshot(await res.json(), res.headers.get("ETag"));
       setStatus("Click to pin a comment. Drag to mark an area.");
     } catch (err) { setStatus(`Could not load review data: ${err.message}`); }
   }
 
   async function mutate(payload) {
     if (state.busy) return false;
+    if (!state.etag) {
+      setStatus("Review revision is not loaded yet. Reload annotations and try again.", true);
+      return false;
+    }
     state.busy = true;
     try {
-      const res = await fetch("/__sideshow/review", { method: "POST", headers: { "Content-Type": "application/json", "X-Sideshow-Review": nonce }, body: JSON.stringify(payload) });
+      const headers = { "Content-Type": "application/json", "X-Sideshow-Review": nonce };
+      headers["If-Match"] = state.etag;
+      const res = await fetch("/__sideshow/review", { method: "POST", headers, body: JSON.stringify(payload) });
       const snap = await res.json().catch(() => null);
       if (res.status === 409) {
-        if (snap) applySnapshot(snap);
+        if (snap) applySnapshot(snap, res.headers.get("ETag"));
         setStatus("Conflict: annotations changed on the server. Your change was not saved; review the refreshed list and try again.", true);
         return false;
       }
       if (!res.ok) throw new Error(`POST failed (${res.status})`);
-      applySnapshot(snap);
+      applySnapshot(snap, res.headers.get("ETag"));
       setStatus("Saved.");
       return true;
     } catch (err) { setStatus(`Could not save: ${err.message}`, true); return false; }
     finally { state.busy = false; }
   }
 
-  function applySnapshot(snap) {
-    if (!snap || snap.schema_version !== 1 || !Array.isArray(snap.annotations)) throw new Error("unexpected review schema");
+  function applySnapshot(snap, etag) {
+    if (!snap || snap.schema_version !== 2 || !Array.isArray(snap.annotations)) throw new Error("unexpected review schema");
     if (!Number.isSafeInteger(snap.revision) || snap.revision < 0) throw new Error("invalid review revision");
+    if (etag !== `"${snap.revision}"`) throw new Error("review ETag does not match snapshot revision");
     if (snap.revision < state.revision) return;
     state.revision = snap.revision;
+    state.etag = etag;
     state.annotations = snap.annotations;
     render();
   }
@@ -227,8 +237,11 @@
   function renderList() {
     list.replaceChildren();
     const slide = activeSlide();
-    const current = state.annotations.filter((a) => matchesSlide(a, slide));
-    const orphaned = state.annotations.filter((a) => !knownPair(a));
+    const current = state.annotations.filter((a) => {
+      const freshness = annotationFreshness(a);
+      return freshness !== "orphaned" && (matchesSlide(a, slide) || (freshness === "stale" && matchesSlideId(a, slide)));
+    });
+    const orphaned = state.annotations.filter((a) => annotationFreshness(a) === "orphaned");
     list.append(el("h2", { textContent: "Active slide" }));
     if (!current.length) list.append(el("p", { className: "sideshow-review-empty", textContent: "No annotations on this slide." }));
     current.forEach((a) => list.append(item(a, false)));
@@ -238,16 +251,23 @@
     }
   }
   function item(a, orphan) {
-    const node = el("article", { className: `sideshow-review-item${a.id === state.selectedId ? " is-selected" : ""}${orphan ? " is-orphan" : ""}`, role: "listitem" });
-    const metaText = [a.kind && a.kind !== "note" ? a.kind : "", a.action || "", a.state === "resolved" ? "resolved" : ""].filter(Boolean).join(" · ");
+    const freshness = annotationFreshness(a);
+    const disposition = annotationDisposition(a);
+    const node = el("article", { className: `sideshow-review-item is-${freshness}${a.id === state.selectedId ? " is-selected" : ""}${orphan ? " is-orphan" : ""}`, role: "listitem" });
+    const metaText = [a.kind && a.kind !== "note" ? a.kind : "", a.action || "", freshness, a.state === "resolved" ? "resolved" : "", disposition ? `disposition: ${disposition.replace(/_/g, " ")}` : ""].filter(Boolean).join(" · ");
     const meta = el("div", { className: "sideshow-review-meta", textContent: metaText });
     meta.hidden = !metaText;
     const body = el("p", { className: "sideshow-review-body" }); body.textContent = a.body || "(empty)";
+    const dispositionNote = disposition && typeof a.disposition_note === "string" && a.disposition_note.trim()
+      ? el("p", { className: "sideshow-review-disposition-note", textContent: `Disposition note: ${a.disposition_note}` })
+      : null;
     const detail = el("details", { className: "sideshow-review-detail" });
     detail.append(el("summary", { textContent: orphan ? `${a.source_path} (orphaned)` : "Target details" }), el("pre", { textContent: targetDescription(a) }));
     const actions = el("div", { className: "sideshow-review-actions" });
     actions.append(button("Edit", "Edit annotation", () => editAnnotation(a)), button(a.state === "resolved" ? "Reopen" : "Resolve", "Toggle resolution", () => mutate({ operation: "set_state", revision: state.revision, id: a.id, state: a.state === "resolved" ? "todo" : "resolved" })), button("Delete", "Delete annotation", () => mutate({ operation: "delete", revision: state.revision, id: a.id })));
-    node.append(meta, body, detail, actions); return node;
+    node.append(meta, body);
+    if (dispositionNote) node.append(dispositionNote);
+    node.append(detail, actions); return node;
   }
   function renderOverlay() {
     const focusedId = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.annotationId : null;
@@ -347,6 +367,11 @@
     const shape = t.type === "region" ? `region ${round(t.x)},${round(t.y)} ${round(t.width)}×${round(t.height)}` : `point ${round(t.x)},${round(t.y)}`;
     return [`slide: ${a.slide_id}`, `source: ${a.source_path}`, `target: ${shape}`, t.selector_hint ? `selector: ${t.selector_hint}` : "", t.text_hint ? `text: ${t.text_hint}` : ""].filter(Boolean).join("\n");
   }
+  function annotationFreshness(a) {
+    const server = ["current", "stale", "orphaned"].includes(a.freshness) ? a.freshness : null;
+    return server || (knownPair(a) ? "current" : "orphaned");
+  }
+  function annotationDisposition(a) { return ["addressed", "wont_fix", "deferred"].includes(a.disposition) ? a.disposition : null; }
   function slideLabel(target) {
     const index = slides.findIndex((slide) => matchesSlide(target, slide));
     return index >= 0 ? `slide ${index + 1}` : target.source_path;

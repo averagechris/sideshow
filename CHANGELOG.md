@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Persist local review annotations in XDG state as schema v2 tool-neutral JSON
+  artifacts keyed by canonical deck root, with revision/ETag conflict handling,
+  CLI artifact/list/export/clear/resolve/reopen/disposition commands, and
+  JSON-first plus prompt-Markdown handoff exports that cannot be written into the
+  deck. The served review panel honors server-derived freshness and surfaces
+  explicit non-pending dispositions with their optional notes.
 
 ## v0.4.0 - 2026-07-10
 

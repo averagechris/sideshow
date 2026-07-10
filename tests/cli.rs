@@ -1,5 +1,62 @@
 use std::process::Command;
 
+fn review_command(state: &std::path::Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sideshow"));
+    command.env("XDG_STATE_HOME", state);
+    command.arg("review");
+    command
+}
+
+fn seed_review(
+    deck: &std::path::Path,
+    state: &std::path::Path,
+) -> sideshow::review::ReviewArtifact {
+    use sideshow::review::{
+        NewReviewAnnotation, ReviewAction, ReviewBuildManifest, ReviewKind, ReviewMutation,
+        ReviewRepository, ReviewSlideManifest, ReviewTarget,
+    };
+
+    let repository = ReviewRepository::with_state_root(deck, state).unwrap();
+    let built = repository
+        .update_build_manifest(
+            0,
+            ReviewBuildManifest {
+                build_id: "build-from-test-output".into(),
+                built_at_ms: 1,
+                slides: vec![ReviewSlideManifest {
+                    slide_id: "s-01".into(),
+                    source_path: "slides/01.html".into(),
+                    source_digest: "digest-one".into(),
+                }],
+                verification_commands: vec![
+                    format!("sideshow check {}", deck.display()),
+                    format!("sideshow build {}", deck.display()),
+                ],
+            },
+        )
+        .unwrap();
+    repository
+        .apply_mutation(ReviewMutation::Create {
+            revision: built.revision,
+            annotation: NewReviewAnnotation {
+                slide_id: "s-01".into(),
+                source_path: "slides/01.html".into(),
+                target: ReviewTarget::Region {
+                    x: 10.0,
+                    y: 20.0,
+                    width: 30.0,
+                    height: 40.0,
+                    selector_hint: Some("h1".into()),
+                    text_hint: Some("T".into()),
+                },
+                body: "private annotation body".into(),
+                kind: ReviewKind::Issue,
+                action: Some(ReviewAction::Fix),
+            },
+        })
+        .unwrap()
+}
+
 #[derive(Debug)]
 struct CapturedRequest {
     path: String,
@@ -90,6 +147,16 @@ fn prebuilt_t_deck(root: &std::path::Path) -> std::path::PathBuf {
     std::fs::write(deck.join("slides/01.html"), "<h1>T</h1>").unwrap();
     std::fs::write(deck.join("dist/t.html"), "<!doctype html><title>T</title>").unwrap();
     deck
+}
+
+#[cfg(unix)]
+fn fake_tailwind(root: &std::path::Path) -> std::path::PathBuf {
+    let path = root.join("tailwindcss");
+    make_executable(
+        &path,
+        "#!/bin/sh\nin=''\nout=''\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    -i) in=$2; shift 2 ;;\n    -o) out=$2; shift 2 ;;\n    *) shift ;;\n  esac\ndone\ncp \"$in\" \"$out\"\n",
+    );
+    path
 }
 
 #[test]
@@ -740,4 +807,455 @@ fn tape_render_errors_helpfully_without_vhs() {
         "{stderr}"
     );
     assert!(stderr.contains("SIDESHOW_VHS"), "{stderr}");
+}
+
+#[test]
+fn review_artifact_list_and_export_are_stable_and_deck_read_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let deck = prebuilt_t_deck(tmp.path());
+    let state = tmp.path().join("state");
+    std::fs::create_dir(&state).unwrap();
+    let source_before = std::fs::read(deck.join("slides/01.html")).unwrap();
+    let built_before = std::fs::read(deck.join("dist/t.html")).unwrap();
+    let seeded = seed_review(&deck, &state);
+
+    let artifact_output = review_command(&state)
+        .args(["artifact", deck.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        artifact_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&artifact_output.stderr)
+    );
+    let locator: serde_json::Value = serde_json::from_slice(&artifact_output.stdout).unwrap();
+    assert_eq!(locator["schema_version"], 2);
+    assert_eq!(locator["revision"], seeded.revision);
+    assert_eq!(
+        locator["canonical_root"],
+        deck.canonicalize().unwrap().to_str().unwrap()
+    );
+    assert_eq!(locator["root_key"].as_str().unwrap().len(), 64);
+    let artifact_path = std::path::PathBuf::from(locator["artifact_path"].as_str().unwrap());
+    assert!(artifact_path.starts_with(state.canonicalize().unwrap()));
+    assert!(!artifact_path.starts_with(deck.canonicalize().unwrap()));
+
+    let list = review_command(&state)
+        .args(["list", deck.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(list.status.success());
+    let listed: sideshow::review::ReviewArtifact = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!(listed, seeded);
+    assert_eq!(
+        listed.annotations[0].freshness,
+        sideshow::review::ReviewFreshness::Current
+    );
+
+    let markdown = review_command(&state)
+        .args(["export", deck.to_str().unwrap(), "--format", "markdown"])
+        .output()
+        .unwrap();
+    assert!(markdown.status.success());
+    let markdown = String::from_utf8(markdown.stdout).unwrap();
+    for expected in [
+        "Deck root:",
+        "Source:",
+        "Slide:",
+        "Workflow:",
+        "Freshness:",
+        "Disposition:",
+        "Target:",
+        "private annotation body",
+        "sideshow check",
+        "sideshow build",
+    ] {
+        assert!(
+            markdown.contains(expected),
+            "missing {expected}: {markdown}"
+        );
+    }
+
+    let exported = tmp.path().join("handoff.json");
+    let export = review_command(&state)
+        .args([
+            "export",
+            deck.to_str().unwrap(),
+            "--output",
+            exported.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(export.status.success());
+    let exported_artifact: sideshow::review::ReviewArtifact =
+        serde_json::from_slice(&std::fs::read(exported).unwrap()).unwrap();
+    assert_eq!(exported_artifact, seeded);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+
+        let exported = tmp.path().join("private-export.json");
+        let export = review_command(&state)
+            .args([
+                "export",
+                deck.to_str().unwrap(),
+                "--output",
+                exported.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(export.status.success());
+        assert_eq!(
+            std::fs::metadata(&exported).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        let dangling_target = deck.join("must-not-be-created.json");
+        let dangling_export = tmp.path().join("dangling-export.json");
+        symlink(&dangling_target, &dangling_export).unwrap();
+        let export = review_command(&state)
+            .args([
+                "export",
+                deck.to_str().unwrap(),
+                "--output",
+                dangling_export.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            export.status.success(),
+            "{}",
+            String::from_utf8_lossy(&export.stderr)
+        );
+        assert!(!dangling_target.exists());
+        assert!(
+            !std::fs::symlink_metadata(&dangling_export)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+
+        let hardlink_export = tmp.path().join("hardlink-export.json");
+        std::fs::hard_link(deck.join("slides/01.html"), &hardlink_export).unwrap();
+        assert!(std::fs::metadata(&hardlink_export).unwrap().nlink() >= 2);
+        let export = review_command(&state)
+            .args([
+                "export",
+                deck.to_str().unwrap(),
+                "--output",
+                hardlink_export.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            export.status.success(),
+            "{}",
+            String::from_utf8_lossy(&export.stderr)
+        );
+        assert_eq!(
+            std::fs::read(deck.join("slides/01.html")).unwrap(),
+            source_before
+        );
+        assert_eq!(std::fs::metadata(&hardlink_export).unwrap().nlink(), 1);
+
+        let parent_link = tmp.path().join("deck-parent-link");
+        symlink(&deck, &parent_link).unwrap();
+        let rejected = review_command(&state)
+            .args([
+                "export",
+                deck.to_str().unwrap(),
+                "--output",
+                parent_link.join("review.json").to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(!rejected.status.success());
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains("inside the deck"));
+    }
+
+    let rejected = review_command(&state)
+        .args([
+            "export",
+            deck.to_str().unwrap(),
+            "--output",
+            deck.join("review.json").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("inside the deck"));
+    assert!(!deck.join("review.json").exists());
+    assert_eq!(
+        std::fs::read(deck.join("slides/01.html")).unwrap(),
+        source_before
+    );
+    assert_eq!(
+        std::fs::read(deck.join("dist/t.html")).unwrap(),
+        built_before
+    );
+    let built = String::from_utf8(built_before).unwrap();
+    assert!(!built.contains("private annotation body"));
+    assert!(!built.contains("schema_version"));
+}
+
+#[test]
+fn review_artifact_materializes_empty_v2_for_direct_consumers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let deck = prebuilt_t_deck(tmp.path());
+    let state = tmp.path().join("state");
+    std::fs::create_dir(&state).unwrap();
+
+    let locator_output = review_command(&state)
+        .args(["artifact", deck.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(locator_output.status.success());
+    let locator: serde_json::Value = serde_json::from_slice(&locator_output.stdout).unwrap();
+    let artifact_path = std::path::PathBuf::from(locator["artifact_path"].as_str().unwrap());
+    assert!(artifact_path.is_file());
+    let direct: sideshow::review::ReviewArtifact =
+        serde_json::from_slice(&std::fs::read(&artifact_path).unwrap()).unwrap();
+    assert_eq!(direct.schema_version, 2);
+    assert_eq!(direct.revision, 0);
+
+    let list = review_command(&state)
+        .args(["list", deck.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let listed: sideshow::review::ReviewArtifact = serde_json::from_slice(&list.stdout).unwrap();
+    let export = review_command(&state)
+        .args(["export", deck.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let exported: sideshow::review::ReviewArtifact =
+        serde_json::from_slice(&export.stdout).unwrap();
+    assert_eq!(direct, listed);
+    assert_eq!(listed, exported);
+}
+
+#[test]
+fn review_xdg_empty_falls_back_to_home_and_relative_nonempty_rejects() {
+    let tmp = tempfile::tempdir().unwrap();
+    let deck = prebuilt_t_deck(tmp.path());
+    let home = tmp.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let bin = env!("CARGO_BIN_EXE_sideshow");
+
+    let fallback = Command::new(bin)
+        .env("XDG_STATE_HOME", "")
+        .env("HOME", &home)
+        .args(["review", "artifact", deck.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        fallback.status.success(),
+        "{}",
+        String::from_utf8_lossy(&fallback.stderr)
+    );
+    let locator: serde_json::Value = serde_json::from_slice(&fallback.stdout).unwrap();
+    assert!(
+        std::path::Path::new(locator["artifact_path"].as_str().unwrap()).starts_with(
+            home.canonicalize()
+                .unwrap()
+                .join(".local/state/sideshow/reviews")
+        )
+    );
+
+    let relative = Command::new(bin)
+        .env("XDG_STATE_HOME", "relative/state")
+        .env("HOME", &home)
+        .args(["review", "artifact", deck.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!relative.status.success());
+    assert!(String::from_utf8_lossy(&relative.stderr).contains("must be absolute"));
+}
+
+#[cfg(unix)]
+#[test]
+fn standalone_build_refreshes_existing_review_but_does_not_create_one() {
+    let tmp = tempfile::tempdir().unwrap();
+    let deck = prebuilt_t_deck(tmp.path());
+    let state = tmp.path().join("state");
+    std::fs::create_dir(&state).unwrap();
+    let seeded = seed_review(&deck, &state);
+    let tailwind = fake_tailwind(tmp.path());
+    std::fs::write(deck.join("slides/01.html"), "<h1>Changed</h1>").unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_sideshow"))
+        .env("XDG_STATE_HOME", &state)
+        .env("SIDESHOW_TAILWINDCSS", &tailwind)
+        .args(["build", deck.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let refreshed = sideshow::review::ReviewRepository::with_state_root(&deck, &state)
+        .unwrap()
+        .load_artifact()
+        .unwrap();
+    assert!(refreshed.revision > seeded.revision);
+    assert_eq!(
+        refreshed.annotations[0].freshness,
+        sideshow::review::ReviewFreshness::Stale
+    );
+    assert!(
+        refreshed
+            .build
+            .as_ref()
+            .unwrap()
+            .build_id
+            .ne(&seeded.build.as_ref().unwrap().build_id)
+    );
+
+    let untouched_state = tmp.path().join("untouched-state");
+    std::fs::create_dir(&untouched_state).unwrap();
+    let absent_repository =
+        sideshow::review::ReviewRepository::with_state_root(&deck, &untouched_state).unwrap();
+    assert!(!absent_repository.artifact_path().exists());
+    let build = Command::new(env!("CARGO_BIN_EXE_sideshow"))
+        .env("XDG_STATE_HOME", &untouched_state)
+        .env("SIDESHOW_TAILWINDCSS", &tailwind)
+        .args(["build", deck.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(build.status.success());
+    assert!(!absent_repository.artifact_path().exists());
+    assert!(!untouched_state.join("sideshow").exists());
+}
+
+#[test]
+fn review_cli_mutations_require_revisions_and_keep_workflow_orthogonal() {
+    let tmp = tempfile::tempdir().unwrap();
+    let deck = prebuilt_t_deck(tmp.path());
+    let state = tmp.path().join("state");
+    std::fs::create_dir(&state).unwrap();
+    let seeded = seed_review(&deck, &state);
+    let id = seeded.annotations[0].id.clone();
+
+    let resolve = review_command(&state)
+        .args([
+            "resolve",
+            deck.to_str().unwrap(),
+            &id,
+            "--revision",
+            &seeded.revision.to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(resolve.status.success());
+    let resolved: sideshow::review::ReviewArtifact =
+        serde_json::from_slice(&resolve.stdout).unwrap();
+    assert_eq!(
+        resolved.annotations[0].state,
+        sideshow::review::ReviewState::Resolved
+    );
+    assert_eq!(
+        resolved.annotations[0].disposition,
+        sideshow::review::ReviewDisposition::Pending
+    );
+
+    let disposition = review_command(&state)
+        .args([
+            "disposition",
+            deck.to_str().unwrap(),
+            &id,
+            "--status",
+            "addressed",
+            "--note",
+            "verified with focused tests",
+            "--revision",
+            &resolved.revision.to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(disposition.status.success());
+    let dispositioned: sideshow::review::ReviewArtifact =
+        serde_json::from_slice(&disposition.stdout).unwrap();
+    assert_eq!(
+        dispositioned.annotations[0].state,
+        sideshow::review::ReviewState::Resolved
+    );
+    assert_eq!(
+        dispositioned.annotations[0].disposition,
+        sideshow::review::ReviewDisposition::Addressed
+    );
+    assert_eq!(
+        dispositioned.annotations[0].disposition_note.as_deref(),
+        Some("verified with focused tests")
+    );
+
+    let reopen = review_command(&state)
+        .args([
+            "reopen",
+            deck.to_str().unwrap(),
+            &id,
+            "--revision",
+            &dispositioned.revision.to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(reopen.status.success());
+    let reopened: sideshow::review::ReviewArtifact =
+        serde_json::from_slice(&reopen.stdout).unwrap();
+    assert_eq!(
+        reopened.annotations[0].state,
+        sideshow::review::ReviewState::Todo
+    );
+    assert_eq!(
+        reopened.annotations[0].disposition,
+        sideshow::review::ReviewDisposition::Addressed
+    );
+
+    let stale = review_command(&state)
+        .args([
+            "resolve",
+            deck.to_str().unwrap(),
+            &id,
+            "--revision",
+            &seeded.revision.to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!stale.status.success());
+    let stderr = String::from_utf8_lossy(&stale.stderr);
+    assert!(stderr.contains(&format!("current revision is {}", reopened.revision)));
+    assert!(!stderr.contains("private annotation body"));
+
+    let unconfirmed = review_command(&state)
+        .args([
+            "clear",
+            deck.to_str().unwrap(),
+            "--revision",
+            &reopened.revision.to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!unconfirmed.status.success());
+    assert!(String::from_utf8_lossy(&unconfirmed.stderr).contains("requires --yes"));
+
+    let clear = review_command(&state)
+        .args([
+            "clear",
+            deck.to_str().unwrap(),
+            "--revision",
+            &reopened.revision.to_string(),
+            "--yes",
+        ])
+        .output()
+        .unwrap();
+    assert!(clear.status.success());
+    let cleared: sideshow::review::ReviewArtifact = serde_json::from_slice(&clear.stdout).unwrap();
+    assert!(cleared.annotations.is_empty());
+    assert!(cleared.cleared_at_ms.is_some());
+    assert!(
+        std::path::Path::new(&cleared.deck.canonical_root)
+            .join("slides/01.html")
+            .is_file()
+    );
+    assert!(deck.join("dist/t.html").is_file());
 }
