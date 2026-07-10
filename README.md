@@ -164,6 +164,32 @@ and automatic browser reload after a successful rebuild:
 sideshow serve mydeck --port 8000
 ```
 
+Add `--review` for an annotation-only pass over the served deck:
+
+```sh
+sideshow serve mydeck --review --port 8000
+```
+
+Review mode adds comments to the local preview only: click to pin a point, or
+drag to mark a region. The comment is the only required input; optional intent
+fields can record a type or suggested response when that context is useful. Comments
+carry the generated slide ID, source path, and 1920×1080 logical coordinates;
+they can be edited, resolved, reopened, or deleted. They survive rebuilds and
+live reloads while the server is running, and comments whose slide ID/source
+pair disappears remain visible as orphaned annotations. They are currently
+in-memory session state and are lost when the server exits. `sideshow build`
+output never contains the review UI, nonce, or comments.
+
+Region anchors are intentionally visual rather than DOM-relative. They remain
+stable across text and style edits that preserve the slide's composition, but
+can drift when content is substantially reflowed. Selector and text hints are
+captured when available to help a reviewer or agent relocate the intended
+target; the stable handoff identity is still slide ID plus source path.
+
+The open panel re-fits the slide into the remaining viewport so every edge stays
+annotatable. Press `Escape` to collapse the panel without losing a draft, and
+press `R` to toggle it globally (`R` is ignored while typing in a form field).
+
 ## Visual feedback loop
 
 The deck exposes a small browser automation API at `window.sideshow`. The
@@ -195,6 +221,12 @@ nix run .#ci-clippy
 nix run .#static-checks
 nix run .#ci-test
 ```
+
+To exercise the served review UI against the dogfood deck, start
+`sideshow serve examples/making-of-sideshow --review`, open it in an `rdny`
+browser session, then run `rdny js - < tests/review-smoke.js`. The smoke covers
+point and region creation, edit/resolve/delete, orphan display, and recovery
+from a concurrent delete conflict.
 
 ## Examples
 

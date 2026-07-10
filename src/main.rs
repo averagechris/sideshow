@@ -4,6 +4,7 @@ use flate2::{Compression, write::GzEncoder};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use sideshow::find_tool;
 use std::{
+    collections::BTreeMap,
     fs,
     io::{Cursor, Read, Write},
     net::{TcpListener, TcpStream},
@@ -70,6 +71,9 @@ enum Command {
         dir: PathBuf,
         #[arg(long, default_value_t = 8000)]
         port: u16,
+        /// Enable local, annotation-only slide review controls.
+        #[arg(long)]
+        review: bool,
     },
     /// Publish an existing dist output to S3 or SourceHut Pages.
     Publish {
@@ -220,7 +224,7 @@ fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Command::Serve { dir, port } => serve(&dir, port),
+        Command::Serve { dir, port, review } => serve(&dir, port, review),
         Command::Publish {
             dir,
             target,
@@ -681,12 +685,30 @@ fn img(command: ImgCommand) -> anyhow::Result<()> {
 }
 
 const CSP: &str = "default-src 'self' data: blob:; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; worker-src 'self' 'unsafe-eval' 'unsafe-inline' data: blob:; frame-src https:; img-src data: https:; media-src https:; object-src 'none'; sandbox allow-downloads allow-forms allow-modals allow-pointer-lock allow-popups allow-presentation allow-same-origin allow-scripts;";
+const MAX_HTTP_HEADER_BYTES: usize = 16 * 1024;
+const MAX_HTTP_BODY_BYTES: usize = 64 * 1024;
+const REVIEW_CSS: &str = include_str!("review/review.css");
+const REVIEW_JS: &str = include_str!("review/review.js");
 
-fn serve(dir: &Path, port: u16) -> anyhow::Result<()> {
+struct ReviewServer {
+    nonce: String,
+    store: Mutex<sideshow::review::ReviewStore>,
+}
+
+fn serve(dir: &Path, port: u16, review: bool) -> anyhow::Result<()> {
     let out = sideshow::build_deck(dir)?;
     let (dir, root, out) = normalized_serve_paths(dir, out)?;
     let generation = Arc::new(AtomicU64::new(reload_session_id() << 32));
     let current_output = Arc::new(Mutex::new(out));
+    let review = review
+        .then(|| -> anyhow::Result<_> {
+            let nonce = review_nonce()?;
+            Ok(Arc::new(ReviewServer {
+                store: Mutex::new(sideshow::review::ReviewStore::new(nonce[..12].into())),
+                nonce,
+            }))
+        })
+        .transpose()?;
     start_rebuild_watcher(
         dir.to_path_buf(),
         root.clone(),
@@ -694,16 +716,28 @@ fn serve(dir: &Path, port: u16) -> anyhow::Result<()> {
         Arc::clone(&current_output),
     )?;
     let listener = TcpListener::bind(("127.0.0.1", port))?;
+    let port = listener.local_addr()?.port();
     println!("serving {} at http://localhost:{port}/", root.display());
+    if review.is_some() {
+        println!("review mode enabled (comments are in memory until this server stops)");
+    }
     for stream in listener.incoming() {
         let root = root.clone();
         let generation = Arc::clone(&generation);
         let current_output = Arc::clone(&current_output);
+        let review = review.clone();
         thread::spawn(move || {
             if let Ok(mut stream) = stream {
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
                 let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-                let _ = handle_stream(&mut stream, &root, &current_output, &generation);
+                let _ = handle_stream(
+                    &mut stream,
+                    &root,
+                    &current_output,
+                    &generation,
+                    review.as_deref(),
+                    port,
+                );
             }
         });
     }
@@ -834,10 +868,97 @@ fn is_in_dir(path: &Path, dir: &Path) -> bool {
     }
 }
 
-fn read_req(stream: &mut TcpStream) -> anyhow::Result<String> {
-    let mut b = [0; 1024];
-    let n = stream.read(&mut b)?;
-    Ok(String::from_utf8_lossy(&b[..n]).into())
+struct HttpRequest {
+    method: String,
+    path: String,
+    headers: BTreeMap<String, String>,
+    body: Vec<u8>,
+}
+
+fn read_request(stream: &mut TcpStream) -> anyhow::Result<Option<HttpRequest>> {
+    let mut bytes = Vec::new();
+    let mut chunk = [0_u8; 2048];
+    let header_end = loop {
+        let read = stream.read(&mut chunk)?;
+        if read == 0 {
+            respond_status(stream, "400 Bad Request")?;
+            return Ok(None);
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+        if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+            break index + 4;
+        }
+        if bytes.len() > MAX_HTTP_HEADER_BYTES {
+            respond_status(stream, "431 Request Header Fields Too Large")?;
+            return Ok(None);
+        }
+    };
+    if header_end > MAX_HTTP_HEADER_BYTES {
+        respond_status(stream, "431 Request Header Fields Too Large")?;
+        return Ok(None);
+    }
+
+    let Ok(head) = std::str::from_utf8(&bytes[..header_end]) else {
+        respond_status(stream, "400 Bad Request")?;
+        return Ok(None);
+    };
+    let mut lines = head[..head.len() - 4].split("\r\n");
+    let Some(line) = lines.next() else {
+        respond_status(stream, "400 Bad Request")?;
+        return Ok(None);
+    };
+    let Some(request_line) = parse_request_line(line) else {
+        respond_status(stream, "400 Bad Request")?;
+        return Ok(None);
+    };
+    let mut headers = BTreeMap::new();
+    for line in lines {
+        let Some((name, value)) = line.split_once(':') else {
+            respond_status(stream, "400 Bad Request")?;
+            return Ok(None);
+        };
+        let name = name.trim().to_ascii_lowercase();
+        if name.is_empty() || headers.insert(name, value.trim().to_owned()).is_some() {
+            respond_status(stream, "400 Bad Request")?;
+            return Ok(None);
+        }
+    }
+    if headers.contains_key("transfer-encoding") {
+        respond_status(stream, "400 Bad Request")?;
+        return Ok(None);
+    }
+    let content_length = match headers.get("content-length") {
+        Some(value) => match value.parse::<usize>() {
+            Ok(length) => length,
+            Err(_) => {
+                respond_status(stream, "400 Bad Request")?;
+                return Ok(None);
+            }
+        },
+        None => 0,
+    };
+    if content_length > MAX_HTTP_BODY_BYTES {
+        respond_status(stream, "413 Payload Too Large")?;
+        return Ok(None);
+    }
+    let method = request_line.method.to_owned();
+    let path = request_line.path;
+    while bytes.len() - header_end < content_length {
+        let read = stream.read(&mut chunk)?;
+        if read == 0 {
+            respond_status(stream, "400 Bad Request")?;
+            return Ok(None);
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+    }
+    let mut body = bytes[header_end..].to_vec();
+    body.truncate(content_length);
+    Ok(Some(HttpRequest {
+        method,
+        path,
+        headers,
+        body,
+    }))
 }
 
 fn handle_stream(
@@ -845,20 +966,33 @@ fn handle_stream(
     root: &Path,
     current_output: &Mutex<PathBuf>,
     generation: &AtomicU64,
+    review: Option<&ReviewServer>,
+    port: u16,
 ) -> anyhow::Result<()> {
-    let req = read_req(stream)?;
-    let Some(request) = parse_request_line(&req) else {
-        return respond_status(stream, "400 Bad Request");
+    let Some(request) = read_request(stream)? else {
+        return Ok(());
     };
-    if request.method != "GET" && request.method != "HEAD" {
-        return respond_status(stream, "405 Method Not Allowed");
+    if !request_has_allowed_host(&request, port) {
+        return respond_status(stream, "421 Misdirected Request");
+    }
+    if request.path == "__sideshow/review" {
+        return match review {
+            Some(review) => respond_review(stream, &request, review),
+            None => respond_status(stream, "404 Not Found"),
+        };
     }
     if request.path == "__sideshow/reload" {
+        if request.method != "GET" && request.method != "HEAD" {
+            return respond_status(stream, "405 Method Not Allowed");
+        }
         return respond_reload(
             stream,
             generation.load(Ordering::Relaxed),
             request.method == "HEAD",
         );
+    }
+    if request.method != "GET" && request.method != "HEAD" {
+        return respond_status(stream, "405 Method Not Allowed");
     }
     let default = current_output
         .lock()
@@ -871,6 +1005,7 @@ fn handle_stream(
         &default,
         generation.load(Ordering::Relaxed),
         request.method == "HEAD",
+        review.map(|review| review.nonce.as_str()),
     )
 }
 
@@ -883,6 +1018,9 @@ fn parse_request_line(req: &str) -> Option<RequestLine<'_>> {
     let mut parts = req.lines().next()?.split_whitespace();
     let method = parts.next()?;
     let target = parts.next()?;
+    if parts.next()? != "HTTP/1.1" || parts.next().is_some() {
+        return None;
+    }
     let target = target.split(['?', '#']).next().unwrap_or(target);
     let path = safe_request_path(target)?;
     Some(RequestLine { method, path })
@@ -940,6 +1078,7 @@ fn respond(
     default: &Path,
     generation: u64,
     head_only: bool,
+    review_nonce: Option<&str>,
 ) -> anyhow::Result<()> {
     let requested = if path.is_empty() {
         default.to_path_buf()
@@ -965,6 +1104,9 @@ fn respond(
     };
     if code == "200 OK" && mime.starts_with("text/html") {
         body = inject_livereload(&body, generation);
+        if let Some(nonce) = review_nonce {
+            body = inject_review(&body, nonce);
+        }
     }
     write!(
         stream,
@@ -1032,6 +1174,154 @@ fn inject_livereload(body: &[u8], generation: u64) -> Vec<u8> {
     }
 }
 
+fn review_nonce() -> anyhow::Result<String> {
+    let mut bytes = [0_u8; 24];
+    getrandom::fill(&mut bytes)
+        .map_err(|error| anyhow::anyhow!("failed to generate review session nonce: {error}"))?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn inject_review(body: &[u8], nonce: &str) -> Vec<u8> {
+    let injection = format!(
+        "<style id=\"sideshow-review-style\">{REVIEW_CSS}</style><script id=\"sideshow-review-script\" data-nonce=\"{nonce}\">{REVIEW_JS}</script>"
+    );
+    let Ok(html) = std::str::from_utf8(body) else {
+        return body.to_vec();
+    };
+    if let Some(index) = html.rfind("</body>") {
+        let mut injected = String::with_capacity(html.len() + injection.len());
+        injected.push_str(&html[..index]);
+        injected.push_str(&injection);
+        injected.push_str(&html[index..]);
+        injected.into_bytes()
+    } else {
+        let mut injected = Vec::with_capacity(body.len() + injection.len());
+        injected.extend_from_slice(body);
+        injected.extend_from_slice(injection.as_bytes());
+        injected
+    }
+}
+
+fn respond_review(
+    stream: &mut TcpStream,
+    request: &HttpRequest,
+    review: &ReviewServer,
+) -> anyhow::Result<()> {
+    if request.headers.get("x-sideshow-review") != Some(&review.nonce) {
+        return respond_json_error(stream, "403 Forbidden", "invalid review nonce");
+    }
+    match request.method.as_str() {
+        "GET" | "HEAD" => {
+            let snapshot = review
+                .store
+                .lock()
+                .map_err(|_| anyhow::anyhow!("review store lock poisoned"))?
+                .snapshot();
+            respond_json(stream, "200 OK", &snapshot, request.method == "HEAD")
+        }
+        "POST" => {
+            if !request
+                .headers
+                .get("content-type")
+                .is_some_and(|value| value.eq_ignore_ascii_case("application/json"))
+            {
+                return respond_json_error(
+                    stream,
+                    "415 Unsupported Media Type",
+                    "expected application/json",
+                );
+            }
+            if !request_is_same_origin(request) {
+                return respond_json_error(stream, "403 Forbidden", "origin is not same-origin");
+            }
+            let mutation =
+                match serde_json::from_slice::<sideshow::review::ReviewMutation>(&request.body) {
+                    Ok(mutation) => mutation,
+                    Err(_) => {
+                        return respond_json_error(
+                            stream,
+                            "400 Bad Request",
+                            "malformed review mutation",
+                        );
+                    }
+                };
+            let result = review
+                .store
+                .lock()
+                .map_err(|_| anyhow::anyhow!("review store lock poisoned"))?
+                .apply(mutation);
+            match result {
+                Ok(snapshot) => respond_json(stream, "200 OK", &snapshot, false),
+                Err(sideshow::review::ReviewMutationError::Stale(snapshot)) => {
+                    respond_json(stream, "409 Conflict", &snapshot, false)
+                }
+                Err(sideshow::review::ReviewMutationError::Invalid(message)) => {
+                    respond_json_error(stream, "422 Unprocessable Content", &message)
+                }
+                Err(sideshow::review::ReviewMutationError::NotFound) => {
+                    respond_json_error(stream, "404 Not Found", "annotation not found")
+                }
+            }
+        }
+        _ => respond_status(stream, "405 Method Not Allowed"),
+    }
+}
+
+fn request_is_same_origin(request: &HttpRequest) -> bool {
+    let Some(host) = request.headers.get("host") else {
+        return false;
+    };
+    let local_host = host == "localhost"
+        || host == "127.0.0.1"
+        || host
+            .strip_prefix("localhost:")
+            .is_some_and(|port| port.parse::<u16>().is_ok())
+        || host
+            .strip_prefix("127.0.0.1:")
+            .is_some_and(|port| port.parse::<u16>().is_ok());
+    local_host
+        && request
+            .headers
+            .get("origin")
+            .is_some_and(|origin| origin == &format!("http://{host}"))
+}
+
+fn request_has_allowed_host(request: &HttpRequest, port: u16) -> bool {
+    let Some(host) = request.headers.get("host") else {
+        return false;
+    };
+    host == &format!("localhost:{port}")
+        || host == &format!("127.0.0.1:{port}")
+        || (port == 80 && matches!(host.as_str(), "localhost" | "127.0.0.1"))
+}
+
+fn respond_json<T: serde::Serialize>(
+    stream: &mut TcpStream,
+    code: &str,
+    value: &T,
+    head_only: bool,
+) -> anyhow::Result<()> {
+    let body = serde_json::to_vec(value)?;
+    write!(
+        stream,
+        "HTTP/1.1 {code}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nX-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        body.len()
+    )?;
+    if !head_only {
+        stream.write_all(&body)?;
+    }
+    Ok(())
+}
+
+fn respond_json_error(stream: &mut TcpStream, code: &str, message: &str) -> anyhow::Result<()> {
+    respond_json(
+        stream,
+        code,
+        &serde_json::json!({ "error": message }),
+        false,
+    )
+}
+
 fn deck_sources_mtime(dir: &Path) -> anyhow::Result<SystemTime> {
     fn consider_file(p: &Path, max: &mut SystemTime) -> anyhow::Result<()> {
         if p.is_file()
@@ -1069,6 +1359,40 @@ fn deck_sources_mtime(dir: &Path) -> anyhow::Result<SystemTime> {
 mod serve_tests {
     use super::*;
 
+    fn exchange_with_review(request: &[u8], review: Arc<ReviewServer>) -> String {
+        use std::net::Shutdown;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let output = Mutex::new(PathBuf::from("index.html"));
+            handle_stream(
+                &mut stream,
+                Path::new("."),
+                &output,
+                &AtomicU64::new(1),
+                Some(&review),
+                8000,
+            )
+            .unwrap();
+        });
+        let mut client = TcpStream::connect(address).unwrap();
+        client.write_all(request).unwrap();
+        client.shutdown(Shutdown::Write).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        server.join().unwrap();
+        response
+    }
+
+    fn review_server() -> Arc<ReviewServer> {
+        Arc::new(ReviewServer {
+            nonce: "test-nonce".into(),
+            store: Mutex::new(sideshow::review::ReviewStore::new("test".into())),
+        })
+    }
+
     #[test]
     fn inject_livereload_places_script_before_body_close() {
         let html = b"<!doctype html><body><h1>Hi</h1></body>";
@@ -1102,6 +1426,108 @@ mod serve_tests {
         let body = b"\xff\xfe";
 
         assert_eq!(inject_livereload(body, 1), body);
+    }
+
+    #[test]
+    fn review_injection_is_served_only_and_carries_nonce() {
+        let html = b"<!doctype html><body><h1>Hi</h1></body>";
+
+        let injected = String::from_utf8(inject_review(html, "deadbeef")).unwrap();
+
+        assert!(injected.contains("id=\"sideshow-review-style\""));
+        assert!(injected.contains("id=\"sideshow-review-script\""));
+        assert!(injected.contains("data-nonce=\"deadbeef\""));
+        assert!(injected.contains("/__sideshow/review"));
+        assert!(injected.contains("</script></body>"));
+        assert!(!String::from_utf8_lossy(html).contains("sideshow-review"));
+    }
+
+    #[test]
+    fn review_mutations_require_exact_loopback_origin() {
+        let request = |host: &str, origin: &str| HttpRequest {
+            method: "POST".into(),
+            path: "__sideshow/review".into(),
+            headers: BTreeMap::from([
+                ("host".into(), host.into()),
+                ("origin".into(), origin.into()),
+            ]),
+            body: Vec::new(),
+        };
+
+        assert!(request_is_same_origin(&request(
+            "localhost:8000",
+            "http://localhost:8000"
+        )));
+        assert!(request_is_same_origin(&request(
+            "127.0.0.1:9976",
+            "http://127.0.0.1:9976"
+        )));
+        assert!(!request_is_same_origin(&request(
+            "localhost:8000",
+            "https://evil.example"
+        )));
+        assert!(!request_is_same_origin(&request(
+            "evil.example",
+            "http://evil.example"
+        )));
+    }
+
+    #[test]
+    fn served_routes_reject_unexpected_host_authorities() {
+        let request = b"GET / HTTP/1.1\r\nHost: attacker.example:8000\r\n\r\n";
+
+        let response = exchange_with_review(request, review_server());
+
+        assert!(response.starts_with("HTTP/1.1 421 Misdirected Request"));
+    }
+
+    #[test]
+    fn review_http_api_checks_nonce_origin_and_revision() {
+        let review = review_server();
+        let body = serde_json::json!({
+            "operation": "create",
+            "revision": 0,
+            "annotation": {
+                "slide_id": "s-01-title",
+                "source_path": "slides/01-title.html",
+                "target": { "type": "point", "x": 100, "y": 200 },
+                "body": "Tighten the title",
+                "kind": "issue",
+                "action": "fix"
+            }
+        })
+        .to_string();
+        let request = format!(
+            "POST /__sideshow/review HTTP/1.1\r\nHost: localhost:8000\r\nOrigin: http://localhost:8000\r\nContent-Type: application/json\r\nX-Sideshow-Review: test-nonce\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+
+        let response = exchange_with_review(request.as_bytes(), Arc::clone(&review));
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        let snapshot = review.store.lock().unwrap().snapshot();
+        assert_eq!(snapshot.revision, 1);
+        assert_eq!(snapshot.annotations[0].body, "Tighten the title");
+
+        let bad_nonce = request.replace("test-nonce", "wrong-nonce");
+        let response = exchange_with_review(bad_nonce.as_bytes(), Arc::clone(&review));
+        assert!(response.starts_with("HTTP/1.1 403 Forbidden"));
+
+        let bad_origin = request.replace("http://localhost:8000", "https://evil.example");
+        let response = exchange_with_review(bad_origin.as_bytes(), review);
+        assert!(response.starts_with("HTTP/1.1 403 Forbidden"));
+    }
+
+    #[test]
+    fn review_http_api_rejects_oversized_bodies_before_reading_them() {
+        let request = format!(
+            "POST /__sideshow/review HTTP/1.1\r\nHost: localhost:8000\r\nContent-Length: {}\r\n\r\n",
+            MAX_HTTP_BODY_BYTES + 1
+        );
+
+        let response = exchange_with_review(request.as_bytes(), review_server());
+
+        assert!(response.starts_with("HTTP/1.1 413 Payload Too Large"));
     }
 
     #[test]

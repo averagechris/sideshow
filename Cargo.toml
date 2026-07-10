@@ -20,6 +20,7 @@ base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 comrak = { version = "0.29", default-features = false }
 flate2 = "1"
+getrandom = "0.4"
 image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 lol_html = "2"
 notify = "8"

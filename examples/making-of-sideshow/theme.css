@@ -12,7 +12,7 @@
 }
 body { background: #101512; }
 .slide { --rule: rgb(231 236 231 / .16); --rule-strong: rgb(155 211 138 / .42); --panel-soft: rgb(23 29 25 / .72); background: var(--color-bg); color: var(--color-ink); font-family: var(--font-sans); }
-.slide h1 { font-size: var(--text-hero); line-height: .96; letter-spacing: -.055em; font-weight: 720; }
+.slide h1 { font-size: var(--text-hero); line-height: .96; letter-spacing: -.025em; font-weight: 720; }
 .slide h2 { font-size: var(--text-display); line-height: 1.02; letter-spacing: -.045em; font-weight: 700; }
 .slide code, .slide pre, .mono { font-family: var(--font-mono); }
 .text-muted { color: var(--color-muted); }
@@ -23,3 +23,7 @@ body { background: #101512; }
 .quote { border-left: 3px solid var(--color-accent); padding-left: 1.4rem; }
 .node { border: 1px solid var(--rule); border-radius: .35rem; padding: 1rem 1.15rem; background: rgb(255 255 255 / .025); }
 .arrow { color: var(--color-muted); font-family: var(--font-mono); }
+.title-eyebrow { color: var(--color-accent); font-family: var(--font-mono); font-size: 1.3rem; font-weight: 650; letter-spacing: .16em; text-transform: uppercase; }
+.title-lockup { display: flex; align-items: baseline; gap: 2rem; margin-top: .8rem; }
+.slide .title-name { font-size: 7.4rem; letter-spacing: -.035em; }
+.title-version { color: var(--color-muted); font-family: var(--font-mono); font-size: 2.2rem; letter-spacing: -.04em; }

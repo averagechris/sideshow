@@ -13,6 +13,7 @@ use std::{
 };
 
 mod highlight;
+pub mod review;
 
 pub const RUNTIME_MARKER: &str = "sideshow-runtime-v1";
 const STAGE_CSS: &str = include_str!("runtime/stage.css");

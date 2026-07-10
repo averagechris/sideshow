@@ -12,12 +12,13 @@ progressive-disclosure theme selection.
 1. **Output is a single self-contained HTML file.** No sidecar assets, no
    runtime network fetches required to present. This is the distribution
    contract (srht pages, S3 presigned, Slack attachment all Just Work).
-2. **Terminal-first.** No GUI workflows. The visual feedback loop is the
+2. **Terminal-first.** Authoring and source mutation stay in the terminal. The visual feedback loop is the
    *agent's* job, not the CLI's: drive rodney (or any browser automation)
    against the built deck, screenshot slides, read them with vision. The
    deck cooperates via the `window.sideshow` runtime API (nav + audit);
-   the skill pack documents the canonical rodney workflow. sideshow never
-   shells out to a browser.
+   the skill pack documents the canonical rodney workflow. An optional served
+   review overlay may capture visual annotations for handoff, but it never edits
+   deck source. sideshow never shells out to a browser.
 3. **Minimal node.** Tailwind v4 standalone binary (nixpkgs `tailwindcss_4`)
    is the only JS-ecosystem tool, provided via nix, never npm/npx.
 4. **Deterministic boilerplate.** Stage CSS, nav runtime, print CSS, theme
@@ -118,7 +119,9 @@ v1:
 - `sideshow new <dir> [--theme <name>]` — scaffold deck source.
 - `sideshow build <dir>` — compile to `dist/<slug-of-deck-title>.html` and print the path (single file).
 - `sideshow serve <dir>` — build + local server with srht-pages-like
-  headers (CSP, MIME), rebuild on change.
+  headers (CSP, MIME), rebuild on change. `--review` injects local-only point
+  and logical-region annotation controls into served HTML; build output remains
+  unchanged.
 - `sideshow check <dir>` — static deck linter: fragment contract
   violations, broken asset refs, deck.toml validity, duplicate slide ids.
   Dynamic checks (overflow, image rendering) are `sideshow.audit()` via
@@ -147,7 +150,8 @@ flake devShell / package wrapper), shelled out to — not linked. rodney is
 - No WASM/Leptos runtime in decks (revisit only for a future interactive
   slide type).
 - No markdown-only authoring mode; markdown is a per-slide convenience.
-- No GUI, no browser-based editor, no inline WYSIWYG editing.
+- No browser-based source editor or inline WYSIWYG editing. Served review mode
+  is annotation and handoff only.
 - No reveal.js — but the runtime is intentionally small enough that
   swapping a different runtime in later is a build-step change, not a
   rewrite.
