@@ -9,11 +9,17 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::LazyLock,
+    sync::{
+        LazyLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
+mod fonts;
 mod highlight;
 pub mod review;
+
+pub use fonts::{FontFaceConfig, FontStyle};
 
 pub const RUNTIME_MARKER: &str = "sideshow-runtime-v1";
 const STAGE_CSS: &str = include_str!("runtime/stage.css");
@@ -33,6 +39,7 @@ static CSS_COMMENT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?s)/\*.
 static LOCAL_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"url\(\s*['\"]?\s*#([A-Za-z_][A-Za-z0-9_.:-]*)\s*['\"]?\s*\)"#).unwrap()
 });
+static CSS_BUILD_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub fn find_tool(
     binary: &str,
@@ -252,6 +259,8 @@ pub struct DeckToml {
     pub build: BuildConfig,
     #[serde(default)]
     pub images: ImagesConfig,
+    #[serde(default)]
+    pub fonts: Vec<FontFaceConfig>,
 }
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct DeckMeta {
@@ -326,7 +335,7 @@ pub fn new_deck(dir: &Path, theme: &str) -> anyhow::Result<()> {
     fs::write(
         dir.join("deck.toml"),
         format!(
-            "[deck]\ntitle = \"{} Demo\"\ntheme = \"{}\"\n\n[build]\ninline_assets = true\n",
+            "[deck]\ntitle = \"{} Demo\"\ntheme = \"{}\"\n\n[build]\ninline_assets = true\n\n# Declare non-system TrueType faces explicitly; keep sources under assets/.\n# [[fonts]]\n# source = \"assets/example-regular.ttf\"\n# family = \"Example Sans\"\n# style = \"normal\"\n# weight = 400\n",
             title_case(theme),
             theme
         ),
@@ -440,6 +449,39 @@ fn asset_refs(input: &str) -> anyhow::Result<Vec<String>> {
             .filter_map(|c| css_asset_capture_path(&c).and_then(asset_ref_without_suffix)),
     );
     Ok(refs)
+}
+
+fn safe_inline_svg_text(deck_dir: &Path, input: &str) -> String {
+    let mut refs = Vec::new();
+    if lol_html::rewrite_str(
+        input,
+        RewriteStrSettings {
+            element_content_handlers: vec![element!("img[src]", |el| {
+                if let Some(source) = el
+                    .get_attribute("src")
+                    .and_then(|value| asset_ref_without_suffix(&value))
+                    .filter(|value| value.to_ascii_lowercase().ends_with(".svg"))
+                {
+                    refs.push(source);
+                }
+                Ok(())
+            })],
+            ..RewriteStrSettings::default()
+        },
+    )
+    .is_err()
+    {
+        return String::new();
+    }
+    refs.into_iter()
+        .filter_map(|source| {
+            let path = validate_asset_path(deck_dir, &source).ok()?;
+            let svg = fs::read_to_string(path).ok()?;
+            validate_static_svg(&svg).ok()?;
+            Some(svg)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn css_asset_capture_path<'a>(captures: &'a Captures<'a>) -> Option<&'a str> {
@@ -659,6 +701,8 @@ pub fn check_deck(dir: &Path) -> Vec<CheckFinding> {
     }
     let mut stems = std::collections::HashMap::<String, PathBuf>::new();
     let mut all_refs = BTreeSet::new();
+    let mut ordinary_refs = BTreeSet::new();
+    let mut rendered_content = String::new();
     for p in slides {
         let rel = p
             .strip_prefix(dir)
@@ -727,6 +771,8 @@ pub fn check_deck(dir: &Path) -> Vec<CheckFinding> {
         } else {
             raw.clone()
         };
+        rendered_content.push_str(&rendered);
+        rendered_content.push_str(&safe_inline_svg_text(dir, &rendered));
         if let Ok(literals) = color_literals(&rendered) {
             for literal in literals {
                 findings.push(CheckFinding {
@@ -741,6 +787,7 @@ pub fn check_deck(dir: &Path) -> Vec<CheckFinding> {
             Ok(refs) => {
                 for r in refs {
                     all_refs.insert(r.clone());
+                    ordinary_refs.insert(r.clone());
                     match validate_asset_path(dir, &r) {
                         Err(e) => findings.push(CheckFinding {
                             path: rel.clone(),
@@ -775,6 +822,61 @@ pub fn check_deck(dir: &Path) -> Vec<CheckFinding> {
             }),
         }
     }
+    let font_refs = fonts::source_refs(&deck.fonts);
+    all_refs.extend(font_refs.iter().cloned());
+    let mut embedded_fonts = Vec::new();
+    if !deck.fonts.is_empty() {
+        match fs::read_to_string(dir.join("theme.css"))
+            .context("cannot read theme.css")
+            .and_then(|theme| {
+                fonts::glyph_corpus(
+                    &deck.deck.title,
+                    &rendered_content,
+                    &format!("{STAGE_CSS}\n{theme}"),
+                )
+            })
+            .and_then(|corpus| fonts::prepare_fonts(dir, &deck.fonts, &corpus))
+        {
+            Ok(prepared) => embedded_fonts = prepared,
+            Err(e) => findings.push(CheckFinding {
+                path: deck_path.display().to_string(),
+                severity: FindingSeverity::Error,
+                kind: "font".into(),
+                message: e.to_string(),
+            }),
+        }
+    }
+    for face in &deck.fonts {
+        let Ok(source) = normalize_asset_ref(&face.source) else {
+            continue;
+        };
+        let Some(size) = validate_asset_path(dir, &source)
+            .ok()
+            .and_then(|path| fs::metadata(path).ok())
+            .map(|metadata| metadata.len())
+        else {
+            continue;
+        };
+        if size > 500 * 1024 {
+            findings.push(CheckFinding {
+                path: source,
+                severity: FindingSeverity::Warning,
+                kind: "asset_size_budget".into(),
+                message: format!("font source size is {size} bytes (> 500KB)"),
+            });
+        }
+    }
+    for font in &embedded_fonts {
+        let generated = font.projected_inline_size();
+        if generated > 500 * 1024 {
+            findings.push(CheckFinding {
+                path: font.source.clone(),
+                severity: FindingSeverity::Warning,
+                kind: "asset_size_budget".into(),
+                message: format!("generated inlined WOFF2 is {generated} bytes (> 500KB)"),
+            });
+        }
+    }
     for orphan in orphaned_assets(dir, &all_refs) {
         findings.push(CheckFinding {
             path: orphan.clone(),
@@ -783,7 +885,7 @@ pub fn check_deck(dir: &Path) -> Vec<CheckFinding> {
             message: "asset is not referenced by any slide fragment".into(),
         });
     }
-    let total: u64 = all_refs
+    let total: u64 = ordinary_refs
         .iter()
         .filter_map(|r| {
             validate_asset_path(dir, r)
@@ -791,7 +893,11 @@ pub fn check_deck(dir: &Path) -> Vec<CheckFinding> {
                 .and_then(|p| fs::metadata(p).ok())
                 .map(|m| projected_data_uri_size(m.len(), mime_for(r)))
         })
-        .sum();
+        .sum::<u64>()
+        + embedded_fonts
+            .iter()
+            .map(fonts::EmbeddedFont::projected_inline_size)
+            .sum::<u64>();
     if total > 10 * 1024 * 1024 {
         findings.push(CheckFinding {
             path: dir.display().to_string(),
@@ -1319,7 +1425,15 @@ pub fn build_deck(dir: &Path) -> anyhow::Result<PathBuf> {
             "<section class=\"{class}\" id=\"s-{stem}\" data-src=\"{rel}\">\n{html}\n</section>\n"
         ));
     }
-    let css = compile_css(dir)?;
+    let mut css = compile_css(dir)?;
+    if !deck.fonts.is_empty() {
+        let corpus = fonts::glyph_corpus(&deck.deck.title, &sections, &css)?;
+        let font_css = fonts::prepare_fonts(dir, &deck.fonts, &corpus)?
+            .iter()
+            .map(fonts::EmbeddedFont::css)
+            .collect::<String>();
+        css = format!("{font_css}{css}");
+    }
     let out_dir = dir.join("dist");
     fs::create_dir_all(&out_dir)?;
     let out = out_dir.join(format!("{}.html", slug(&deck.deck.title)));
@@ -1368,7 +1482,11 @@ fn compile_css(dir: &Path) -> anyhow::Result<String> {
     )?;
     let slides_dir = fs::canonicalize(dir.join("slides"))?;
     let slides_source = css_string(&slides_dir.to_string_lossy());
-    let tmp = std::env::temp_dir().join(format!("sideshow-{}", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!(
+        "sideshow-{}-{}",
+        std::process::id(),
+        CSS_BUILD_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
     fs::create_dir_all(&tmp)?;
     let input = tmp.join("entry.css");
     let output = tmp.join("out.css");
@@ -1443,6 +1561,8 @@ fn mime_for(p: &str) -> &'static str {
         "webm" => "video/webm",
         "mp4" => "video/mp4",
         "css" => "text/css",
+        "ttf" => "font/ttf",
+        "woff2" => "font/woff2",
         _ => "application/octet-stream",
     }
 }
@@ -1827,6 +1947,38 @@ mod tests {
         let d = parse_deck_toml("[deck]\ntitle='T'\nslides=['slides/b.md']\n").unwrap();
         assert_eq!(d.deck.title, "T");
         assert!(d.build.inline_assets);
+        assert!(d.fonts.is_empty());
+    }
+
+    #[test]
+    fn parses_multiple_font_faces_without_changing_defaults() {
+        let d = parse_deck_toml(
+            r#"
+                [deck]
+                title = "T"
+
+                [[fonts]]
+                source = "assets/regular.ttf"
+                family = "Example Sans"
+                style = "normal"
+                weight = 400
+
+                [[fonts]]
+                source = "assets/bold.ttf"
+                family = "Example Sans"
+                style = "italic"
+                weight = 700
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(d.fonts.len(), 2);
+        assert_eq!(d.fonts[0].family, "Example Sans");
+        assert_eq!(d.fonts[0].style, FontStyle::Normal);
+        assert_eq!(d.fonts[0].weight, 400);
+        assert_eq!(d.fonts[1].style, FontStyle::Italic);
+        assert!(d.build.inline_assets);
+        assert_eq!(d.images, ImagesConfig::default());
     }
     #[test]
     fn rejects_forbidden() {
@@ -2266,6 +2418,90 @@ mod tests {
     }
 
     #[test]
+    fn empty_font_config_leaves_system_font_build_output_byte_identical() {
+        if which::which("tailwindcss").is_err() {
+            eprintln!("skipping font compatibility build test: tailwindcss not on PATH");
+            return;
+        }
+        let t = tempfile::tempdir().unwrap();
+        minimal_deck(&t);
+        fs::write(t.path().join("theme.css"), SIGNAL_CSS).unwrap();
+        fs::write(t.path().join("slides/01.html"), "<h1>System font</h1>").unwrap();
+        let default_output = fs::read(build_deck(t.path()).unwrap()).unwrap();
+
+        fs::write(
+            t.path().join("deck.toml"),
+            "fonts = []\n[deck]\ntitle='T'\n",
+        )
+        .unwrap();
+        let explicit_empty_output = fs::read(build_deck(t.path()).unwrap()).unwrap();
+
+        assert_eq!(default_output, explicit_empty_output);
+        assert!(
+            !explicit_empty_output
+                .windows(b"@font-face".len())
+                .any(|window| window == b"@font-face")
+        );
+    }
+
+    #[test]
+    fn build_inlines_subsetted_font_without_source_url_or_mutation() {
+        if which::which("tailwindcss").is_err() {
+            eprintln!("skipping font build test: tailwindcss not on PATH");
+            return;
+        }
+        let t = tempfile::tempdir().unwrap();
+        minimal_deck(&t);
+        fs::write(
+            t.path().join("theme.css"),
+            "body { font-family: 'Tiny Five'; }",
+        )
+        .unwrap();
+        fs::write(
+            t.path().join("slides/01.html"),
+            "<h1>Café Ελληνικά e\u{301}</h1>",
+        )
+        .unwrap();
+        let fixture = font_fixture();
+        fs::write(t.path().join("assets/tiny5.ttf"), fixture).unwrap();
+        fs::write(
+            t.path().join("deck.toml"),
+            r#"[deck]
+title = "T"
+
+[[fonts]]
+source = "assets/tiny5.ttf"
+family = "Tiny Five"
+style = "normal"
+weight = 400
+"#,
+        )
+        .unwrap();
+
+        let output = fs::read_to_string(build_deck(t.path()).unwrap()).unwrap();
+
+        assert!(output.contains("@font-face{font-family:\"Tiny Five\""));
+        assert!(output.contains("data:font/woff2;base64,"));
+        assert!(output.contains("format(\"woff2\")"));
+        assert!(!output.contains("assets/tiny5.ttf"));
+        let encoded = output
+            .split("data:font/woff2;base64,")
+            .nth(1)
+            .unwrap()
+            .split(')')
+            .next()
+            .unwrap();
+        let payload = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
+        assert!(payload.starts_with(b"wOF2"));
+        assert_eq!(
+            fs::read(t.path().join("assets/tiny5.ttf")).unwrap(),
+            fixture
+        );
+    }
+
+    #[test]
     fn build_avoids_generated_svg_ids_colliding_with_later_authored_slide_ids() {
         if which::which("tailwindcss").is_err() {
             eprintln!("skipping build SVG id collision test: tailwindcss not on PATH");
@@ -2304,6 +2540,10 @@ mod tests {
         fs::create_dir_all(t.path().join("slides")).unwrap();
         fs::create_dir_all(t.path().join("assets")).unwrap();
         fs::write(t.path().join("deck.toml"), "[deck]\ntitle='T'\n").unwrap();
+    }
+
+    fn font_fixture() -> &'static [u8] {
+        include_bytes!("../tests/fixtures/fonts/Tiny5-Regular.ttf")
     }
 
     #[test]
@@ -2517,6 +2757,68 @@ mod tests {
                 .iter()
                 .any(|f| f.severity == FindingSeverity::Warning && f.kind == "asset_size_budget")
         );
+    }
+
+    #[test]
+    fn check_accounts_for_font_source_and_generated_payload_without_orphaning() {
+        let t = tempfile::tempdir().unwrap();
+        minimal_deck(&t);
+        fs::write(t.path().join("theme.css"), "").unwrap();
+        fs::write(t.path().join("slides/01.html"), "Café e\u{301}").unwrap();
+        let mut padded = font_fixture().to_vec();
+        padded.resize(520 * 1024, 0);
+        fs::write(t.path().join("assets/tiny5.ttf"), padded).unwrap();
+        fs::write(
+            t.path().join("deck.toml"),
+            r#"[deck]
+title = "T"
+
+[[fonts]]
+source = "assets/tiny5.ttf"
+family = "Tiny Five"
+style = "normal"
+weight = 400
+"#,
+        )
+        .unwrap();
+
+        let findings = check_deck(t.path());
+
+        assert!(findings.iter().any(|finding| {
+            finding.kind == "asset_size_budget"
+                && finding.path == "assets/tiny5.ttf"
+                && finding.message.contains("font source size")
+        }));
+        assert!(!findings.iter().any(|finding| {
+            finding.kind == "orphaned_asset" && finding.path == "assets/tiny5.ttf"
+        }));
+        assert!(!findings.iter().any(|finding| finding.kind == "font"));
+    }
+
+    #[test]
+    fn check_reports_missing_font_as_a_font_error() {
+        let t = tempfile::tempdir().unwrap();
+        minimal_deck(&t);
+        fs::write(t.path().join("theme.css"), "").unwrap();
+        fs::write(t.path().join("slides/01.html"), "Hello").unwrap();
+        fs::write(
+            t.path().join("deck.toml"),
+            r#"[deck]
+title = "T"
+
+[[fonts]]
+source = "assets/missing.ttf"
+family = "Missing"
+style = "normal"
+weight = 400
+"#,
+        )
+        .unwrap();
+
+        let findings = check_deck(t.path());
+        assert!(findings.iter().any(|finding| {
+            finding.kind == "font" && finding.message.contains("assets/missing.ttf")
+        }));
     }
 
     #[test]

@@ -107,6 +107,56 @@ quality = 80
 max_dim = 3840
 ```
 
+## Custom fonts
+
+Decks use system font stacks unless they explicitly declare one or more
+non-system faces in `deck.toml`:
+
+```toml
+[[fonts]]
+source = "assets/acme-regular.ttf"
+family = "Acme Sans"
+style = "normal" # normal, italic, or oblique
+weight = 400      # CSS numeric weight, 1..=1000
+
+[[fonts]]
+source = "assets/acme-bold.ttf"
+family = "Acme Sans"
+style = "normal"
+weight = 700
+```
+
+Set the same family in `theme.css` as usual. During each build Sideshow derives
+one deterministic, deck-wide Unicode corpus from the title, rendered HTML text
+(including decoded entities and inline SVG text), literal CSS `content` strings,
+common list markers, and Unicode case variants. It subsets every declared face
+against that conservative corpus, preserves all copyright/license name records
+and supported OpenType layout features, encodes the
+result as WOFF2, and prepends data-URI `@font-face` rules to the compiled CSS.
+The source font is read only. Decks without `[[fonts]]` take the existing build
+path and their output is unchanged.
+
+The deliberately small input contract accepts only individual TrueType `.ttf`
+fonts with `glyf` outlines. WOFF/WOFF2 inputs, OpenType CFF/CFF2 fonts, and font
+collections are rejected rather than copied or converted unreliably. Fonts whose
+OS/2 metadata restricts embedding, subsetting, or outline embedding are also
+rejected, as are name-table forms whose licensing records cannot be retained
+exactly and legacy `kern`-only fonts without equivalent GPOS positioning. These
+technical checks do not grant redistribution rights: authors must
+verify the font's web embedding/subsetting license, preserve any required license
+sidecar, and account for reserved-font-name terms. If a sidecar must travel in
+the single HTML output, reference it from deck content so it is inlined instead
+of reported as an orphan.
+
+The corpus cannot infer runtime-generated text or dynamic CSS `content` from
+`attr()`, counters, or custom properties. Put every required character in static
+deck text or a literal `content: "…"` string. Each face receives the full corpus;
+faces with no matching glyphs are omitted from that build, and browser fallback
+still applies for characters a source face does not contain.
+`sideshow check` treats declared sources as referenced assets, checks source and
+generated WOFF2 sizes against the per-asset budget, and includes generated data
+URI sizes in the total deck budget.
+
 ## Videos
 
 Small `.webm` and `.mp4` files referenced from `assets/` are inlined into the

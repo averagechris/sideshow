@@ -11,6 +11,9 @@
 - Add opt-in `sideshow serve --open` to launch the system browser only after a
   successful build and listener bind, including correct `--port 0` URLs and
   clear headless/unsupported opener errors.
+- Add explicit multi-face custom font declarations with deterministic build-time
+  TrueType subsetting, preserved licensing metadata, inline WOFF2 data URIs,
+  embedding-policy validation, and source/generated asset-budget accounting.
 
 ## v0.4.0 - 2026-07-10
 

@@ -48,6 +48,13 @@ theme = "signal"            # informational; theme.css is the source of truth
 
 [build]
 # inline_assets = true      # default; base64 everything into the output
+
+# Optional; repeat once per non-system face.
+[[fonts]]
+source = "assets/acme-regular.ttf"
+family = "Acme Sans"
+style = "normal"
+weight = 400
 ```
 
 Keep the schema tiny. Add keys only when a real need appears.
@@ -108,6 +115,23 @@ Keep the schema tiny. Add keys only when a real need appears.
 - Compiler build pipeline: generated entry CSS =
   `@import "tailwindcss"` + stage CSS + theme.css; run tailwind standalone
   with content scan over `slides/`; inline the purged output.
+- Non-system faces are structured `[[fonts]]` declarations, not generic
+  `theme.css` URL rewriting. The compiler collects a sorted union of Unicode
+  scalars from the deck title, rendered HTML text/entities, inline SVG text, and
+  literal CSS generated content, common markers, and Unicode case closure; each
+  declared face receives that conservative corpus. It subsets supported
+  TrueType/glyf sources in memory, retains all licensing name records and
+  supported OpenType layout closure, emits deterministic
+  WOFF2 data-URI `@font-face` CSS, and never mutates source files. No declaration
+  means this stage is skipped exactly.
+- The supported source surface is intentionally narrow: individual `.ttf`
+  TrueType fonts with `glyf` outlines. Reject WOFF/WOFF2 input, CFF/CFF2, font
+  collections, malformed required tables, and restrictive OS/2 embedding flags.
+  Also reject licensing name records that cannot be retained and legacy
+  `kern`-only fonts without equivalent GPOS positioning.
+  Dynamic runtime text and CSS `attr()`/counter/custom-property content are not
+  statically inferable and must be represented by static corpus text. Font
+  licensing remains the deck author's responsibility.
 - Ship 3–5 original built-in themes (`sideshow new --theme <name>` copies
   the theme into the deck so decks are self-contained and forkable).
 - Theme index metadata (mood/density/best-for) lives alongside themes for
@@ -175,8 +199,8 @@ invariant 2.
 
 ## Dependencies (Rust)
 
-clap, serde/toml, comrak, tiny HTTP server (repo-local or `tiny_http`),
-base64. Tailwind is a runtime tool resolved from PATH (provided by the
+clap, serde/toml, comrak, base64, and a pure-Rust TrueType subset/WOFF2 stack.
+Tailwind is a runtime tool resolved from PATH (provided by the
 flake devShell / package wrapper), shelled out to — not linked. rodney is
 **not** a dependency: browser automation belongs to the agent workflow.
 

@@ -117,6 +117,23 @@ Default slide order is lexicographic over `slides/*.{html,md}`. Name files with 
 - Use raster files for photos, screenshots, logos, or supplied bitmap assets. Run `sideshow img info assets/photo.png` to inspect dimensions/projected inline size and `sideshow img optimize assets/photo.png` for photo-like assets.
 - `sideshow build` optimizes raster assets in memory by default via `[images]` config, but does not mutate `assets/`. Safe direct SVG image sources may be promoted to namespaced inline markup; unsupported SVG remains a passive data-URI image. `sideshow check` warns on large individual assets, total deck budget, orphaned assets, and hardcoded fragment colors; use `--strict` when warnings must gate delivery.
 
+### Custom fonts
+
+- Prefer system stacks unless the deck needs a licensed brand/display face. Put
+  each source under `assets/` and add a `[[fonts]]` entry with `source`, `family`,
+  `style` (`normal`, `italic`, or `oblique`), and numeric `weight`; repeat for
+  additional faces. Use the declared family from `theme.css`.
+- Only individual TrueType `.ttf` fonts with `glyf` outlines are supported.
+  Sideshow rejects WOFF/WOFF2 inputs, CFF/CFF2 OTFs, collections, malformed
+  fonts, and restrictive OS/2 embedding flags. Confirm redistribution, web
+  embedding, subsetting, attribution, license-sidecar, and reserved-name terms
+  yourself; technical font metadata is not a license grant.
+- Builds subset all faces from the static rendered deck corpus and inline WOFF2
+  data URIs without changing sources. Runtime-generated strings and dynamic CSS
+  `content` using `attr()`, counters, or custom properties cannot be discovered;
+  include required characters in static slide text or literal CSS `content`.
+  Font source/generated payloads count toward `sideshow check` asset budgets.
+
 ### Videos
 
 - Keep videos short and intentional. Prefer `.webm`; `.webm` and `.mp4` files under `assets/` are inlined as data URIs and count against the same per-asset and total deck budgets as images.
