@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+
+## v0.3.0 - 2026-07-09
+
 - Parse HTML asset references structurally, including `srcset`, while confining
   local reads to the deck's `assets/` directory.
 - Inline safe direct SVG image sources as sanitized, deck-wide namespaced markup;
@@ -11,7 +14,6 @@
 - Warn from `sideshow check` about orphaned assets and hardcoded fragment colors.
 - Remove the generated Tailwind banner while preserving unrelated license
   comments.
-
 ## v0.2.0 - 2026-07-08
 
 - Dual-license under MIT OR Apache-2.0 (LICENSE, LICENSE-MIT, LICENSE-APACHE).
