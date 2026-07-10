@@ -11,6 +11,8 @@ environment:
     extra-trusted-public-keys = averagechris-dotfiles.cachix.org-1:VwJkl5dG1+xGDY5x884mH/kVwwpgwBAdBKIF3BZiia4=
 sources:
   - https://git.sr.ht/~averagechris/sideshow
+secrets:
+  - 5ec60320-e0d8-4ebe-8b45-1d10cc4d2cb2 # cachix averagechris-dotfiles -> ~/.ci_secrets/cachix_token
 tasks:
   - release-artifact: |
       set -eu
