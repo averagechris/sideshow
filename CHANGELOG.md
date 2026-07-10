@@ -14,6 +14,9 @@
 - Add explicit multi-face custom font declarations with deterministic build-time
   TrueType subsetting, preserved licensing metadata, inline WOFF2 data URIs,
   embedding-policy validation, and source/generated asset-budget accounting.
+- Specify the future two-dimensional deck navigation model, including author
+  syntax, source/DOM/print/accessibility order, stable deep links, input
+  behavior, automation, and review annotation identity.
 
 ## v0.4.0 - 2026-07-10
 

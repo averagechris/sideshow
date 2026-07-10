@@ -107,6 +107,178 @@ Keep the schema tiny. Add keys only when a real need appears.
   Deterministic measurement lives in the deck; the browser driver stays
   dumb.
 
+## Future navigation model: two-dimensional decks
+
+This section is a **normative design specification for a future production
+model**, not current user-facing functionality. Current sideshow releases remain
+one-dimensional: author docs, the deck-author skill, the runtime, the build
+schema, and examples must not claim that two-dimensional navigation is available
+until implementation validation is complete.
+
+The goal is to support horizontal columns with nested vertical branches while
+preserving sideshow's tiny authoring contract, deterministic output, and
+automation/review anchors.
+
+### Author syntax and source model
+
+- Keep `deck.toml` tiny. The default `slides/` lexicographic order and optional
+  `[deck].slides = [...]` list continue to define top-level deck input. Do not
+  add row/column tables to TOML for the common case.
+- A normal slide file remains one horizontal slide. A directory under `slides/`
+  (or an entry in `[deck].slides`) is a horizontal column whose children are a
+  vertical branch ordered lexicographically, using the same `*.html` and `*.md`
+  fragment contract as top-level slides.
+- The first child in a column directory is the column's root slide. Subsequent
+  children are vertical descendants reached with down/up navigation. Example:
+
+  ```text
+  slides/
+    01-title.html              # position 1
+    02-market/                 # horizontal position 2
+      01-summary.md            # position 2.1, column root
+      02-evidence.html         # position 2.2
+      03-risk.html             # position 2.3
+    03-plan.html               # position 3
+  ```
+
+- Nested directories below a column are reserved for a later model and are a
+  validation error in the first production implementation. This keeps the first
+  model to two axes: horizontal columns and one vertical branch per column.
+- Explicit `[deck].slides` entries may contain files and directories in the
+  desired horizontal order. Directory children are still ordered by the same
+  child ordering rule unless a future explicit child-order mechanism is proven
+  necessary.
+- A slide's stable source path is the repository-relative deck path to the
+  fragment file, including the branch directory when present, such as
+  `slides/02-market/02-evidence.html`.
+
+### Deterministic order and accessibility
+
+- The canonical source order is depth-first by column: each horizontal item,
+  then all of that column's vertical children in branch order, then the next
+  horizontal item. DOM order, accessible reading order, notes order, audit order,
+  automation enumeration, and print order all use this same canonical order.
+- The DOM remains a flat sequence of `<section class="slide">` elements. Axis
+  metadata is data, not nesting: each section receives deterministic coordinates
+  such as `data-col="2" data-row="3"` plus `data-src`.
+- Print output is one page per slide in canonical order. It does not attempt a
+  visual matrix layout because PDFs, screen readers, and audit logs need one
+  stable linear sequence.
+- Keyboard or touch traversal may create a spatial experience, but it never
+  changes DOM order or the source path identity of a slide.
+
+### Stable IDs and deep links
+
+- Existing one-dimensional slide IDs remain unchanged. For ordinary decks, the
+  compiler must continue producing byte-for-byte identical IDs, hashes, DOM
+  structure, and runtime behavior.
+- For two-dimensional decks, slide IDs are derived from the stable source path,
+  not from mutable coordinates alone. The exact algorithm must be deterministic,
+  collision-checked, and human-readable where possible; for example,
+  `s-02-market-02-evidence`. If two paths normalize to the same ID, compilation
+  fails rather than appending unstable counters.
+- The stable deep-link hash is ID-first: `#s-02-market-02-evidence`. Numeric
+  hashes such as `#5` remain supported as compatibility aliases for canonical
+  order, but generated links and runtime hash updates use the stable slide ID.
+- Coordinates are exposed for automation and UI affordances, but coordinates are
+  not the persistent link contract. Reordering columns may change coordinates;
+  moving/renaming a source path changes the slide's identity and is treated as an
+  author-visible link migration.
+
+### Keyboard behavior and reveal precedence
+
+- Right/Left move between horizontal columns. When entering a column from a
+  different column, the runtime lands on that column's root slide unless the
+  session has already visited that column, in which case restoring the last row
+  within that column is allowed only as ephemeral session state and must not
+  affect hashes, print, notes, or automation order.
+- Down/Up move within the current column's vertical branch. At the top of a
+  branch, Up has no vertical effect; at the bottom, Down has no vertical effect.
+- Space, PageDown, and `sideshow.next()` advance in canonical order after reveal
+  handling. PageUp and `sideshow.prev()` reverse in canonical order. This keeps
+  presenter remotes and automation compatible with one-dimensional traversal.
+- Reveal precedence is axis-local and always before slide movement: if the
+  active slide has unrevealed `data-step` elements, Right, Down, Space,
+  PageDown, and `next()` reveal the next step instead of moving. Reverse reveal
+  behavior, if supported, happens before Left, Up, PageUp, or `prev()` leave the
+  slide; otherwise those commands leave the slide without mutating completed
+  reveal state, matching existing one-dimensional behavior.
+- Home/End move to the first/last slide in canonical order. `<number>`+Enter
+  targets canonical order for compatibility. A future coordinate entry shortcut
+  must not conflict with numeric slide entry.
+- `.is-active` is the single source of current-slide truth. Exactly one slide is
+  active after every keyboard transition.
+
+### Touch, pointer, and interactive conflicts
+
+- Horizontal swipes navigate columns; vertical swipes navigate within the current
+  column. Gesture recognition uses a movement threshold and dominant-axis lock:
+  once horizontal or vertical intent is clear, the other axis is ignored for that
+  gesture.
+- Reveal precedence matches keyboard behavior. A forward swipe first advances a
+  pending reveal on the active slide; only the next forward gesture moves slides.
+- Touch navigation must not steal intentional interaction from controls inside a
+  slide. Gestures beginning on links, buttons, inputs, textareas, selects,
+  details/summary controls, elements with ARIA widget roles, or elements marked
+  with an opt-out attribute such as `data-sideshow-interactive` are passed
+  through unless the element explicitly delegates navigation.
+- Served review overlay interactions take priority over slide navigation while a
+  review tool is armed, dragging, editing, or focused. Navigation resumes only
+  when the overlay is idle. Review UI must not enter build artifacts.
+- Pointer/touch handlers are passive until the runtime commits to a navigation
+  gesture, minimizing scroll/zoom conflicts on mobile browsers.
+
+### Notes, audit, and automation
+
+- `sideshow.count()` returns the number of slides in canonical order.
+- `sideshow.goto(n)` continues to target canonical one-based order. A future
+  `sideshow.gotoId(id)` or `sideshow.goto({ col, row })` may be added, but it is
+  additive and must not change existing API semantics.
+- `sideshow.notes(n)` uses canonical order. Notes for vertical slides are normal
+  slide notes; there is no inherited notes model between a column root and its
+  descendants.
+- `sideshow.audit()` reports slides in canonical order and includes stable
+  `id`, `src`, `col`, `row`, branch size, reveal count, note presence, overflow,
+  and image failures. One-dimensional audit output remains byte-for-byte
+  compatible unless callers opt into new fields or the eventual release makes a
+  documented versioned audit change.
+- Browser automation may drive either canonical order or stable IDs, but test
+  fixtures for ordinary decks must continue to pass without updating expected
+  hashes, counts, active-class behavior, or audit shape.
+
+### Review mode and annotation identity
+
+- Review mode follows the active slide by observing `.is-active`; it does not own
+  navigation state and does not compute a separate matrix.
+- Annotation anchors remain based on the stable slide ID and `data-src` source
+  path plus the existing point/logical-region data. Adding two-dimensional
+  coordinates must not rewrite anchors or make annotations depend on transient
+  row/column positions.
+- If a slide's coordinates change but its source path and generated ID stay the
+  same, existing annotations continue to attach to that slide. If the source path
+  changes and therefore the ID changes, annotation migration is an explicit
+  author/tooling concern, not an implicit runtime guess.
+
+### Compatibility and validation requirements
+
+Before any production implementation ships:
+
+- Golden builds for ordinary one-dimensional decks must prove byte-for-byte
+  output compatibility, including hashes, IDs, runtime bundle shape, print CSS,
+  notes, audit JSON, and keyboard/touch behavior.
+- New golden builds must cover mixed file/directory decks, explicit slide lists,
+  ID collision rejection, stable ID hash loading, numeric hash aliases, print
+  order, and accessible DOM order.
+- Runtime tests must cover both axes, reveal precedence for each navigation key
+  and gesture, Home/End and numeric entry compatibility, `.is-active` uniqueness,
+  and no-op behavior at branch edges.
+- Touch tests must cover dominant-axis locking, gesture thresholds, interactive
+  element pass-through, and review-overlay priority.
+- Review-mode tests must verify that the overlay follows `.is-active` and that
+  existing annotation anchors remain slide-ID/source-path based.
+- Documentation and the deck-author skill may be updated only in the same change
+  that implements and validates the production behavior.
+
 ## Themes
 
 - A theme is a single CSS file: Tailwind v4 `@theme` tokens (colors, font
