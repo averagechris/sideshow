@@ -10,8 +10,6 @@ environment:
     extra-trusted-public-keys = averagechris-dotfiles.cachix.org-1:VwJkl5dG1+xGDY5x884mH/kVwwpgwBAdBKIF3BZiia4=
 sources:
   - https://git.sr.ht/~averagechris/sideshow
-secrets:
-  - 731f7e55-4497-4228-8fa4-1657da7d3625 # cachix averagechris-dotfiles -> ~/.ci_secrets/cachix_token
 tasks:
   - fmt: |
       cd sideshow
