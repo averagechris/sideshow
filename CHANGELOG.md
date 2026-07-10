@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+
+## v0.4.0 - 2026-07-10
+
 - Add opt-in `sideshow serve --review` controls for point and logical-region
   annotations with optimistic multi-tab conflict handling. Review UI and state
   are confined to local served responses and never enter build artifacts.
