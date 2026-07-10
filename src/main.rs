@@ -4,9 +4,10 @@ use flate2::{Compression, write::GzEncoder};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use sha2::{Digest, Sha256};
 use sideshow::find_tool;
+use std::process::Command as ProcessCommand;
 use std::{
     collections::BTreeMap,
-    fs,
+    env, fs,
     io::{Cursor, Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
@@ -72,6 +73,9 @@ enum Command {
         dir: PathBuf,
         #[arg(long, default_value_t = 8000)]
         port: u16,
+        /// Open the served deck in the system browser after build and bind succeed.
+        #[arg(long)]
+        open: bool,
         /// Enable local, annotation-only slide review controls.
         #[arg(long)]
         review: bool,
@@ -318,7 +322,12 @@ fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Command::Serve { dir, port, review } => serve(&dir, port, review),
+        Command::Serve {
+            dir,
+            port,
+            open,
+            review,
+        } => serve(&dir, port, review, open),
         Command::Review { command } => review_command(command),
         Command::Publish {
             dir,
@@ -951,7 +960,7 @@ struct ReviewServer {
     repository: sideshow::review::ReviewRepository,
 }
 
-fn serve(dir: &Path, port: u16, review: bool) -> anyhow::Result<()> {
+fn serve(dir: &Path, port: u16, review: bool, open: bool) -> anyhow::Result<()> {
     let built = stable_build_deck(dir, review)?;
     let (dir, root, out) = normalized_serve_paths(dir, built.output)?;
     let generation = Arc::new(AtomicU64::new(reload_session_id() << 32));
@@ -971,6 +980,11 @@ fn serve(dir: &Path, port: u16, review: bool) -> anyhow::Result<()> {
             Ok(Arc::new(ReviewServer { repository, nonce }))
         })
         .transpose()?;
+    let listener = TcpListener::bind(("127.0.0.1", port))?;
+    let url = serve_url(&listener)?;
+    if open {
+        open_url(&url).with_context(|| format!("failed to open {url}"))?;
+    }
     start_rebuild_watcher(
         dir.to_path_buf(),
         root.clone(),
@@ -979,9 +993,8 @@ fn serve(dir: &Path, port: u16, review: bool) -> anyhow::Result<()> {
         review.as_ref().map(|server| server.repository.clone()),
         built.input_digest,
     )?;
-    let listener = TcpListener::bind(("127.0.0.1", port))?;
     let port = listener.local_addr()?.port();
-    println!("serving {} at http://localhost:{port}/", root.display());
+    println!("serving {} at {url}", root.display());
     if review.is_some() {
         println!("review mode enabled (annotations persist in XDG state)");
     }
@@ -1006,6 +1019,107 @@ fn serve(dir: &Path, port: u16, review: bool) -> anyhow::Result<()> {
         });
     }
     Ok(())
+}
+
+fn serve_url(listener: &TcpListener) -> anyhow::Result<String> {
+    let addr = listener.local_addr()?;
+    Ok(format!("http://{}:{}/", addr.ip(), addr.port()))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OpenerCommand {
+    program: String,
+    args: Vec<String>,
+}
+
+fn open_url(url: &str) -> anyhow::Result<()> {
+    let opener = resolve_opener(&SystemOpenEnv)?;
+    let status = ProcessCommand::new(&opener.program)
+        .args(&opener.args)
+        .arg(url)
+        .status()
+        .with_context(|| format!("could not run opener `{}`", opener.program))?;
+    if status.success() {
+        Ok(())
+    } else {
+        anyhow::bail!("opener `{}` exited with {status}", opener.program)
+    }
+}
+
+trait OpenEnv {
+    fn os(&self) -> &str;
+    fn var(&self, name: &str) -> Option<String>;
+    fn executable_on_path(&self, program: &str) -> bool;
+}
+
+struct SystemOpenEnv;
+
+impl OpenEnv for SystemOpenEnv {
+    fn os(&self) -> &str {
+        env::consts::OS
+    }
+
+    fn var(&self, name: &str) -> Option<String> {
+        env::var_os(name).map(|v| v.to_string_lossy().into_owned())
+    }
+
+    fn executable_on_path(&self, program: &str) -> bool {
+        env::var_os("PATH").is_some_and(|paths| {
+            env::split_paths(&paths).any(|dir| {
+                let path = dir.join(program);
+                path.is_file() && is_executable(&path)
+            })
+        })
+    }
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::metadata(path)
+        .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.exists()
+}
+
+fn resolve_opener(env: &impl OpenEnv) -> anyhow::Result<OpenerCommand> {
+    match env.os() {
+        "macos" => Ok(OpenerCommand {
+            program: "open".into(),
+            args: Vec::new(),
+        }),
+        "linux" => {
+            if env.var("DISPLAY").is_none() && env.var("WAYLAND_DISPLAY").is_none() {
+                anyhow::bail!(
+                    "--open needs a graphical Linux session; set DISPLAY or WAYLAND_DISPLAY, or run without --open"
+                );
+            }
+            for program in ["xdg-open", "gio", "kde-open", "gnome-open"] {
+                if env.executable_on_path(program) {
+                    let args = if program == "gio" {
+                        vec!["open".into()]
+                    } else {
+                        Vec::new()
+                    };
+                    return Ok(OpenerCommand {
+                        program: program.into(),
+                        args,
+                    });
+                }
+            }
+            anyhow::bail!(
+                "--open could not find a desktop opener; install xdg-open (xdg-utils), gio, kde-open, or gnome-open, or run without --open"
+            )
+        }
+        other => anyhow::bail!(
+            "--open is unsupported on {other}; use macOS `open` or a Linux desktop opener, or run without --open"
+        ),
+    }
 }
 
 fn start_rebuild_watcher(
@@ -1991,6 +2105,47 @@ fn deck_sources_mtime(dir: &Path) -> anyhow::Result<SystemTime> {
 #[cfg(test)]
 mod serve_tests {
     use super::*;
+    use std::collections::BTreeSet;
+
+    struct FakeOpenEnv {
+        os: &'static str,
+        vars: BTreeMap<&'static str, &'static str>,
+        executables: BTreeSet<&'static str>,
+    }
+
+    impl FakeOpenEnv {
+        fn new(os: &'static str) -> Self {
+            Self {
+                os,
+                vars: BTreeMap::new(),
+                executables: BTreeSet::new(),
+            }
+        }
+
+        fn with_var(mut self, name: &'static str, value: &'static str) -> Self {
+            self.vars.insert(name, value);
+            self
+        }
+
+        fn with_executable(mut self, program: &'static str) -> Self {
+            self.executables.insert(program);
+            self
+        }
+    }
+
+    impl OpenEnv for FakeOpenEnv {
+        fn os(&self) -> &str {
+            self.os
+        }
+
+        fn var(&self, name: &str) -> Option<String> {
+            self.vars.get(name).map(|value| (*value).into())
+        }
+
+        fn executable_on_path(&self, program: &str) -> bool {
+            self.executables.contains(program)
+        }
+    }
 
     struct ReviewFixture {
         server: Arc<ReviewServer>,
@@ -2039,6 +2194,77 @@ mod serve_tests {
             _deck: deck,
             _state: state,
         }
+    }
+
+    #[test]
+    fn serve_open_flag_is_opt_in_and_parseable_with_review() {
+        let cli = Cli::try_parse_from(["sideshow", "serve", "deck"]).unwrap();
+        let Command::Serve { open, review, .. } = cli.command else {
+            panic!("expected serve command");
+        };
+        assert!(!open);
+        assert!(!review);
+
+        let cli = Cli::try_parse_from(["sideshow", "serve", "deck", "--review", "--open"]).unwrap();
+        let Command::Serve { open, review, .. } = cli.command else {
+            panic!("expected serve command");
+        };
+        assert!(open);
+        assert!(review);
+    }
+
+    #[test]
+    fn serve_url_uses_actual_bound_port_including_port_zero() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        assert_eq!(
+            serve_url(&listener).unwrap(),
+            format!("http://127.0.0.1:{port}/")
+        );
+    }
+
+    #[test]
+    fn opener_resolution_supports_macos_and_linux_desktops() {
+        assert_eq!(
+            resolve_opener(&FakeOpenEnv::new("macos")).unwrap(),
+            OpenerCommand {
+                program: "open".into(),
+                args: Vec::new(),
+            }
+        );
+        assert_eq!(
+            resolve_opener(
+                &FakeOpenEnv::new("linux")
+                    .with_var("WAYLAND_DISPLAY", "wayland-0")
+                    .with_executable("gio")
+            )
+            .unwrap(),
+            OpenerCommand {
+                program: "gio".into(),
+                args: vec!["open".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn opener_resolution_reports_headless_and_unsupported_cases() {
+        let headless = resolve_opener(&FakeOpenEnv::new("linux"))
+            .unwrap_err()
+            .to_string();
+        assert!(headless.contains("graphical Linux session"));
+        assert!(headless.contains("DISPLAY"));
+
+        let missing = resolve_opener(&FakeOpenEnv::new("linux").with_var("DISPLAY", ":1"))
+            .unwrap_err()
+            .to_string();
+        assert!(missing.contains("could not find a desktop opener"));
+        assert!(missing.contains("xdg-open"));
+
+        let unsupported = resolve_opener(&FakeOpenEnv::new("windows"))
+            .unwrap_err()
+            .to_string();
+        assert!(unsupported.contains("unsupported on windows"));
     }
 
     #[test]

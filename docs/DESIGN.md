@@ -119,9 +119,11 @@ v1:
 - `sideshow new <dir> [--theme <name>]` — scaffold deck source.
 - `sideshow build <dir>` — compile to `dist/<slug-of-deck-title>.html` and print the path (single file).
 - `sideshow serve <dir>` — build + local server with srht-pages-like
-   headers (CSP, MIME), rebuild on change. `--review` injects local-only point
-   and logical-region annotation controls into served HTML; build output remains
-   unchanged.
+  headers (CSP, MIME), rebuild on change, and no browser launch unless explicitly
+  requested. `--open` launches the platform desktop opener only after a
+  successful build and listener bind, using the bound URL (including `--port 0`).
+  `--review` injects local-only point and logical-region annotation controls into
+  served HTML; build output remains unchanged.
 - `sideshow review artifact <dir>` / `list` / `export [--format json|markdown]
   [--output <path>]` / `resolve <dir> <id> --revision <n>` / `reopen <dir> <id>
   --revision <n>` / `disposition <dir> <id> --status

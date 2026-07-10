@@ -164,10 +164,20 @@ and automatic browser reload after a successful rebuild:
 sideshow serve mydeck --port 8000
 ```
 
+Serving is non-GUI by default. Add `--open` to launch the system browser after
+the deck builds and the localhost listener is bound; this also works with
+`--port 0`, using the actual assigned port. `--open` supports macOS `open` and
+common Linux desktop openers such as `xdg-open`/`gio`, and reports actionable
+errors in unsupported or headless environments.
+
+```sh
+sideshow serve mydeck --open --port 0
+```
+
 Add `--review` for an annotation-only pass over the served deck:
 
 ```sh
-sideshow serve mydeck --review --port 8000
+sideshow serve mydeck --review --open --port 8000
 ```
 
 Review mode adds comments to the local preview only: click to pin a point, or

@@ -8,6 +8,9 @@
   JSON-first plus prompt-Markdown handoff exports that cannot be written into the
   deck. The served review panel honors server-derived freshness and surfaces
   explicit non-pending dispositions with their optional notes.
+- Add opt-in `sideshow serve --open` to launch the system browser only after a
+  successful build and listener bind, including correct `--port 0` URLs and
+  clear headless/unsupported opener errors.
 
 ## v0.4.0 - 2026-07-10
 
