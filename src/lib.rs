@@ -345,6 +345,79 @@ pub mod plan {
                 r.id, r.likelihood, r.impact, r.description, r.mitigation
             ));
         }
+        out.push_str("\n## Manual issue-drafting packets\n\n");
+        out.push_str("Tracker-neutral disclaimer: these packets are source material for manual issue drafting and may be split or combined. The translator chooses issue boundaries, labels, teams, priority, milestones, and tracker conventions. This export contains no live tracker state.\n");
+        let outcome_by_id: BTreeMap<_, _> = plan
+            .outcomes
+            .iter()
+            .map(|outcome| (outcome.id.as_str(), outcome))
+            .collect();
+        let task_by_id: BTreeMap<_, _> = plan
+            .workstreams
+            .iter()
+            .flat_map(|workstream| workstream.tasks.iter())
+            .map(|task| (task.id.as_str(), task))
+            .collect();
+        for ws in &plan.workstreams {
+            for task in &ws.tasks {
+                out.push_str(&format!(
+                    "\n### Issue source packet: {} ({})\n\n- Workstream: {} — {}\n- Task: {} — {}\n- Proposed planning status: {}\n- Proposed owner: {}\n",
+                    task.title,
+                    task.id,
+                    ws.id,
+                    ws.title,
+                    task.id,
+                    task.title,
+                    task.status,
+                    task.owner
+                        .as_deref()
+                        .or(ws.owner.as_deref())
+                        .unwrap_or("unassigned")
+                ));
+                out.push_str("- Resolved outcomes:\n");
+                if task.outcomes.is_empty() {
+                    out.push_str("  - none\n");
+                } else {
+                    for outcome_id in &task.outcomes {
+                        if let Some(outcome) = outcome_by_id.get(outcome_id.as_str()) {
+                            out.push_str(&format!(
+                                "  - {}: {}\n    - Proof:\n{}\n",
+                                outcome.id,
+                                outcome.description,
+                                bullets_indent(&outcome.proof, 6)
+                            ));
+                        } else {
+                            out.push_str(&format!("  - {}: unresolved reference\n", outcome_id));
+                        }
+                    }
+                }
+                out.push_str("- Resolved dependencies:\n");
+                if task.dependencies.is_empty() {
+                    out.push_str("  - none — no dependencies means this task can start in parallel with any other no-dependency task when capacity is available.\n");
+                } else {
+                    for dependency_id in &task.dependencies {
+                        if let Some(dependency) = task_by_id.get(dependency_id.as_str()) {
+                            out.push_str(&format!(
+                                "  - {} — {}\n",
+                                dependency.id, dependency.title
+                            ));
+                        } else {
+                            out.push_str(&format!(
+                                "  - {} — unresolved reference\n",
+                                dependency_id
+                            ));
+                        }
+                    }
+                }
+                out.push_str(&format!(
+                    "- Files:\n{}\n- Acceptance checks:\n{}\n- Verification intent: {}\n- Exact commands:\n{}\n",
+                    bullets(&task.files),
+                    bullets(&task.acceptance_checks),
+                    task.verification.intent,
+                    bullets(&task.verification.commands)
+                ));
+            }
+        }
         out
     }
     fn list(v: &[String]) -> String {
@@ -360,6 +433,17 @@ pub mod plan {
         } else {
             v.iter()
                 .map(|s| format!("  - {s}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    }
+    fn bullets_indent(v: &[String], spaces: usize) -> String {
+        let prefix = " ".repeat(spaces);
+        if v.is_empty() {
+            format!("{prefix}- none")
+        } else {
+            v.iter()
+                .map(|s| format!("{prefix}- {s}"))
                 .collect::<Vec<_>>()
                 .join("\n")
         }

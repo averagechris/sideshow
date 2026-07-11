@@ -1,0 +1,52 @@
+<section class="plan-shell">
+  <header class="plan-header">
+    <div>
+      <p class="plan-eyebrow">Tracker-neutral planning digest</p>
+      <h2 class="plan-title">Rationale becomes packets, then people translate</h2>
+    </div>
+    <span class="plan-status" data-tone="info" data-plan-kind="outcome" data-plan-id="outcome-tracker-neutral-digest">manual handoff</span>
+  </header>
+
+  <main class="plan-body">
+    <ol class="plan-rail" aria-label="Digest translation path">
+      <li data-plan-kind="decision" data-plan-id="decision-digest-is-derived">
+        <strong>Rationale</strong>
+        <span>Strict JSON stays the normalized schema-v2 machine boundary; Markdown is derived for reading, prompting, and drafting.</span>
+      </li>
+      <li data-plan-kind="task" data-plan-id="task-dogfood-manual-digest">
+        <strong>Per-task packets</strong>
+        <span>Each packet carries outcomes, files, acceptance checks, dependencies, risks, and exact trusted verification commands.</span>
+      </li>
+      <li data-plan-kind="constraint" data-plan-id="constraint-manual-tracker-translation">
+        <strong>Manual tracker translation</strong>
+        <span>Humans or agents choose split/combine boundaries, labels, teams, priority, milestones, and local tracker conventions.</span>
+      </li>
+    </ol>
+
+    <section class="plan-layers" aria-label="Digest trust layers">
+      <article class="plan-layer" data-layer="Machine" data-plan-kind="constraint" data-plan-id="constraint-trust-boundary">
+        <h3>JSON boundary</h3>
+        <p>Normalized strict schema v2 is trusted source material for tools and agents.</p>
+      </article>
+      <article class="plan-layer" data-layer="Drafting" data-plan-kind="task" data-plan-id="task-document-repeatable-loop">
+        <h3>Markdown digest</h3>
+        <p>Readable packets help draft issues, but they are not guaranteed one-to-one with tracker records.</p>
+      </article>
+      <article class="plan-layer" data-layer="Excluded" data-plan-kind="constraint" data-plan-id="constraint-scope-boundary">
+        <h3>No automation leap</h3>
+        <p>No tracker credentials, imports, APIs, issue creation, synchronization, or execution history.</p>
+      </article>
+    </section>
+
+    <div class="plan-connectors" aria-label="Digest handoff connectors">
+      <div class="plan-connector" data-from="JSON" data-to="Markdown" data-plan-kind="outcome" data-plan-id="outcome-repository-example">
+        <strong>Derived manual digest</strong>
+        <span>Exported Markdown is source material for a person or agent, not a second canonical plan.</span>
+      </div>
+      <div class="plan-connector" data-from="Packets" data-to="Issues" data-plan-kind="risk" data-plan-id="risk-review-data-confusion">
+        <strong>Review stays outside</strong>
+        <span>Annotations can guide edits, but untrusted review data never becomes packet content or executable command source.</span>
+      </div>
+    </div>
+  </main>
+</section>

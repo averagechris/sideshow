@@ -91,10 +91,13 @@ Rules:
 
 ## Schema v2
 
-Use strict JSON for the prototype because it is a direct, unambiguous handoff
-boundary for humans and agents. The checked schema rejects unknown fields,
-unknown enum values, duplicate IDs, broken references, and dependency cycles.
-Markdown export is the semi-structured reading and prompt handoff.
+Use strict normalized JSON for the prototype because it is the direct,
+unambiguous machine boundary for humans and agents. The checked schema rejects
+unknown fields, unknown enum values, duplicate IDs, broken references, and
+dependency cycles. Markdown export is derived from that JSON as a manual drafting
+digest: readable per-task packets that preserve context for issue writing, not a
+second source of truth and not a promise that packets map one-to-one to tracker
+issues.
 
 ```json
 {
@@ -162,7 +165,10 @@ Schema rules:
   accepted by schema v2; keep command strings exactly as the agent should run
   them.
 - The Markdown export separates `Verification intent` from `Agent commands` so
-  reviewers understand purpose without weakening exact command handoff.
+  reviewers understand purpose without weakening exact command handoff. Command
+  strings remain trusted/verbatim executable material copied from canonical plan
+  data; review annotations and other untrusted feedback are never included in the
+  digest as commands or plan facts.
 - The plan deliberately keeps execution evidence and status history out of v2.
   Those belong in the eventual issue tracker, code review, CI, and delivery
   systems rather than a second project tracker.
@@ -256,11 +262,13 @@ appropriate system:
 - another tracker or written process chosen by the team.
 
 The digest should carry enough context to make that translation reliable:
-outcomes, rationale, scope, proposed decomposition, dependencies, acceptance
-checks, risks, and verification intent. The translator still chooses issue
-granularity, labels, teams, milestones, and tracker-specific conventions. Direct
-tracker adapters, imports, synchronization, and embedded credentials are outside
-the product contract.
+outcomes, rationale, scope, proposed decomposition, dependencies, touched files,
+acceptance checks, risks, and verification intent. Its Markdown form is a set of
+per-task packets for manual drafting. Those packets are source material, not
+tracker records: the translator still chooses split/combine boundaries, labels,
+teams, priority, milestones, and tracker-specific conventions. Direct tracker
+adapters, credentials, imports, issue creation, synchronization, and execution
+history are outside the product contract.
 
 Links to resulting issues may be added to ordinary narrative source when useful,
 but Sideshow does not need a tracker-state model. Once execution begins, the

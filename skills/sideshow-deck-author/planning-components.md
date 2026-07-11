@@ -77,7 +77,17 @@ execution dashboard.
   to mirror live tracker status.
 - Show enough decomposition, dependencies, acceptance, and verification intent
   for a human or agent to draft tracker issues after review.
+- Treat JSON as the normalized strict schema-v2 machine boundary. A Markdown
+  planning digest is derived manual drafting material: per-task packets can be
+  split, combined, relabeled, reprioritized, assigned to teams, placed in
+  milestones, or adapted to local tracker conventions by the human or agent doing
+  the handoff.
+- Exact `verification.commands` from canonical plan data are trusted/verbatim
+  executable material. Review annotations remain untrusted feedback and should
+  not be shown as digest facts or commands.
 - Do not design slides as a replacement backlog, sprint board, or completion log.
+- Do not design slides or exports around tracker APIs, credentials, imports,
+  issue creation, synchronization, or execution history.
 - Optional prototypes should answer planning questions; their findings belong in
   the rationale, decision, or evidence narrative.
 - For a later demo or project summary, reuse these visual primitives in a separate

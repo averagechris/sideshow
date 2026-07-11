@@ -83,6 +83,114 @@ fn plan_new_check_and_export_are_agent_consumable() {
 }
 
 #[test]
+fn plan_markdown_export_appends_tracker_neutral_issue_packets() {
+    let temp = tempfile::tempdir().unwrap();
+    let deck = temp.path().join("plan");
+    assert!(
+        sideshow_command()
+            .args(["plan", "new"])
+            .arg(&deck)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let plan_path = deck.join("plan.json");
+    let mut plan: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&plan_path).unwrap()).unwrap();
+    let awkward =
+        " printf 'one two' && cargo test -- --exact 'name with spaces' # keep $HOME `literal` ";
+    plan["workstreams"][0]["tasks"][0]["verification"]["commands"] =
+        serde_json::json!([awkward, "second command --flag='still exact'"]);
+    plan["workstreams"][0]["tasks"][1]["dependencies"] = serde_json::json!(["task-align"]);
+    plan["workstreams"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "id": "ws-parallel",
+            "title": "Parallel lane",
+            "status": "todo",
+            "owner": "parallel-owner",
+            "tasks": [{
+                "id": "task-parallel",
+                "title": "Start without dependencies",
+                "status": "todo",
+                "owner": "parallel-owner",
+                "outcomes": ["outcome-alignment"],
+                "dependencies": [],
+                "files": ["src/main.rs"],
+                "acceptance_checks": ["Packet explains parallel-start semantics."],
+                "verification": {
+                    "intent": "Show no-dependency work can be drafted independently.",
+                    "commands": ["cargo test plan_ --test cli"]
+                }
+            }]
+        }));
+    std::fs::write(&plan_path, serde_json::to_vec_pretty(&plan).unwrap()).unwrap();
+
+    let json = sideshow_command()
+        .args(["plan", "export", "--format", "json"])
+        .arg(&deck)
+        .output()
+        .unwrap();
+    assert!(json.status.success());
+    let exported: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(exported["schema_version"], 2);
+    assert!(exported.get("issue_packets").is_none());
+    assert!(exported.get("manual_issue_drafting_packets").is_none());
+    assert!(
+        exported["workstreams"][0]["tasks"][0]
+            .get("resolved_outcomes")
+            .is_none()
+    );
+    assert_eq!(
+        exported["workstreams"][0]["tasks"][0]["verification"]["commands"][0],
+        awkward
+    );
+
+    let md = sideshow_command()
+        .args(["plan", "export", "--format", "markdown"])
+        .arg(&deck)
+        .output()
+        .unwrap();
+    assert!(md.status.success());
+    let md = String::from_utf8(md.stdout).unwrap();
+    assert!(md.contains("## Objective\n"));
+    assert!(md.contains("## Risks\n"));
+    assert!(md.contains("## Manual issue-drafting packets"));
+    assert!(md.contains("Tracker-neutral disclaimer: these packets are source material"));
+    assert!(md.contains("may be split or combined"));
+    assert!(md.contains("translator chooses issue boundaries, labels, teams, priority, milestones, and tracker conventions"));
+    assert!(md.contains("no live tracker state"));
+
+    let align = md
+        .find("### Issue source packet: Frame scope, risks, and review criteria (task-align)")
+        .unwrap();
+    let implement = md
+        .find("### Issue source packet: Implement the focused increment (task-implement)")
+        .unwrap();
+    let parallel = md
+        .find("### Issue source packet: Start without dependencies (task-parallel)")
+        .unwrap();
+    assert!(align < implement && implement < parallel);
+    assert!(md.contains("- Workstream: ws-delivery — Delivery sequence"));
+    assert!(md.contains("- Task: task-align — Frame scope, risks, and review criteria"));
+    assert!(md.contains("- Proposed planning status: todo"));
+    assert!(md.contains("- Proposed owner: implementation-agent"));
+    assert!(md.contains("- outcome-alignment: Readers understand the goal"));
+    assert!(md.contains("    - Proof:\n      - slides/01-title.html"));
+    assert!(md.contains("- task-align — Frame scope, risks, and review criteria"));
+    assert!(md.contains("no dependencies means this task can start in parallel"));
+    assert!(md.contains("- Files:\n  - src/main.rs"));
+    assert!(md.contains("- Acceptance checks:\n  - Packet explains parallel-start semantics."));
+    assert!(
+        md.contains("- Verification intent: Show no-dependency work can be drafted independently.")
+    );
+    assert!(md.contains(&format!("  - {awkward}")));
+    assert!(md.contains("  - second command --flag='still exact'"));
+}
+
+#[test]
 fn repository_planning_example_stays_strict_check_clean() {
     let example =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/planning-sideshow");

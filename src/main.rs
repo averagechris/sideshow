@@ -193,7 +193,7 @@ enum PlanCommand {
         #[arg(long)]
         strict: bool,
     },
-    /// Export deterministic agent-consumable plan data.
+    /// Export deterministic plan data; Markdown includes manual issue-drafting packets.
     Export {
         dir: PathBuf,
         #[arg(long, value_enum, default_value_t = PlanExportFormat::Markdown)]

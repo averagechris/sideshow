@@ -35,16 +35,22 @@ sideshow plan serve my-plan --open
 sideshow plan export my-plan --format markdown --output /tmp/my-plan.md
 ```
 
-`plan.json` is strict, tracker-neutral planning data; authored slides are its
-expressive human-facing projection. Review annotations are feedback only and
-never silently edit either source.
+`plan.json` is normalized strict schema-v2, tracker-neutral planning data and the
+machine boundary for agents/tools; authored slides are its expressive
+human-facing projection. Review annotations are feedback only and never silently
+edit either source.
 
-The workflow intentionally stops at a reviewed digest. A human or agent can use
-the JSON or Markdown export to draft issues in Linear, todo.sr.ht, GitHub Issues,
-or another organizational system. Sideshow does not authenticate to trackers,
-import tracker state, create issues, or synchronize execution. Once handed off,
-the tracker owns assignment, priority, implementation status, blockers, and
-completion.
+The workflow intentionally stops at a reviewed digest. JSON export preserves the
+strict machine contract; Markdown export is a derived manual drafting digest with
+per-task packets for issue-writing source material. Those packets are not
+guaranteed one-to-one issues: a human or agent chooses split/combine boundaries,
+labels, teams, priority, milestones, and tracker conventions while drafting in
+Linear, todo.sr.ht, GitHub Issues, or another organizational system. Sideshow
+does not authenticate to trackers, import tracker state, create issues, or
+synchronize execution. Exact `verification.commands` remain trusted/verbatim
+executable material; review annotations remain untrusted and excluded. Once
+handed off, the tracker owns assignment, priority, implementation status,
+blockers, and completion.
 
 A later demo, retrospective, project summary, or “how we built it” presentation
 is a separate ordinary Sideshow deck. Authors and agents can manually synthesize
@@ -395,7 +401,8 @@ cp examples/making-of-sideshow/dist/the-making-of-sideshow.html docs/pages/demo.
 for ticket #166. It demonstrates a schema-version-2 `plan.json`, authored slide
 projections with stable `data-plan-kind`/`data-plan-id` anchors, and a repeatable
 alignment-to-digest workflow. The example stops before tracker execution and does
-not integrate with a tracker. Validate and build it from the repository root:
+not integrate with a tracker; its Markdown export is a manual digest of packets,
+not an issue import file. Validate and build it from the repository root:
 
 ```sh
 cargo run -- plan check examples/planning-sideshow --strict

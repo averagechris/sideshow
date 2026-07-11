@@ -27,6 +27,14 @@
         "examples/planning-sideshow/README.md documents the repeatable loop and output locations",
         "root README.md points to the example and shows validation/build commands"
       ]
+    },
+    {
+      "id": "outcome-tracker-neutral-digest",
+      "description": "Documentation and dogfood content define Markdown as a derived manual drafting digest of per-task packets, while JSON remains the normalized strict schema-v2 machine boundary.",
+      "proof": [
+        "docs/PLANNING.md and README.md describe the digest as source material rather than tracker issues",
+        "examples/planning-sideshow/slides/05-manual-digest.html shows rationale to packets to manual tracker translation"
+      ]
     }
   ],
   "constraints": [
@@ -41,6 +49,10 @@
     {
       "id": "constraint-repeatable-local",
       "description": "Every verification and build command must be runnable from the repository root with cargo run -- ... or nix develop -c cargo run -- ... variants."
+    },
+    {
+      "id": "constraint-manual-tracker-translation",
+      "description": "Markdown digest packets are trusted drafting material but are not guaranteed 1:1 issues; humans or agents choose split/combine boundaries, labels, teams, priority, milestones, and tracker conventions."
     }
   ],
   "non_goals": [
@@ -67,6 +79,12 @@
       "title": "Leave generated output outside the change",
       "status": "accepted",
       "rationale": "Repeatability is proven by commands and inspected output, but the repository example stays source-only."
+    },
+    {
+      "id": "decision-digest-is-derived",
+      "title": "Treat Markdown as a derived manual drafting digest",
+      "status": "accepted",
+      "rationale": "Strict normalized JSON is the machine contract. Markdown can group task packets for readability and prompt handoff, but tracker boundaries remain a human or agent translation decision."
     }
   ],
   "workstreams": [
@@ -131,13 +149,14 @@
           "title": "Document the repeatable local workflow",
           "status": "in_review",
           "owner": "implementation-agent",
-          "outcomes": ["outcome-repository-example"],
+          "outcomes": ["outcome-repository-example", "outcome-tracker-neutral-digest"],
           "dependencies": ["task-author-expressive-slides"],
-          "files": ["README.md", "docs/PLANNING.md", "skills/sideshow-deck-author/SKILL.md", "skills/sideshow-deck-author/planning-components.md", "examples/planning-sideshow/README.md"],
+          "files": ["README.md", "docs/PLANNING.md", "skills/sideshow-deck-author/SKILL.md", "skills/sideshow-deck-author/planning-components.md", "examples/planning-sideshow/README.md", "examples/planning-sideshow/plan.json", "examples/planning-sideshow/slides/05-manual-digest.html"],
           "acceptance_checks": [
             "documentation describes an alignment-first lifecycle that ends with a human- or agent-authored tracker digest rather than synchronized execution",
             "documentation presents later demos and project summaries as separate authoring workflows assembled from available context without built-in ingestion",
-            "example README describes edit, strict check, build, serve/review, exports, output locations, trust boundaries, and organizational handoff"
+            "example README describes edit, strict check, build, serve/review, exports, output locations, trust boundaries, and organizational handoff",
+            "documentation states JSON remains the normalized strict schema-v2 machine boundary and Markdown is a derived digest of per-task packets for manual tracker drafting"
           ],
           "verification": {
             "intent": "Validate the source-only example, generated deck, and temporary exports before handoff.",
@@ -148,6 +167,24 @@
               "cargo run -- plan export examples/planning-sideshow --format json --output \"$export_dir/plan.json\"",
               "cargo run -- plan export examples/planning-sideshow --format markdown --output \"$export_dir/plan.md\""
             ]
+          }
+        },
+        {
+          "id": "task-dogfood-manual-digest",
+          "title": "Dogfood the tracker-neutral planning digest increment",
+          "status": "in_review",
+          "owner": "implementation-agent",
+          "outcomes": ["outcome-tracker-neutral-digest"],
+          "dependencies": ["task-document-repeatable-loop"],
+          "files": ["README.md", "docs/PLANNING.md", "skills/sideshow-deck-author/SKILL.md", "skills/sideshow-deck-author/planning-components.md", "examples/planning-sideshow/README.md", "examples/planning-sideshow/plan.json", "examples/planning-sideshow/slides/05-manual-digest.html"],
+          "acceptance_checks": [
+            "README, planning docs, example docs, and authoring skill guidance describe the tracker-neutral digest contract without adding tracker APIs or execution history",
+            "the dogfood deck includes an anchored expressive slide that maps rationale to per-task packets to manual tracker translation using rails, layers, and connectors",
+            "every new canonical ID has a data-plan-kind/data-plan-id slide anchor and strict projection coverage remains complete"
+          ],
+          "verification": {
+            "intent": "Confirm the documentation/dogfood digest increment preserves strict projection coverage and builds without committing generated output.",
+            "commands": ["cargo run -- plan check examples/planning-sideshow --strict", "cargo run -- build examples/planning-sideshow"]
           }
         }
       ]
