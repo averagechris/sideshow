@@ -239,6 +239,122 @@ fn plan_markdown_export_appends_tracker_neutral_issue_packets() {
     assert!(!align_packet.contains("Command 1:\n\n    ```"));
 }
 
+#[test]
+fn plan_markdown_export_hardens_hostile_authored_prose() {
+    let temp = tempfile::tempdir().unwrap();
+    let deck = temp.path().join("plan");
+    assert!(
+        sideshow_command()
+            .args(["plan", "new"])
+            .arg(&deck)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let plan_path = deck.join("plan.json");
+    let original_json = std::fs::read(&plan_path).unwrap();
+    let mut plan: serde_json::Value = serde_json::from_slice(&original_json).unwrap();
+    let hostile = "visible # heading\n# heading\n- list\n+ list\n> quote\n1. ordered\n[link](https://example.test)|pipe `tick` & <script>alert(1)</script> <img src=x onerror=alert(1)>";
+    plan["title"] = serde_json::json!(format!("Plan {hostile}"));
+    plan["objective"] = serde_json::json!(format!("Objective\n{hostile}"));
+    plan["outcomes"][0]["description"] = serde_json::json!(format!("Outcome {hostile}"));
+    plan["outcomes"][0]["proof"][0] = serde_json::json!(format!("Proof\n{hostile}"));
+    plan["constraints"][0]["description"] = serde_json::json!(format!("Constraint {hostile}"));
+    plan["non_goals"][0] = serde_json::json!(format!("Non-goal\n{hostile}"));
+    plan["workstreams"][0]["title"] = serde_json::json!(format!("Workstream {hostile}"));
+    plan["workstreams"][0]["owner"] = serde_json::json!(format!("Owner {hostile}"));
+    plan["workstreams"][0]["tasks"][0]["title"] = serde_json::json!(format!("Task {hostile}"));
+    plan["workstreams"][0]["tasks"][0]["owner"] =
+        serde_json::json!(format!("Task owner {hostile}"));
+    plan["workstreams"][0]["tasks"][0]["files"][0] =
+        serde_json::json!(format!("src/lib.rs\n{hostile}"));
+    plan["workstreams"][0]["tasks"][0]["acceptance_checks"][0] =
+        serde_json::json!(format!("Acceptance\n{hostile}"));
+    plan["workstreams"][0]["tasks"][0]["verification"]["intent"] =
+        serde_json::json!(format!("Verify {hostile}"));
+    let exact_command =
+        " printf '<script inert>' && printf '` ``` ````'\n# authored comment\n  trailing  ";
+    plan["workstreams"][0]["tasks"][0]["verification"]["commands"] =
+        serde_json::json!([exact_command]);
+    plan["decisions"][0]["title"] = serde_json::json!(format!("Decision {hostile}"));
+    plan["decisions"][0]["rationale"] = serde_json::json!(format!("Rationale {hostile}"));
+    plan["risks"][0]["description"] = serde_json::json!(format!("Risk {hostile}"));
+    plan["risks"][0]["mitigation"] = serde_json::json!(format!("Mitigation {hostile}"));
+    let authored_json = serde_json::to_vec_pretty(&plan).unwrap();
+    std::fs::write(&plan_path, &authored_json).unwrap();
+
+    let json = sideshow_command()
+        .args(["plan", "export", "--format", "json"])
+        .arg(&deck)
+        .output()
+        .unwrap();
+    assert!(json.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&json.stdout).unwrap(),
+        plan
+    );
+
+    let md_output = sideshow_command()
+        .args(["plan", "export", "--format", "markdown"])
+        .arg(&deck)
+        .output()
+        .unwrap();
+    assert!(md_output.status.success());
+    let md = String::from_utf8(md_output.stdout).unwrap();
+    let md_again = sideshow_command()
+        .args(["plan", "export", "--format", "markdown"])
+        .arg(&deck)
+        .output()
+        .unwrap();
+    assert_eq!(md.as_bytes(), md_again.stdout.as_slice());
+
+    let rendered = comrak::markdown_to_html(&md, &comrak::Options::default());
+    assert!(rendered.contains("visible # heading"));
+    assert!(rendered.contains("# heading"));
+    assert!(rendered.contains("- list"));
+    assert!(rendered.contains("+ list"));
+    assert!(rendered.contains("&gt; quote"));
+    assert!(rendered.contains("1. ordered"));
+    assert!(rendered.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+    assert!(!rendered.contains("<script"));
+    assert!(!rendered.contains("<img"));
+    assert!(!rendered.contains("<h1>heading</h1>"));
+    assert!(!rendered.contains("<li>list</li>"));
+    assert!(!rendered.contains("<li>ordered</li>"));
+    assert!(!rendered.contains("<blockquote>"));
+    assert!(rendered.contains("Objective<br />\nvisible # heading<br />"));
+    assert_eq!(md.matches("### Issue source packet:").count(), 3);
+    assert_eq!(markdown_heading_count_outside_fences(&md, "# "), 1);
+    assert_eq!(markdown_heading_count_outside_fences(&md, "## "), 8);
+    assert!(md.contains("  - Acceptance"));
+    assert!(md.contains("      visible # heading  \n      \\# heading  \n      \\- list  \n      \\+ list  \n      &gt; quote  \n      1\\. ordered"));
+    assert!(md.contains("- Files:\n  - src/lib.rs  \n      visible"));
+
+    let execution = &md[md.find("## Execution").unwrap()..md.find("## Decisions").unwrap()];
+    assert!(execution.contains("Agent commands:\n\nCommand 1:\n\n"));
+    assert_command_fence_round_trips(execution, 1, exact_command);
+    let first_packet = md.find("### Issue source packet:").unwrap();
+    let second_packet = md[first_packet + 1..]
+        .find("### Issue source packet:")
+        .map(|i| first_packet + 1 + i)
+        .unwrap();
+    assert_command_fence_round_trips(&md[first_packet..second_packet], 1, exact_command);
+}
+
+fn markdown_heading_count_outside_fences(md: &str, prefix: &str) -> usize {
+    let mut in_fence = false;
+    md.lines()
+        .filter(|line| {
+            if line.starts_with("```") {
+                in_fence = !in_fence;
+                return false;
+            }
+            !in_fence && line.starts_with(prefix)
+        })
+        .count()
+}
+
 fn assert_command_fence_round_trips(packet: &str, number: usize, expected: &str) {
     let marker = format!("Command {number}:\n\n");
     let start = packet

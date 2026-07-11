@@ -174,6 +174,11 @@ Schema rules:
   constraints, non-goals, decisions, and risks. Exact commands appear in authored
   order in individually fenced shell blocks so whitespace, multiline commands,
   shell metacharacters, and backticks survive copy/paste without normalization.
+- Authored non-command strings are rendered as literal Markdown content using
+  context-aware heading, paragraph, inline, and list-item escaping. Newlines remain
+  readable without allowing plan prose to create extra headings, lists, links,
+  blockquotes, tables, code fences, or active raw HTML. This structural hardening
+  does not rewrite canonical JSON and never applies to exact command bytes.
 - The plan deliberately keeps execution evidence and status history out of v2.
   Those belong in the eventual issue tracker, code review, CI, and delivery
   systems rather than a second project tracker.
@@ -378,7 +383,9 @@ Initial prototype budgets should be conservative and enforceable by
 - Respect `prefers-reduced-motion` and avoid required animation.
 - Do not encode status by color alone; include text labels and accessible names.
 - Escape plan fields whenever they are projected into generated markup. Authored
-  slides continue through the existing fragment and Markdown rules.
+  slides continue through the existing fragment and Markdown rules. Markdown
+  exports must also preserve their generated structure when authored prose
+  contains Markdown punctuation, multiline text, or HTML-shaped strings.
 - Reject `<script>`, event-handler attributes, remote styles/scripts, and unsafe
   SVG content in plan projections.
 - Keep generated review pages self-contained and offline-capable.

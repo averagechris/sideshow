@@ -84,3 +84,6 @@ Each packet is designed to survive being reviewed or copied independently: it
 repeats the objective, names the canonical workstream/task ID path, points back to
 shared constraints, non-goals, decisions, and risks, and renders every exact
 verification command in its own shell fence without rewriting command content.
+Authored prose is escaped according to its Markdown context so multiline text and
+HTML-shaped examples remain visible literals instead of changing digest structure;
+strict JSON remains byte-faithful to those source values.

@@ -298,14 +298,17 @@ pub mod plan {
     pub fn markdown(plan: &Plan) -> String {
         let mut out = format!(
             "# {}\n\n- Schema: {}\n- Status: {}\n\n## Objective\n{}\n",
-            plan.title, plan.schema_version, plan.status, plan.objective
+            md_inline(&plan.title),
+            plan.schema_version,
+            plan.status,
+            md_paragraph(&plan.objective)
         );
         out.push_str("\n## Outcomes\n");
         for outcome in &plan.outcomes {
             out.push_str(&format!(
                 "\n### {}\n{}\n\nProof:\n{}\n",
-                outcome.id,
-                outcome.description,
+                md_inline(&outcome.id),
+                md_paragraph(&outcome.description),
                 bullets(&outcome.proof)
             ));
         }
@@ -313,7 +316,8 @@ pub mod plan {
         for constraint in &plan.constraints {
             out.push_str(&format!(
                 "- **{}:** {}\n",
-                constraint.id, constraint.description
+                md_inline(&constraint.id),
+                md_inline(&constraint.description)
             ));
         }
         out.push_str("\n## Non-goals\n");
@@ -322,27 +326,34 @@ pub mod plan {
         for ws in &plan.workstreams {
             out.push_str(&format!(
                 "\n### {} ({})\n\n- Status: {}\n- Owner: {}\n",
-                ws.title,
-                ws.id,
+                md_inline(&ws.title),
+                md_inline(&ws.id),
                 ws.status,
-                ws.owner.as_deref().unwrap_or("unassigned")
+                md_inline(ws.owner.as_deref().unwrap_or("unassigned"))
             ));
             for t in &ws.tasks {
-                out.push_str(&format!("\n#### {} ({})\n- Status: {}\n- Owner: {}\n- Outcomes: {}\n- Dependencies: {}\n- Files: {}\n- Acceptance:\n{}\n- Verification intent: {}\n- Agent commands:\n{}\n", t.title, t.id, t.status, t.owner.as_deref().unwrap_or("unassigned"), list(&t.outcomes), list(&t.dependencies), list(&t.files), bullets(&t.acceptance_checks), t.verification.intent, bullets(&t.verification.commands)));
+                out.push_str(&format!("\n#### {} ({})\n- Status: {}\n- Owner: {}\n- Outcomes: {}\n- Dependencies: {}\n- Files: {}\n- Acceptance:\n{}\n- Verification intent: {}\n- Agent commands:\n\n{}\n", md_inline(&t.title), md_inline(&t.id), t.status, md_inline(t.owner.as_deref().unwrap_or("unassigned")), list(&t.outcomes), list(&t.dependencies), list(&t.files), bullets(&t.acceptance_checks), md_inline(&t.verification.intent), fenced_commands(&t.verification.commands)));
             }
         }
         out.push_str("\n## Decisions\n");
         for d in &plan.decisions {
             out.push_str(&format!(
                 "- {} ({}): {} — {}\n",
-                d.title, d.id, d.status, d.rationale
+                md_inline(&d.title),
+                md_inline(&d.id),
+                d.status,
+                md_inline(&d.rationale)
             ));
         }
         out.push_str("\n## Risks\n");
         for r in &plan.risks {
             out.push_str(&format!(
                 "- **{}** (likelihood: {}, impact: {}): {} Mitigation: {}\n",
-                r.id, r.likelihood, r.impact, r.description, r.mitigation
+                md_inline(&r.id),
+                r.likelihood,
+                r.impact,
+                md_inline(&r.description),
+                md_inline(&r.mitigation)
             ));
         }
         out.push_str("\n## Manual issue-drafting packets\n\n");
@@ -372,11 +383,15 @@ pub mod plan {
         out.push_str("\n### Proposed decomposition and dependency overview\n\n");
         out.push_str("- Derived dependency overview for manual drafting only; reverse `Enables` edges are not live tracker blockers, scheduling instructions, or JSON fields.\n");
         for ws in &plan.workstreams {
-            out.push_str(&format!("- Workstream {} — {}\n", ws.id, ws.title));
+            out.push_str(&format!(
+                "- Workstream {} — {}\n",
+                md_inline(&ws.id),
+                md_inline(&ws.title)
+            ));
             for task in &ws.tasks {
                 out.push_str(&format!(
                     "  - Task {} — {}\n    - Canonical source: plan.json → workstream {} → task {}\n    - Depends on:\n",
-                    task.id, task.title, ws.id, task.id
+                    md_inline(&task.id), md_inline(&task.title), md_inline(&ws.id), md_inline(&task.id)
                 ));
                 if task.dependencies.is_empty() {
                     out.push_str("      - none — root/parallel-start candidate\n");
@@ -385,12 +400,13 @@ pub mod plan {
                         if let Some(dependency) = task_by_id.get(dependency_id.as_str()) {
                             out.push_str(&format!(
                                 "      - {} — {}\n",
-                                dependency.id, dependency.title
+                                md_inline(&dependency.id),
+                                md_inline(&dependency.title)
                             ));
                         } else {
                             out.push_str(&format!(
                                 "      - {} — unresolved reference\n",
-                                dependency_id
+                                md_inline(dependency_id)
                             ));
                         }
                     }
@@ -398,7 +414,11 @@ pub mod plan {
                 out.push_str("    - Enables:\n");
                 if let Some(enabled_tasks) = enables_by_id.get(task.id.as_str()) {
                     for enabled in enabled_tasks {
-                        out.push_str(&format!("      - {} — {}\n", enabled.id, enabled.title));
+                        out.push_str(&format!(
+                            "      - {} — {}\n",
+                            md_inline(&enabled.id),
+                            md_inline(&enabled.title)
+                        ));
                     }
                 } else {
                     out.push_str("      - none\n");
@@ -409,20 +429,20 @@ pub mod plan {
             for task in &ws.tasks {
                 out.push_str(&format!(
                     "\n### Issue source packet: {} ({})\n\n- Objective: {}\n- Canonical source: plan.json → workstream {} → task {}\n- Drafting context: Use the plan-level constraints, non-goals, decisions, and risks above as the canonical source context; do not infer tracker IDs, labels, teams, priority, milestones, or live tracker state.\n- Workstream: {} — {}\n- Task: {} — {}\n- Proposed planning status: {}\n- Proposed owner: {}\n",
-                    task.title,
-                    task.id,
-                    plan.objective,
-                    ws.id,
-                    task.id,
-                    ws.id,
-                    ws.title,
-                    task.id,
-                    task.title,
+                    md_inline(&task.title),
+                    md_inline(&task.id),
+                    md_inline(&plan.objective),
+                    md_inline(&ws.id),
+                    md_inline(&task.id),
+                    md_inline(&ws.id),
+                    md_inline(&ws.title),
+                    md_inline(&task.id),
+                    md_inline(&task.title),
                     task.status,
-                    task.owner
+                    md_inline(task.owner
                         .as_deref()
                         .or(ws.owner.as_deref())
-                        .unwrap_or("unassigned")
+                        .unwrap_or("unassigned"))
                 ));
                 out.push_str("- Resolved outcomes:\n");
                 if task.outcomes.is_empty() {
@@ -432,12 +452,15 @@ pub mod plan {
                         if let Some(outcome) = outcome_by_id.get(outcome_id.as_str()) {
                             out.push_str(&format!(
                                 "  - {}: {}\n    - Proof:\n{}\n",
-                                outcome.id,
-                                outcome.description,
+                                md_inline(&outcome.id),
+                                md_inline(&outcome.description),
                                 bullets_indent(&outcome.proof, 6)
                             ));
                         } else {
-                            out.push_str(&format!("  - {}: unresolved reference\n", outcome_id));
+                            out.push_str(&format!(
+                                "  - {}: unresolved reference\n",
+                                md_inline(outcome_id)
+                            ));
                         }
                     }
                 }
@@ -449,12 +472,13 @@ pub mod plan {
                         if let Some(dependency) = task_by_id.get(dependency_id.as_str()) {
                             out.push_str(&format!(
                                 "  - {} — {}\n",
-                                dependency.id, dependency.title
+                                md_inline(&dependency.id),
+                                md_inline(&dependency.title)
                             ));
                         } else {
                             out.push_str(&format!(
                                 "  - {} — unresolved reference\n",
-                                dependency_id
+                                md_inline(dependency_id)
                             ));
                         }
                     }
@@ -463,7 +487,7 @@ pub mod plan {
                     "- Files:\n{}\n- Acceptance checks:\n{}\n- Verification intent: {}\n\nExact commands (verbatim, authored order):\n{}\n",
                     bullets(&task.files),
                     bullets(&task.acceptance_checks),
-                    task.verification.intent,
+                    md_inline(&task.verification.intent),
                     fenced_commands(&task.verification.commands)
                 ));
             }
@@ -474,7 +498,10 @@ pub mod plan {
         if v.is_empty() {
             "none".into()
         } else {
-            v.join(", ")
+            v.iter()
+                .map(|s| md_inline(s))
+                .collect::<Vec<_>>()
+                .join(", ")
         }
     }
     fn bullets(v: &[String]) -> String {
@@ -482,7 +509,7 @@ pub mod plan {
             "  - none".into()
         } else {
             v.iter()
-                .map(|s| format!("  - {s}"))
+                .map(|s| format_list_item(s, 2))
                 .collect::<Vec<_>>()
                 .join("\n")
         }
@@ -493,10 +520,75 @@ pub mod plan {
             format!("{prefix}- none")
         } else {
             v.iter()
-                .map(|s| format!("{prefix}- {s}"))
+                .map(|s| format_list_item(s, spaces))
                 .collect::<Vec<_>>()
                 .join("\n")
         }
+    }
+    fn format_list_item(s: &str, spaces: usize) -> String {
+        let prefix = " ".repeat(spaces);
+        let continuation = " ".repeat(spaces + 4);
+        let escaped = md_paragraph(s);
+        let mut lines = escaped.lines();
+        let first = lines.next().unwrap_or("");
+        let mut out = format!("{prefix}- {first}");
+        for line in lines {
+            out.push('\n');
+            out.push_str(&continuation);
+            out.push_str(line);
+        }
+        out
+    }
+    fn md_inline(s: &str) -> String {
+        md_escape(&s.replace(['\r', '\n'], " "))
+    }
+    fn md_paragraph(s: &str) -> String {
+        s.replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .split('\n')
+            .map(md_escape_paragraph_line)
+            .collect::<Vec<_>>()
+            .join("  \n")
+    }
+    fn md_escape_paragraph_line(s: &str) -> String {
+        escape_line_start_marker(&md_escape(s))
+    }
+    fn escape_line_start_marker(s: &str) -> String {
+        if s.starts_with("# ") || s.starts_with("- ") || s.starts_with("+ ") {
+            format!("\\{s}")
+        } else if let Some(dot) = ordered_list_marker_dot(s) {
+            format!("{}\\{}", &s[..dot], &s[dot..])
+        } else {
+            s.to_string()
+        }
+    }
+    fn ordered_list_marker_dot(s: &str) -> Option<usize> {
+        let bytes = s.as_bytes();
+        let mut index = 0;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        if index > 0 && bytes.get(index) == Some(&b'.') && bytes.get(index + 1) == Some(&b' ') {
+            Some(index)
+        } else {
+            None
+        }
+    }
+    fn md_escape(s: &str) -> String {
+        let mut out = String::new();
+        for ch in s.chars() {
+            match ch {
+                '&' => out.push_str("&amp;"),
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                '\\' | '`' | '*' | '_' | '{' | '}' | '[' | ']' | '(' | ')' | '!' | '|' => {
+                    out.push('\\');
+                    out.push(ch);
+                }
+                _ => out.push(ch),
+            }
+        }
+        out
     }
     fn fenced_commands(commands: &[String]) -> String {
         if commands.is_empty() {
