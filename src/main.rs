@@ -940,23 +940,28 @@ impl StableBuild {
         fs::File::open(&self.staged_output)?.sync_all()?;
         let source =
             cap_std::fs::Dir::open_ambient_dir(&self.staging_dir, cap_std::ambient_authority())?;
-        let source_dir = source.try_clone()?.into_std_file();
-        let destination_dir = match &target {
+        let ordinary_destination = match &target {
             sideshow::review::ReviewPublicationTarget::Ordinary => {
-                fs::File::open(self.output.parent().ok_or_else(|| {
+                Some(fs::File::open(self.output.parent().ok_or_else(|| {
                     std::io::Error::other("published deck has no parent directory")
-                })?)?
+                })?)?)
             }
             sideshow::review::ReviewPublicationTarget::Review { directory, .. } => {
-                directory.try_clone()?.into_std_file()
+                sideshow::secure_fs::sync_directory(directory)?;
+                None
             }
         };
         // Directory sync failures before visibility remain ordinary, uncommitted errors.
-        destination_dir.sync_all()?;
-        source_dir.sync_all()?;
-        match target {
+        if let Some(destination) = &ordinary_destination {
+            destination.sync_all()?;
+        }
+        sideshow::secure_fs::sync_directory(&source)?;
+        let post_sync = match target {
             sideshow::review::ReviewPublicationTarget::Ordinary => {
                 fs::rename(&self.staged_output, &self.output)?;
+                ordinary_destination
+                    .expect("ordinary publication has a destination directory")
+                    .sync_all()
             }
             sideshow::review::ReviewPublicationTarget::Review {
                 directory,
@@ -967,15 +972,13 @@ impl StableBuild {
                     .file_name()
                     .ok_or_else(|| std::io::Error::other("staged deck has no file name"))?;
                 source.rename(Path::new(staged_name), directory, Path::new(file_name))?;
+                sideshow::secure_fs::sync_directory(directory)
             }
-        }
+        };
         // The rename is the visibility boundary. Preserve committed semantics on any later sync
         // failure so paired publication can retry durability instead of assuming the old deck won.
         Ok(
-            match destination_dir
-                .sync_all()
-                .and_then(|()| source_dir.sync_all())
-            {
+            match post_sync.and_then(|()| sideshow::secure_fs::sync_directory(&source)) {
                 Ok(()) => sideshow::secure_fs::AtomicWriteOutcome::Durable,
                 Err(error) => {
                     sideshow::secure_fs::AtomicWriteOutcome::CommittedButDirectorySyncFailed(error)

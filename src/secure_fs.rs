@@ -275,8 +275,28 @@ fn atomic_write_with_sync(
     result
 }
 
-fn sync_directory(dir: &Dir) -> io::Result<()> {
-    dir.try_clone()?.into_std_file().sync_all()
+/// Opens a readable directory descriptor relative to a held capability directory.
+///
+/// `cap_std::fs::Dir` may use `O_PATH` on Linux. Cloning and calling `fsync` or
+/// `flock` on that descriptor fails with `EBADF`, so durability and locking must
+/// use a fresh `O_RDONLY|O_DIRECTORY` descriptor instead.
+pub fn open_directory_file(dir: &Dir) -> io::Result<fs::File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_DIRECTORY);
+    let file = dir.open_with(Path::new("."), &options)?.into_std();
+    if !file.metadata()?.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "secure directory descriptor did not open a directory",
+        ));
+    }
+    Ok(file)
+}
+
+pub fn sync_directory(dir: &Dir) -> io::Result<()> {
+    open_directory_file(dir)?.sync_all()
 }
 
 fn nearest_existing_ancestor(path: &Path) -> io::Result<(PathBuf, Vec<OsString>)> {
@@ -394,6 +414,19 @@ mod tests {
 
         assert_eq!(fs::read(original.join("handoff.json")).unwrap(), b"safe\n");
         assert!(!deck.join("handoff.json").exists());
+    }
+
+    #[test]
+    fn capability_directory_can_be_synced_and_locked() {
+        use fs4::fs_std::FileExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let dir = Dir::open_ambient_dir(root.path(), ambient_authority()).unwrap();
+
+        sync_directory(&dir).unwrap();
+        let file = open_directory_file(&dir).unwrap();
+        file.lock_exclusive().unwrap();
+        file.unlock().unwrap();
     }
 
     #[cfg(unix)]

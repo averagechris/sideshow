@@ -859,7 +859,7 @@ impl ReviewRepository {
             .deck_gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let gate = self.deck_dir.try_clone()?.into_std_file();
+        let gate = crate::secure_fs::open_directory_file(&self.deck_dir)?;
         gate.lock_exclusive()?;
         let result = operation();
         let unlock_result = gate.unlock();
@@ -1053,7 +1053,7 @@ impl ReviewRepository {
         // Reject a symlinked/replaced dist directory before either visibility boundary.
         let output_dir = self.open_published_output_directory()?;
         let output_dir_identity = crate::secure_fs::directory_identity_of(&output_dir)?;
-        output_dir.try_clone()?.into_std_file().sync_all()?;
+        crate::secure_fs::sync_directory(&output_dir)?;
         let pending = PendingPublication {
             schema_version: 1,
             output_name,
@@ -1150,7 +1150,7 @@ impl ReviewRepository {
 
     fn sync_published_output_directory(&self) -> Result<(), ReviewRepositoryError> {
         let dist = self.open_published_output_directory()?;
-        dist.into_std_file().sync_all()?;
+        crate::secure_fs::sync_directory(&dist)?;
         Ok(())
     }
 
@@ -1315,7 +1315,7 @@ impl ReviewRepository {
     ) -> Result<(), ReviewRepositoryError> {
         match reviews_dir.remove_file(Path::new(&self.pending_name)) {
             Ok(()) => {
-                reviews_dir.try_clone()?.into_std_file().sync_all()?;
+                crate::secure_fs::sync_directory(reviews_dir)?;
                 Ok(())
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
