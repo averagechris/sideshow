@@ -138,8 +138,23 @@ fn plan_markdown_export_appends_tracker_neutral_issue_packets() {
     assert!(exported.get("issue_packets").is_none());
     assert!(exported.get("manual_issue_drafting_packets").is_none());
     assert!(
+        exported
+            .get("proposed_decomposition_and_dependency_overview")
+            .is_none()
+    );
+    assert!(
         exported["workstreams"][0]["tasks"][0]
             .get("resolved_outcomes")
+            .is_none()
+    );
+    assert!(
+        exported["workstreams"][0]["tasks"][0]
+            .get("enables")
+            .is_none()
+    );
+    assert!(
+        exported["workstreams"][0]["tasks"][0]
+            .get("derived_enables")
             .is_none()
     );
     assert_eq!(
@@ -171,6 +186,18 @@ fn plan_markdown_export_appends_tracker_neutral_issue_packets() {
     assert!(md.contains("may be split or combined"));
     assert!(md.contains("translator chooses issue boundaries, labels, teams, priority, milestones, and tracker conventions"));
     assert!(md.contains("no live tracker state"));
+    let disclaimer = md.find("Tracker-neutral disclaimer:").unwrap();
+    let overview = md
+        .find("### Proposed decomposition and dependency overview")
+        .unwrap();
+    let first_packet_heading = md.find("### Issue source packet:").unwrap();
+    assert!(disclaimer < overview && overview < first_packet_heading);
+    assert!(md.contains("- Derived dependency overview for manual drafting only; reverse `Enables` edges are not live tracker blockers, scheduling instructions, or JSON fields."));
+    assert!(md.contains("- Workstream ws-delivery — Delivery sequence\n  - Task task-align — Frame scope, risks, and review criteria"));
+    assert!(md.contains("    - Canonical source: plan.json → workstream ws-delivery → task task-align\n    - Depends on:\n      - none — root/parallel-start candidate\n    - Enables:\n      - task-implement — Implement the focused increment"));
+    assert!(md.contains("  - Task task-implement — Implement the focused increment\n    - Canonical source: plan.json → workstream ws-delivery → task task-implement\n    - Depends on:\n      - task-align — Frame scope, risks, and review criteria\n    - Enables:\n      - task-verify-handoff — Verify generated output and prepare handoff"));
+    assert!(md.contains("  - Task task-verify-handoff — Verify generated output and prepare handoff\n    - Canonical source: plan.json → workstream ws-delivery → task task-verify-handoff\n    - Depends on:\n      - task-implement — Implement the focused increment\n    - Enables:\n      - none"));
+    assert!(md.contains("- Workstream ws-parallel — Parallel lane\n  - Task task-parallel — Start without dependencies\n    - Canonical source: plan.json → workstream ws-parallel → task task-parallel\n    - Depends on:\n      - none — root/parallel-start candidate\n    - Enables:\n      - none"));
     assert!(md.contains("- Objective: Align stakeholders on a focused, reviewable increment"));
     assert!(
         md.contains("- Canonical source: plan.json → workstream ws-delivery → task task-align")
@@ -255,6 +282,35 @@ fn repository_planning_example_stays_strict_check_clean() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn plan_dogfood_markdown_export_includes_dependency_overview_chain() {
+    let deck = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/planning-sideshow");
+    let output = sideshow_command()
+        .args(["plan", "export", "--format", "markdown"])
+        .arg(&deck)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let md = String::from_utf8(output.stdout).unwrap();
+
+    let disclaimer = md.find("Tracker-neutral disclaimer:").unwrap();
+    let overview = md
+        .find("### Proposed decomposition and dependency overview")
+        .unwrap();
+    let packet = md.find("### Issue source packet:").unwrap();
+    assert!(disclaimer < overview && overview < packet);
+
+    let model = md.find("Task task-model-canonical-plan").unwrap();
+    let slides = md.find("Task task-author-expressive-slides").unwrap();
+    let docs = md.find("Task task-document-repeatable-loop").unwrap();
+    let digest = md.find("Task task-dogfood-manual-digest").unwrap();
+    assert!(model < slides && slides < docs && docs < digest);
+    assert!(md.contains("Task task-model-canonical-plan — Model the Phase 2 work as strict canonical plan data\n    - Canonical source: plan.json → workstream ws-verification-scaffold → task task-model-canonical-plan\n    - Depends on:\n      - none — root/parallel-start candidate\n    - Enables:\n      - task-author-expressive-slides — Author expressive anchored slides"));
+    assert!(md.contains("Task task-author-expressive-slides — Author expressive anchored slides\n    - Canonical source: plan.json → workstream ws-visual-grammar → task task-author-expressive-slides\n    - Depends on:\n      - task-model-canonical-plan — Model the Phase 2 work as strict canonical plan data\n    - Enables:\n      - task-document-repeatable-loop — Document the repeatable local workflow"));
+    assert!(md.contains("Task task-document-repeatable-loop — Document the repeatable local workflow\n    - Canonical source: plan.json → workstream ws-repository-example → task task-document-repeatable-loop\n    - Depends on:\n      - task-author-expressive-slides — Author expressive anchored slides\n    - Enables:\n      - task-dogfood-manual-digest — Dogfood the tracker-neutral planning digest increment"));
+    assert!(md.contains("Task task-dogfood-manual-digest — Dogfood the tracker-neutral planning digest increment\n    - Canonical source: plan.json → workstream ws-repository-example → task task-dogfood-manual-digest\n    - Depends on:\n      - task-document-repeatable-loop — Document the repeatable local workflow\n    - Enables:\n      - none"));
 }
 
 #[test]

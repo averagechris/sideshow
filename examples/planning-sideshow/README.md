@@ -75,6 +75,11 @@ priority, milestones, ownership, and tracker-specific conventions. Sideshow
 intentionally has no tracker APIs, credentials, imports, issue creation,
 synchronization contract, or execution history.
 
+Review the compact decomposition overview before copying packet details. It keeps
+authored workstream/task order, resolves direct dependencies, shows derived
+“enables” edges, and marks dependency roots as parallel-start candidates without
+claiming tracker blockers or a generated schedule.
+
 Each packet is designed to survive being reviewed or copied independently: it
 repeats the objective, names the canonical workstream/task ID path, points back to
 shared constraints, non-goals, decisions, and risks, and renders every exact

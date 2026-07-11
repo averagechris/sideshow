@@ -181,7 +181,8 @@
             "README, planning docs, example docs, and authoring skill guidance describe the tracker-neutral digest contract without adding tracker APIs or execution history",
             "the dogfood deck includes an anchored expressive slide that maps rationale to per-task packets to manual tracker translation using rails, layers, and connectors",
             "every new canonical ID has a data-plan-kind/data-plan-id slide anchor and strict projection coverage remains complete",
-            "each packet repeats the objective, names a stable canonical workstream/task path, points to shared plan context, and preserves exact commands in individually fenced shell blocks"
+            "each packet repeats the objective, names a stable canonical workstream/task path, points to shared plan context, and preserves exact commands in individually fenced shell blocks",
+            "the Markdown digest presents an authored-order dependency overview before packets, including dependency roots and derived enables edges without adding JSON fields or tracker scheduling semantics"
           ],
           "verification": {
             "intent": "Confirm the documentation/dogfood digest increment preserves strict projection coverage and builds without committing generated output.",

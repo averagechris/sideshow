@@ -358,6 +358,53 @@ pub mod plan {
             .flat_map(|workstream| workstream.tasks.iter())
             .map(|task| (task.id.as_str(), task))
             .collect();
+        let mut enables_by_id: BTreeMap<&str, Vec<&Task>> = BTreeMap::new();
+        for ws in &plan.workstreams {
+            for task in &ws.tasks {
+                for dependency_id in &task.dependencies {
+                    enables_by_id
+                        .entry(dependency_id.as_str())
+                        .or_default()
+                        .push(task);
+                }
+            }
+        }
+        out.push_str("\n### Proposed decomposition and dependency overview\n\n");
+        out.push_str("- Derived dependency overview for manual drafting only; reverse `Enables` edges are not live tracker blockers, scheduling instructions, or JSON fields.\n");
+        for ws in &plan.workstreams {
+            out.push_str(&format!("- Workstream {} — {}\n", ws.id, ws.title));
+            for task in &ws.tasks {
+                out.push_str(&format!(
+                    "  - Task {} — {}\n    - Canonical source: plan.json → workstream {} → task {}\n    - Depends on:\n",
+                    task.id, task.title, ws.id, task.id
+                ));
+                if task.dependencies.is_empty() {
+                    out.push_str("      - none — root/parallel-start candidate\n");
+                } else {
+                    for dependency_id in &task.dependencies {
+                        if let Some(dependency) = task_by_id.get(dependency_id.as_str()) {
+                            out.push_str(&format!(
+                                "      - {} — {}\n",
+                                dependency.id, dependency.title
+                            ));
+                        } else {
+                            out.push_str(&format!(
+                                "      - {} — unresolved reference\n",
+                                dependency_id
+                            ));
+                        }
+                    }
+                }
+                out.push_str("    - Enables:\n");
+                if let Some(enabled_tasks) = enables_by_id.get(task.id.as_str()) {
+                    for enabled in enabled_tasks {
+                        out.push_str(&format!("      - {} — {}\n", enabled.id, enabled.title));
+                    }
+                } else {
+                    out.push_str("      - none\n");
+                }
+            }
+        }
         for ws in &plan.workstreams {
             for task in &ws.tasks {
                 out.push_str(&format!(

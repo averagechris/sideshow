@@ -275,6 +275,13 @@ teams, priority, milestones, and tracker-specific conventions. Direct tracker
 adapters, credentials, imports, issue creation, synchronization, and execution
 history are outside the product contract.
 
+Before the detailed packets, Markdown includes a compact decomposition overview
+in authored workstream/task order. It resolves direct dependencies, derives
+reverse “enables” edges, and identifies dependency roots as parallel-start
+candidates. This is a review projection only: it does not topologically reorder
+work, invent scheduling policy, create tracker blockers, or add derived fields to
+strict JSON.
+
 Packets use stable plan IDs rather than tracker identifiers or inferred source
 line numbers. A canonical source reference such as `plan.json → workstream
 ws-delivery → task task-align` remains meaningful across formatting changes and
@@ -418,8 +425,6 @@ prototype CLI.
 
 - Should freeform narrative remain only in slides, or should a future schema gain an
   optional Markdown context file for dense handoffs?
-- Which tracker-neutral digest shape best helps an agent or human draft issues
-  without encoding Linear, todo.sr.ht, or GitHub conventions?
 - Should planning status vocabulary be simplified further now that it explicitly
   does not mirror execution state?
 - Should `sideshow check` auto-detect `plan.json`, or should all plan validation
@@ -428,7 +433,3 @@ prototype CLI.
   which need a small shared abstraction?
 - Do dependency diagrams need a build-time graph layout dependency in v1, or are
   semantic tables and swimlanes enough for the prototype?
-- How should source locations be reported so review comments and manually created
-  issues can refer back to the right planning record?
-- What export presentation best supports a reviewed, manual issue-drafting step
-  while keeping JSON tracker-neutral?
