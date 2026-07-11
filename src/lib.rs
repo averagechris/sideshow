@@ -202,7 +202,7 @@ pub mod plan {
             .file_name()
             .and_then(|name| name.to_str())
             .map(plan_title)
-            .unwrap_or_else(|| "Implementation Plan".into());
+            .unwrap_or_else(|| "Alignment Plan".into());
         let deck_toml_path = dir.join("deck.toml");
         let deck_toml = fs::read_to_string(&deck_toml_path)?;
         let title_line = format!("title = \"{} Demo\"", title_case(theme));
@@ -215,41 +215,41 @@ pub mod plan {
             schema_version: 2,
             title: title.clone(),
             status: PlanStatus::Draft,
-            objective: "Align stakeholders on a focused, reviewable increment, execute it in dependency order, and hand off strict-check-clean evidence."
+            objective: "Align stakeholders on a focused, reviewable increment by framing scope, exploring proposal options, and refining a strict-check-clean planning digest before execution begins."
                 .into(),
             outcomes: vec![
-                Outcome { id: "outcome-alignment".into(), description: "Readers understand the goal, scope boundaries, sequencing, and review criteria before work begins.".into(), proof: vec!["slides/01-title.html and slides/02-plan.html reference alignment anchors".into(), "plan.json captures constraints, decisions, risks, owners, and dependencies".into()] },
-                Outcome { id: "outcome-implementation".into(), description: "The planned increment is implemented as a small, reviewable set of code and documentation changes.".into(), proof: vec!["implementation task acceptance checks are complete".into(), "dependent handoff task remains blocked until implementation evidence exists".into()] },
-                Outcome { id: "outcome-verification".into(), description: "Generated output and strict checks are clean enough for reviewer trust and agent handoff.".into(), proof: vec!["sideshow plan check . --strict succeeds".into(), "agent command output is pasted into the handoff".into()] },
+                Outcome { id: "outcome-alignment".into(), description: "Readers understand the goal, scope boundaries, proposal shape, and review criteria before work begins.".into(), proof: vec!["slides/01-title.html and slides/02-plan.html reference alignment anchors".into(), "plan.json captures constraints, decisions, risks, owners, and dependencies without live tracker state".into()] },
+                Outcome { id: "outcome-proposal".into(), description: "The proposed increment is expressed as tracker-neutral work that can be translated after alignment.".into(), proof: vec!["proposal task acceptance checks explain scope and dependency intent".into(), "slides/02-plan.html anchors the proposal workstream and exploration task".into()] },
+                Outcome { id: "outcome-reviewed-digest".into(), description: "A reviewed planning digest is strict-check-clean enough for humans to decide what happens next.".into(), proof: vec!["sideshow plan check . --strict succeeds".into(), "Markdown digest preserves verification intent without claiming execution status".into()] },
             ],
             constraints: vec![
                 Constraint { id: "constraint-authored-projection".into(), description: "Slides remain authored projection; plan.json is the canonical machine-readable contract.".into() },
                 Constraint { id: "constraint-strict-clean".into(), description: "Do not hand off until generated output and strict planning checks are clean.".into() },
             ],
-            non_goals: vec!["Do not store private review annotations or ad-hoc agent notes in plan.json.".into(), "Do not broaden scope without adding outcomes, dependencies, and verification intent.".into()],
+            non_goals: vec!["Do not store private review annotations or ad-hoc agent notes in plan.json.".into(), "Do not model live assignment, status, blocker, completion, or tracker workflow state.".into(), "Do not assume a 1:1 mapping between plan tasks and issues; translators may split, combine, or omit packets.".into()],
             decisions: vec![
                 Decision { id: "decision-json-canonical".into(), title: "Use plan.json as canonical data".into(), status: DecisionStatus::Accepted, rationale: "Slides persuade humans, but agents need stable structured input with exact commands.".into() },
                 Decision { id: "decision-verify-intent".into(), title: "Separate verification intent from commands".into(), status: DecisionStatus::Accepted, rationale: "Human reviewers need the purpose of verification while agents need verbatim commands.".into() },
             ],
             workstreams: vec![Workstream {
-                id: "ws-delivery".into(),
-                title: "Delivery sequence".into(),
+                id: "ws-alignment".into(),
+                title: "Alignment proposal".into(),
                 status: WorkStatus::Todo,
-                owner: Some("implementation-agent".into()),
+                owner: Some("planning-agent".into()),
                 tasks: vec![
                   Task {
                     id: "task-align".into(),
                     title: "Frame scope, risks, and review criteria".into(),
                     status: WorkStatus::Todo,
-                    owner: Some("implementation-agent".into()),
+                    owner: Some("planning-agent".into()),
                     outcomes: vec!["outcome-alignment".into()],
                     dependencies: vec![],
                     files: vec!["plan.json".into(), "slides/".into()],
-                    acceptance_checks: vec!["Outcomes, constraints, decisions, and risks explain why this increment is safe to execute.".into(), "Slides contain stable data-plan-id anchors for the framing artifacts.".into()],
-                    verification: Verification { intent: "Confirm the planning contract is internally consistent before implementation starts.".into(), commands: vec!["sideshow plan check . --strict".into()] },
+                    acceptance_checks: vec!["Outcomes, constraints, decisions, and risks explain where planning stops and later execution decisions begin.".into(), "Slides contain stable data-plan-id anchors for the framing artifacts.".into()],
+                    verification: Verification { intent: "Confirm the planning contract is internally consistent before proposal exploration starts.".into(), commands: vec!["sideshow plan check . --strict".into()] },
                   },
-                  Task { id: "task-implement".into(), title: "Implement the focused increment".into(), status: WorkStatus::Todo, owner: Some("implementation-agent".into()), outcomes: vec!["outcome-implementation".into()], dependencies: vec!["task-align".into()], files: vec!["src/".into(), "tests/".into(), "docs/".into()], acceptance_checks: vec!["Code, tests, and docs match the approved scope and preserve review trust boundaries.".into(), "No unrelated examples or fixtures are modified.".into()], verification: Verification { intent: "Run the narrow checks that prove the implemented increment behaves as planned.".into(), commands: vec!["cargo test plan_ --test cli".into()] } },
-                  Task { id: "task-verify-handoff".into(), title: "Verify generated output and prepare handoff".into(), status: WorkStatus::Todo, owner: Some("implementation-agent".into()), outcomes: vec!["outcome-verification".into()], dependencies: vec!["task-implement".into()], files: vec!["plan.json".into(), "dist/".into(), "handoff-notes.md".into()], acceptance_checks: vec!["Strict planning checks pass after generated output is refreshed.".into(), "Handoff names the exact verification intent and command output reviewers can trust.".into()], verification: Verification { intent: "Prove the final deck and plan are strict-check-clean for reviewer handoff.".into(), commands: vec!["sideshow plan check . --strict".into(), "sideshow build .".into()] } },
+                  Task { id: "task-explore".into(), title: "Explore proposal options".into(), status: WorkStatus::Todo, owner: Some("planning-agent".into()), outcomes: vec!["outcome-proposal".into()], dependencies: vec!["task-align".into()], files: vec!["plan.json".into(), "slides/".into()], acceptance_checks: vec!["Proposal options explain tradeoffs, dependencies, and tracker-neutral translation choices.".into(), "No option claims live assignee, blocker, status, or completion state.".into()], verification: Verification { intent: "Check that proposal exploration remains canonical, structured, and tracker-neutral.".into(), commands: vec!["sideshow plan check . --strict".into()] } },
+                  Task { id: "task-refine-digest".into(), title: "Refine reviewed planning digest".into(), status: WorkStatus::Todo, owner: Some("planning-agent".into()), outcomes: vec!["outcome-reviewed-digest".into()], dependencies: vec!["task-explore".into()], files: vec!["plan.json".into(), "slides/".into()], acceptance_checks: vec!["Digest separates alignment, proposal rationale, constraints, risks, and verification intent.".into(), "Digest is ready for human review without implying execution has started.".into()], verification: Verification { intent: "Prove the deck and plan are strict-check-clean for a reviewed planning digest.".into(), commands: vec!["sideshow plan check . --strict".into(), "sideshow build .".into(), "sideshow plan export . --format markdown".into()] } },
                 ],
             }],
             risks: vec![Risk { id: "risk-drift".into(), description: "Slides drift from canonical plan data or generated output is not refreshed.".into(),
@@ -262,16 +262,16 @@ pub mod plan {
         fs::write(
             dir.join("slides/01-title.html"),
             format!(
-                "<section class=\"plan-shell\">\n  <header class=\"plan-header\">\n    <div><p class=\"plan-eyebrow\">Implementation plan</p><h1 class=\"plan-title\">{title}</h1></div>\n    <span class=\"plan-status\" data-state=\"draft\" data-tone=\"info\">Draft</span>\n  </header>\n  <article class=\"plan-callout\" data-tone=\"info\" data-plan-kind=\"outcome\" data-plan-id=\"outcome-alignment\"><strong>Objective:</strong> Align scope, execute in order, and hand off strict-check-clean evidence.</article>\n  <footer class=\"plan-footer\"><span class=\"plan-meta\">Review before execution</span></footer>\n</section>\n"
+                "<section class=\"plan-shell\">\n  <header class=\"plan-header\">\n    <div><p class=\"plan-eyebrow\">Alignment plan</p><h1 class=\"plan-title\">{title}</h1></div>\n    <span class=\"plan-status\" data-state=\"draft\" data-tone=\"info\">Draft</span>\n  </header>\n  <article class=\"plan-callout\" data-tone=\"info\" data-plan-kind=\"outcome\" data-plan-id=\"outcome-alignment\"><strong>Objective:</strong> Frame scope, explore proposal options, and refine a reviewed planning digest.</article>\n  <footer class=\"plan-footer\"><span class=\"plan-meta\">Alignment before execution decisions</span></footer>\n</section>\n"
             ),
         )?;
         fs::write(
             dir.join("slides/02-plan.html"),
-            "<section class=\"plan-shell\">\n  <header class=\"plan-header\"><div><p class=\"plan-eyebrow\">Execution</p><h2 class=\"plan-title\">Alignment → implementation → verification</h2></div></header>\n  <div class=\"plan-grid\">\n    <article data-plan-kind=\"workstream\" data-plan-id=\"ws-delivery\"><h3>Delivery sequence</h3><ol class=\"plan-rail\" aria-label=\"Ordered delivery sequence\"><li data-plan-kind=\"task\" data-plan-id=\"task-align\"><strong>Frame scope, risks, and review criteria</strong><p>Establish outcomes and constraints before implementation.</p></li><li data-plan-kind=\"task\" data-plan-id=\"task-implement\"><strong>Implement the focused increment</strong><p>Depends on alignment and preserves review boundaries.</p></li><li data-plan-kind=\"task\" data-plan-id=\"task-verify-handoff\"><strong>Verify and hand off</strong><p>Depends on implementation and reports exact commands.</p></li></ol></article>\n    <section class=\"plan-layers\" aria-label=\"Planning authority layers\"><article class=\"plan-layer\" data-layer=\"Canonical\" data-plan-kind=\"decision\" data-plan-id=\"decision-json-canonical\"><strong>plan.json is canonical</strong><p>Stable execution data drives agent work.</p></article><article class=\"plan-layer\" data-layer=\"Projection\" data-plan-kind=\"constraint\" data-plan-id=\"constraint-authored-projection\"><strong>Slides explain the plan</strong><p>Expressive narrative never becomes the only task source.</p></article><article class=\"plan-layer\" data-layer=\"Proof\" data-plan-kind=\"decision\" data-plan-id=\"decision-verify-intent\"><strong>Intent and commands stay separate</strong><p>Humans see why; agents retain exact commands.</p></article></section>\n  </div>\n</section>\n",
+            "<section class=\"plan-shell\">\n  <header class=\"plan-header\"><div><p class=\"plan-eyebrow\">Proposed work</p><h2 class=\"plan-title\">Frame → explore → refine digest</h2></div></header>\n  <div class=\"plan-grid\">\n    <article data-plan-kind=\"workstream\" data-plan-id=\"ws-alignment\"><h3>Alignment proposal</h3><ol class=\"plan-rail\" aria-label=\"Planning digest sequence\"><li data-plan-kind=\"task\" data-plan-id=\"task-align\"><strong>Frame scope, risks, and review criteria</strong><p>Establish outcomes and constraints before proposal exploration.</p></li><li data-plan-kind=\"task\" data-plan-id=\"task-explore\"><strong>Explore proposal options</strong><p>Depends on alignment and stays tracker-neutral.</p></li><li data-plan-kind=\"task\" data-plan-id=\"task-refine-digest\"><strong>Refine reviewed planning digest</strong><p>Depends on exploration and preserves digest-ready verification intent.</p></li></ol></article>\n    <section class=\"plan-layers\" aria-label=\"Planning authority layers\"><article class=\"plan-layer\" data-layer=\"Canonical\" data-plan-kind=\"decision\" data-plan-id=\"decision-json-canonical\"><h3>plan.json is canonical</h3><p>Stable planning data drives alignment work.</p></article><article class=\"plan-layer\" data-layer=\"Projection\" data-plan-kind=\"constraint\" data-plan-id=\"constraint-authored-projection\"><h3>Slides explain the plan</h3><p>Expressive narrative never becomes the only task source.</p></article><article class=\"plan-layer\" data-layer=\"Proof\" data-plan-kind=\"decision\" data-plan-id=\"decision-verify-intent\"><h3>Intent and commands stay separate</h3><p>Humans see why; digest readers retain exact commands.</p></article></section>\n  </div>\n</section>\n",
         )?;
         fs::write(
             dir.join("slides/03-verify.html"),
-            "<section class=\"plan-shell\">\n  <header class=\"plan-header\"><div><p class=\"plan-eyebrow\">Guardrails</p><h2 class=\"plan-title\">Make risk and proof visible</h2></div></header>\n  <div class=\"plan-grid\"><aside class=\"plan-risk\" data-critical=\"true\" data-plan-kind=\"risk\" data-plan-id=\"risk-drift\"><strong>Risk:</strong> slides drift from canonical data.<p>Mitigation: run strict checks and keep anchors current.</p></aside><section class=\"plan-connectors\" aria-label=\"Proof dependencies\"><article class=\"plan-connector\" data-from=\"Implementation\" data-to=\"Handoff\" data-plan-kind=\"outcome\" data-plan-id=\"outcome-implementation\"><strong>Acceptance stays tied to changed files</strong><p>Implementation evidence unlocks final verification.</p></article><article class=\"plan-connector\" data-from=\"Strict check\" data-to=\"Reviewer trust\" data-plan-kind=\"outcome\" data-plan-id=\"outcome-verification\"><strong>Generated output is clean</strong><p>Only checked source is ready to hand off.</p></article></section><details class=\"plan-evidence\" data-plan-kind=\"constraint\" data-plan-id=\"constraint-strict-clean\"><summary>Proof intent: validate structure and generated output</summary><div class=\"plan-evidence-body\"><p>Run exact trusted commands from plan.json.</p><code>sideshow plan check . --strict</code></div></details></div>\n</section>\n",
+            "<section class=\"plan-shell\">\n  <header class=\"plan-header\"><div><p class=\"plan-eyebrow\">Guardrails</p><h2 class=\"plan-title\">Make risk and proof visible</h2></div></header>\n  <div class=\"plan-grid\"><aside class=\"plan-risk\" data-critical=\"true\" data-plan-kind=\"risk\" data-plan-id=\"risk-drift\"><strong>Risk:</strong> slides drift from canonical data.<p>Mitigation: run strict checks and keep anchors current.</p></aside><section class=\"plan-connectors\" aria-label=\"Proof dependencies\"><article class=\"plan-connector\" data-from=\"Proposal\" data-to=\"Digest\" data-plan-kind=\"outcome\" data-plan-id=\"outcome-proposal\"><strong>Proposal stays tracker-neutral</strong><p>Exploration clarifies options without live workflow claims.</p></article><article class=\"plan-connector\" data-from=\"Strict check\" data-to=\"Reviewed digest\" data-plan-kind=\"outcome\" data-plan-id=\"outcome-reviewed-digest\"><strong>Reviewed digest is clean</strong><p>Only checked planning source is ready for decision-making.</p></article></section><details class=\"plan-evidence\" data-plan-kind=\"constraint\" data-plan-id=\"constraint-strict-clean\"><summary>Proof intent: validate structure and generated output</summary><div class=\"plan-evidence-body\"><p>Run exact trusted commands from plan.json.</p><code>sideshow plan check . --strict</code></div></details></div>\n</section>\n",
         )?;
         Ok(())
     }
@@ -322,7 +322,7 @@ pub mod plan {
         }
         out.push_str("\n## Non-goals\n");
         out.push_str(&format!("{}\n", bullets(&plan.non_goals)));
-        out.push_str("\n## Execution\n");
+        out.push_str("\n## Proposed work\n");
         for ws in &plan.workstreams {
             out.push_str(&format!(
                 "\n### {} ({})\n\n- Status: {}\n- Owner: {}\n",

@@ -52,11 +52,68 @@ fn plan_new_check_and_export_are_agent_consumable() {
     let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
     assert_eq!(value["schema_version"], 2);
     assert_eq!(value["status"], "draft");
+    assert!(
+        value["objective"]
+            .as_str()
+            .unwrap()
+            .contains("framing scope")
+    );
+    assert!(
+        value["objective"]
+            .as_str()
+            .unwrap()
+            .contains("planning digest")
+    );
+    assert_eq!(value["outcomes"][1]["id"], "outcome-proposal");
+    assert_eq!(value["outcomes"][2]["id"], "outcome-reviewed-digest");
+    assert_eq!(value["workstreams"][0]["id"], "ws-alignment");
+    assert_eq!(value["workstreams"][0]["owner"], "planning-agent");
+    assert_eq!(value["workstreams"][0]["tasks"][1]["id"], "task-explore");
+    assert_eq!(
+        value["workstreams"][0]["tasks"][2]["id"],
+        "task-refine-digest"
+    );
+    assert_eq!(
+        value["workstreams"][0]["tasks"][1]["files"],
+        serde_json::json!(["plan.json", "slides/"])
+    );
+    assert_eq!(
+        value["workstreams"][0]["tasks"][2]["files"],
+        serde_json::json!(["plan.json", "slides/"])
+    );
+    assert_eq!(
+        value["outcomes"][2]["proof"][1],
+        "Markdown digest preserves verification intent without claiming execution status"
+    );
+    assert_eq!(
+        value["workstreams"][0]["tasks"][2]["verification"]["commands"],
+        serde_json::json!([
+            "sideshow plan check . --strict",
+            "sideshow build .",
+            "sideshow plan export . --format markdown"
+        ])
+    );
+    let json_text = serde_json::to_string(&value).unwrap();
+    for obsolete in [
+        "implementation-agent",
+        "Delivery sequence",
+        "execute it in dependency order",
+        "implementation evidence",
+        "Review before execution",
+        "notes/",
+        "planning-digest.md",
+    ] {
+        assert!(
+            !json_text.contains(obsolete),
+            "obsolete scaffold phrase: {obsolete}"
+        );
+    }
+    assert!(!json_text.contains("\"dist/\""));
     let task = &value["workstreams"][0]["tasks"][0];
     assert_eq!(task["id"], "task-align");
     assert_eq!(
         task["verification"]["intent"],
-        "Confirm the planning contract is internally consistent before implementation starts."
+        "Confirm the planning contract is internally consistent before proposal exploration starts."
     );
     assert_eq!(task["verification"]["commands"][0], exact_command);
     assert!(task.get("verification_commands").is_none());
@@ -70,9 +127,63 @@ fn plan_new_check_and_export_are_agent_consumable() {
     let md = String::from_utf8(md.stdout).unwrap();
     assert!(md.contains("task-align"));
     assert!(md.contains("outcome-alignment"));
-    assert!(md.contains("implementation-agent"));
+    assert!(md.contains("planning-agent"));
+    assert!(md.contains("## Proposed work"));
+    assert!(md.contains("planning digest"));
+    assert!(!md.contains("## Execution"));
+    assert!(!md.contains("implementation-agent"));
     assert!(md.contains("Verification intent: Confirm the planning contract"));
     assert!(md.contains("Agent commands:"));
+    assert!(md.contains("sideshow plan export . --format markdown"));
+    assert!(md.contains("Markdown digest preserves verification intent"));
+    assert!(md.contains("- Files: plan.json, slides/"));
+    assert!(!md.contains("notes/"));
+    assert!(!md.contains("planning-digest.md"));
+    assert!(!md.contains("- Files: plan.json, dist/"));
+
+    let slide_text = [
+        "slides/01-title.html",
+        "slides/02-plan.html",
+        "slides/03-verify.html",
+    ]
+    .into_iter()
+    .map(|path| std::fs::read_to_string(deck.join(path)).unwrap())
+    .collect::<Vec<_>>()
+    .join("\n");
+    for id in [
+        "outcome-alignment",
+        "outcome-proposal",
+        "outcome-reviewed-digest",
+        "ws-alignment",
+        "task-align",
+        "task-explore",
+        "task-refine-digest",
+        "constraint-authored-projection",
+        "constraint-strict-clean",
+        "decision-json-canonical",
+        "decision-verify-intent",
+        "risk-drift",
+    ] {
+        assert!(
+            slide_text.contains(&format!("data-plan-id=\"{id}\"")),
+            "missing slide anchor for {id}"
+        );
+    }
+    assert!(slide_text.contains("Frame → explore → refine digest"));
+    assert!(slide_text.contains("tracker-neutral"));
+    assert!(slide_text.contains("reviewed planning digest"));
+    for obsolete in [
+        "implementation-agent",
+        "Delivery sequence",
+        "execute it in dependency order",
+        "implementation evidence",
+        "Review before execution",
+    ] {
+        assert!(
+            !slide_text.contains(obsolete),
+            "obsolete slide phrase: {obsolete}"
+        );
+    }
 
     let overwrite = sideshow_command()
         .args(["plan", "new"])
@@ -193,14 +304,14 @@ fn plan_markdown_export_appends_tracker_neutral_issue_packets() {
     let first_packet_heading = md.find("### Issue source packet:").unwrap();
     assert!(disclaimer < overview && overview < first_packet_heading);
     assert!(md.contains("- Derived dependency overview for manual drafting only; reverse `Enables` edges are not live tracker blockers, scheduling instructions, or JSON fields."));
-    assert!(md.contains("- Workstream ws-delivery — Delivery sequence\n  - Task task-align — Frame scope, risks, and review criteria"));
-    assert!(md.contains("    - Canonical source: plan.json → workstream ws-delivery → task task-align\n    - Depends on:\n      - none — root/parallel-start candidate\n    - Enables:\n      - task-implement — Implement the focused increment"));
-    assert!(md.contains("  - Task task-implement — Implement the focused increment\n    - Canonical source: plan.json → workstream ws-delivery → task task-implement\n    - Depends on:\n      - task-align — Frame scope, risks, and review criteria\n    - Enables:\n      - task-verify-handoff — Verify generated output and prepare handoff"));
-    assert!(md.contains("  - Task task-verify-handoff — Verify generated output and prepare handoff\n    - Canonical source: plan.json → workstream ws-delivery → task task-verify-handoff\n    - Depends on:\n      - task-implement — Implement the focused increment\n    - Enables:\n      - none"));
+    assert!(md.contains("- Workstream ws-alignment — Alignment proposal\n  - Task task-align — Frame scope, risks, and review criteria"));
+    assert!(md.contains("    - Canonical source: plan.json → workstream ws-alignment → task task-align\n    - Depends on:\n      - none — root/parallel-start candidate\n    - Enables:\n      - task-explore — Explore proposal options"));
+    assert!(md.contains("  - Task task-explore — Explore proposal options\n    - Canonical source: plan.json → workstream ws-alignment → task task-explore\n    - Depends on:\n      - task-align — Frame scope, risks, and review criteria\n    - Enables:\n      - task-refine-digest — Refine reviewed planning digest"));
+    assert!(md.contains("  - Task task-refine-digest — Refine reviewed planning digest\n    - Canonical source: plan.json → workstream ws-alignment → task task-refine-digest\n    - Depends on:\n      - task-explore — Explore proposal options\n    - Enables:\n      - none"));
     assert!(md.contains("- Workstream ws-parallel — Parallel lane\n  - Task task-parallel — Start without dependencies\n    - Canonical source: plan.json → workstream ws-parallel → task task-parallel\n    - Depends on:\n      - none — root/parallel-start candidate\n    - Enables:\n      - none"));
     assert!(md.contains("- Objective: Align stakeholders on a focused, reviewable increment"));
     assert!(
-        md.contains("- Canonical source: plan.json → workstream ws-delivery → task task-align")
+        md.contains("- Canonical source: plan.json → workstream ws-alignment → task task-align")
     );
     assert!(md.contains("Use the plan-level constraints, non-goals, decisions, and risks above as the canonical source context"));
 
@@ -208,16 +319,16 @@ fn plan_markdown_export_appends_tracker_neutral_issue_packets() {
         .find("### Issue source packet: Frame scope, risks, and review criteria (task-align)")
         .unwrap();
     let implement = md
-        .find("### Issue source packet: Implement the focused increment (task-implement)")
+        .find("### Issue source packet: Explore proposal options (task-explore)")
         .unwrap();
     let parallel = md
         .find("### Issue source packet: Start without dependencies (task-parallel)")
         .unwrap();
     assert!(align < implement && implement < parallel);
-    assert!(md.contains("- Workstream: ws-delivery — Delivery sequence"));
+    assert!(md.contains("- Workstream: ws-alignment — Alignment proposal"));
     assert!(md.contains("- Task: task-align — Frame scope, risks, and review criteria"));
     assert!(md.contains("- Proposed planning status: todo"));
-    assert!(md.contains("- Proposed owner: implementation-agent"));
+    assert!(md.contains("- Proposed owner: planning-agent"));
     assert!(md.contains("- outcome-alignment: Readers understand the goal"));
     assert!(md.contains("    - Proof:\n      - slides/01-title.html"));
     assert!(md.contains("- task-align — Frame scope, risks, and review criteria"));
@@ -331,9 +442,9 @@ fn plan_markdown_export_hardens_hostile_authored_prose() {
     assert!(md.contains("      visible # heading  \n      \\# heading  \n      \\- list  \n      \\+ list  \n      &gt; quote  \n      1\\. ordered"));
     assert!(md.contains("- Files:\n  - src/lib.rs  \n      visible"));
 
-    let execution = &md[md.find("## Execution").unwrap()..md.find("## Decisions").unwrap()];
-    assert!(execution.contains("Agent commands:\n\nCommand 1:\n\n"));
-    assert_command_fence_round_trips(execution, 1, exact_command);
+    let proposed_work = &md[md.find("## Proposed work").unwrap()..md.find("## Decisions").unwrap()];
+    assert!(proposed_work.contains("Agent commands:\n\nCommand 1:\n\n"));
+    assert_command_fence_round_trips(proposed_work, 1, exact_command);
     let first_packet = md.find("### Issue source packet:").unwrap();
     let second_packet = md[first_packet + 1..]
         .find("### Issue source packet:")

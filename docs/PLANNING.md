@@ -104,17 +104,17 @@ issues.
   "schema_version": 2,
   "title": "Planning feature prototype",
   "status": "in_review",
-  "objective": "Create an actionable, reviewable planning workflow.",
+  "objective": "Create an alignment-first, reviewable planning workflow.",
   "outcomes": [{
     "id": "outcome-alignment",
-    "description": "Humans and agents share one implementation plan.",
+    "description": "Humans and agents share one proposal-oriented planning digest.",
     "proof": ["The strict plan check and browser review both pass."]
   }],
   "constraints": [{
     "id": "constraint-static",
     "description": "The built artifact remains self-contained."
   }],
-  "non_goals": ["Replace the issue tracker."],
+  "non_goals": ["Replace the issue tracker.", "Model live assignment, blocker, status, or completion state.", "Assume plan tasks map 1:1 to issues."],
   "decisions": [{
     "id": "decision-canonical-data",
     "title": "Keep proposed work separate from its visual projection",
@@ -122,21 +122,21 @@ issues.
     "rationale": "Issue drafting needs strict data while humans need visual explanation."
   }],
   "workstreams": [{
-    "id": "workstream-cli",
-    "title": "CLI workflow",
+    "id": "ws-alignment",
+    "title": "Alignment workflow",
     "status": "in_progress",
-    "owner": "implementation-agent",
+    "owner": "planning-agent",
     "tasks": [{
-      "id": "task-plan-check",
-      "title": "Validate actionable plan data",
+      "id": "task-align",
+      "title": "Validate alignment plan data",
       "status": "todo",
-      "owner": "implementation-agent",
+      "owner": "planning-agent",
       "outcomes": ["outcome-alignment"],
       "dependencies": [],
       "files": ["src/lib.rs", "src/main.rs", "tests/cli.rs"],
       "acceptance_checks": ["Broken IDs and dependency cycles fail."],
       "verification": {
-        "intent": "Prove the CLI rejects malformed plans and preserves exact agent commands in canonical JSON.",
+        "intent": "Prove the CLI rejects malformed plans and preserves exact planning commands in canonical JSON.",
         "commands": ["cargo test plan_ --test cli"]
       }
     }]
@@ -197,8 +197,9 @@ sideshow plan export my-plan --format markdown --output PLAN_DIGEST.md
 
 Command contract:
 
-- `sideshow plan new DIR` creates an ordinary deck plus strict `DIR/plan.json`.
-  Existing files are never overwritten.
+- `sideshow plan new DIR` creates an ordinary deck plus strict `DIR/plan.json`
+  scaffolded around frame → explore → refine digest semantics. Existing files are
+  never overwritten.
 - `sideshow plan check DIR` validates schema, references, enum values, required
   fields, budgets, unsafe markup, and projection-readiness.
 - `sideshow build DIR` remains the build command and emits the normal
@@ -289,7 +290,7 @@ strict JSON.
 
 Packets use stable plan IDs rather than tracker identifiers or inferred source
 line numbers. A canonical source reference such as `plan.json → workstream
-ws-delivery → task task-align` remains meaningful across formatting changes and
+ws-alignment → task task-align` remains meaningful across formatting changes and
 directs accepted feedback back to structured source.
 
 Links to resulting issues may be added to ordinary narrative source when useful,

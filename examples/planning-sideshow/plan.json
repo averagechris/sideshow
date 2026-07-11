@@ -183,7 +183,8 @@
             "every new canonical ID has a data-plan-kind/data-plan-id slide anchor and strict projection coverage remains complete",
             "each packet repeats the objective, names a stable canonical workstream/task path, points to shared plan context, and preserves exact commands in individually fenced shell blocks",
             "the Markdown digest presents an authored-order dependency overview before packets, including dependency roots and derived enables edges without adding JSON fields or tracker scheduling semantics",
-            "authored multiline prose and Markdown/HTML-shaped strings remain visible literal content without injecting digest structure, while exact command bytes are preserved in both execution and packet fences"
+            "authored multiline prose and Markdown/HTML-shaped strings remain visible literal content without injecting digest structure, while exact command bytes are preserved in both proposed-work and packet fences",
+            "sideshow plan new scaffolds frame, explore, and refine-digest work without claiming implementation execution, live tracker state, or generated output as committed source"
           ],
           "verification": {
             "intent": "Confirm the digest implementation, strict dogfood projection, and generated deck preserve structural and command handoff contracts without committing generated output.",
