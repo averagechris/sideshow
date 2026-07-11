@@ -77,5 +77,5 @@ tasks:
       EOF
       srht builds submit "$manifest" --secrets --note "site refresh: sideshow $tag"
 artifacts:
-  - artifacts/sideshow-v0.4.0-x86_64-linux.tar.gz
-  - artifacts/sideshow-v0.4.0-x86_64-linux.tar.gz.sha256
+  - artifacts/sideshow-v0.5.0-x86_64-linux.tar.gz
+  - artifacts/sideshow-v0.5.0-x86_64-linux.tar.gz.sha256

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+
+## v0.5.0 - 2026-07-10
+
 - Persist local review annotations in XDG state as schema v2 tool-neutral JSON
   artifacts keyed by canonical deck root, with revision/ETag conflict handling,
   CLI artifact/list/export/clear/resolve/reopen/disposition commands, and
@@ -20,7 +23,6 @@
 - Document the AVIF optimization no-go decision and add a pinned, reproducible
   WebP/AVIF evaluation harness without changing production image behavior or
   dependencies.
-
 ## v0.4.0 - 2026-07-10
 
 - Add opt-in `sideshow serve --review` controls for point and logical-region
