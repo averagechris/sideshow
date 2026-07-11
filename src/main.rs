@@ -11,11 +11,7 @@ use std::{
     io::{Cursor, Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-        mpsc,
-    },
+    sync::{Arc, Mutex, mpsc},
     thread,
     time::Duration,
     time::{SystemTime, UNIX_EPOCH},
@@ -270,16 +266,17 @@ fn main() -> anyhow::Result<()> {
             // A normal build must not opt a deck into review state. If review state already
             // exists, however, capture a coherent manifest and refresh it after publishing the
             // output so CLI-only review workflows see the same freshness as `serve --review`.
-            let review_repository = sideshow::review::ReviewRepository::new(&dir)
-                .ok()
-                .filter(|repository| repository.artifact_path().is_file());
-            let built = stable_build_deck(&dir, review_repository.is_some())?;
+            let canonical_dir = dir
+                .canonicalize()
+                .with_context(|| format!("failed to resolve deck root {}", dir.display()))?;
+            // Review discovery happens after the expensive build and remains non-fatal when
+            // XDG/HOME cannot identify any active artifact. A manifest is captured only if the
+            // locked discovery step finds an existing artifact.
+            let built = stable_build_deck(&canonical_dir, false)?;
+            let repository = sideshow::review::ReviewRepository::discover_for_build(&canonical_dir)
+                .map_err(review_cli_error)?;
+            let built = accept_ordinary_build(built, repository.as_ref())?;
             println!("built {}", built.output.display());
-            if let (Some(repository), Some(manifest)) = (review_repository, built.manifest)
-                && let Err(error) = refresh_review_manifest(&repository, manifest)
-            {
-                eprintln!("built deck but could not refresh existing review manifest: {error:#}");
-            }
             Ok(())
         }
         Command::Check {
@@ -389,7 +386,9 @@ fn review_command(command: ReviewCommand) -> anyhow::Result<()> {
             }
             .map_err(review_cli_error)?;
             if let Some(path) = output {
-                write_review_export(repository.deck_root(), &path, handoff.as_bytes())?;
+                repository
+                    .write_export(&path, handoff.as_bytes())
+                    .map_err(review_cli_error)?;
             } else {
                 print!("{handoff}");
             }
@@ -452,58 +451,6 @@ fn review_cli_error(error: sideshow::review::ReviewRepositoryError) -> anyhow::E
         }
         other => anyhow::anyhow!(other),
     }
-}
-
-fn review_export_path(deck_root: &Path, output: &Path) -> anyhow::Result<PathBuf> {
-    let absolute = if output.is_absolute() {
-        output.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(output)
-    };
-    let file_name = absolute
-        .file_name()
-        .context("review export output must name a file")?;
-    // Canonicalize the complete parent, but deliberately do not canonicalize/follow the final
-    // entry. Atomic replacement must replace a final symlink or hard link rather than opening
-    // and mutating its target.
-    let parent = absolute
-        .parent()
-        .context("review export output has no parent")?
-        .canonicalize()
-        .with_context(|| {
-            format!(
-                "failed to resolve review export parent for {}",
-                output.display()
-            )
-        })?;
-    if parent == deck_root || parent.starts_with(deck_root) {
-        anyhow::bail!(
-            "review exports cannot be written inside the deck; choose a path outside {}",
-            deck_root.display()
-        );
-    }
-    Ok(parent.join(file_name))
-}
-
-fn write_review_export(deck_root: &Path, output: &Path, bytes: &[u8]) -> anyhow::Result<()> {
-    let output = review_export_path(deck_root, output)?;
-    let mut options = atomic_write_file::OpenOptions::new();
-    #[cfg(unix)]
-    {
-        use atomic_write_file::unix::OpenOptionsExt as AtomicOpenOptionsExt;
-        use std::os::unix::fs::OpenOptionsExt as StdOpenOptionsExt;
-        options.preserve_mode(false);
-        options.preserve_owner(false);
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(&output)
-        .with_context(|| format!("failed to open review export {}", output.display()))?;
-    file.write_all(bytes)
-        .with_context(|| format!("failed to write review export {}", output.display()))?;
-    file.commit()
-        .with_context(|| format!("failed to commit review export {}", output.display()))?;
-    Ok(())
 }
 
 struct PublishOptions<'a> {
@@ -941,7 +888,7 @@ fn img(command: ImgCommand) -> anyhow::Result<()> {
     Ok(())
 }
 
-const CSP: &str = "default-src 'self' data: blob:; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; worker-src 'self' 'unsafe-eval' 'unsafe-inline' data: blob:; frame-src https:; img-src data: https:; media-src https:; object-src 'none'; sandbox allow-downloads allow-forms allow-modals allow-pointer-lock allow-popups allow-presentation allow-same-origin allow-scripts;";
+const CSP: &str = "default-src 'self' data: blob:; script-src 'self' 'unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; worker-src 'self' 'unsafe-eval' 'unsafe-inline' data: blob:; frame-src https:; frame-ancestors 'none'; img-src data: https:; media-src https:; object-src 'none'; sandbox allow-downloads allow-forms allow-modals allow-pointer-lock allow-popups allow-presentation allow-same-origin allow-scripts;";
 const MAX_HTTP_HEADER_BYTES: usize = 16 * 1024;
 const MAX_HTTP_BODY_BYTES: usize = 64 * 1024;
 const MAX_STABLE_BUILD_ATTEMPTS: usize = 3;
@@ -949,10 +896,110 @@ const MAX_MANIFEST_UPDATE_ATTEMPTS: usize = 8;
 const REVIEW_CSS: &str = include_str!("review/review.css");
 const REVIEW_JS: &str = include_str!("review/review.js");
 
+#[derive(Debug)]
 struct StableBuild {
+    deck_root: PathBuf,
+    staged_output: PathBuf,
     output: PathBuf,
+    staging_dir: PathBuf,
     manifest: Option<sideshow::review::ReviewBuildManifest>,
     input_digest: String,
+    output_bytes: Arc<[u8]>,
+}
+
+impl Drop for StableBuild {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.staging_dir);
+    }
+}
+
+#[derive(Debug)]
+struct AcceptedBuild {
+    output: PathBuf,
+    input_digest: String,
+    output_bytes: Arc<[u8]>,
+}
+
+impl StableBuild {
+    fn publish_file(
+        &self,
+        target: sideshow::review::ReviewPublicationTarget<'_>,
+    ) -> std::io::Result<sideshow::secure_fs::AtomicWriteOutcome> {
+        let current_digest = deck_input_digest(&self.deck_root).map_err(std::io::Error::other)?;
+        if current_digest != self.input_digest {
+            return Err(std::io::Error::other(
+                "deck inputs changed after the stable build was captured",
+            ));
+        }
+        let current_output = fs::read(&self.staged_output)?;
+        if current_output.as_slice() != self.output_bytes.as_ref() {
+            return Err(std::io::Error::other(
+                "staged deck bytes changed after the stable build was captured",
+            ));
+        }
+        fs::File::open(&self.staged_output)?.sync_all()?;
+        let source =
+            cap_std::fs::Dir::open_ambient_dir(&self.staging_dir, cap_std::ambient_authority())?;
+        let source_dir = source.try_clone()?.into_std_file();
+        let destination_dir = match &target {
+            sideshow::review::ReviewPublicationTarget::Ordinary => {
+                fs::File::open(self.output.parent().ok_or_else(|| {
+                    std::io::Error::other("published deck has no parent directory")
+                })?)?
+            }
+            sideshow::review::ReviewPublicationTarget::Review { directory, .. } => {
+                directory.try_clone()?.into_std_file()
+            }
+        };
+        // Directory sync failures before visibility remain ordinary, uncommitted errors.
+        destination_dir.sync_all()?;
+        source_dir.sync_all()?;
+        match target {
+            sideshow::review::ReviewPublicationTarget::Ordinary => {
+                fs::rename(&self.staged_output, &self.output)?;
+            }
+            sideshow::review::ReviewPublicationTarget::Review {
+                directory,
+                file_name,
+            } => {
+                let staged_name = self
+                    .staged_output
+                    .file_name()
+                    .ok_or_else(|| std::io::Error::other("staged deck has no file name"))?;
+                source.rename(Path::new(staged_name), directory, Path::new(file_name))?;
+            }
+        }
+        // The rename is the visibility boundary. Preserve committed semantics on any later sync
+        // failure so paired publication can retry durability instead of assuming the old deck won.
+        Ok(
+            match destination_dir
+                .sync_all()
+                .and_then(|()| source_dir.sync_all())
+            {
+                Ok(()) => sideshow::secure_fs::AtomicWriteOutcome::Durable,
+                Err(error) => {
+                    sideshow::secure_fs::AtomicWriteOutcome::CommittedButDirectorySyncFailed(error)
+                }
+            },
+        )
+    }
+
+    fn publish(self) -> anyhow::Result<AcceptedBuild> {
+        let _committed = self
+            .publish_file(sideshow::review::ReviewPublicationTarget::Ordinary)
+            .with_context(|| {
+                format!(
+                    "failed to atomically publish {} as {}",
+                    self.staged_output.display(),
+                    self.output.display()
+                )
+            })?;
+        Ok(AcceptedBuild {
+            output: self.output.clone(),
+            input_digest: self.input_digest.clone(),
+            output_bytes: Arc::clone(&self.output_bytes),
+        })
+    }
 }
 
 struct ReviewServer {
@@ -960,65 +1007,130 @@ struct ReviewServer {
     repository: sideshow::review::ReviewRepository,
 }
 
+#[derive(Clone)]
+struct AcceptedServeState {
+    output: PathBuf,
+    html: Arc<[u8]>,
+    generation: u64,
+}
+
 fn serve(dir: &Path, port: u16, review: bool, open: bool) -> anyhow::Result<()> {
     let built = stable_build_deck(dir, review)?;
-    let (dir, root, out) = normalized_serve_paths(dir, built.output)?;
-    let generation = Arc::new(AtomicU64::new(reload_session_id() << 32));
-    let current_output = Arc::new(Mutex::new(out.clone()));
-    let review = review
+    let canonical_dir = built.deck_root.clone();
+    let review_server = review
         .then(|| -> anyhow::Result<_> {
             let nonce = review_nonce()?;
-            let repository =
-                sideshow::review::ReviewRepository::new(&dir).map_err(review_cli_error)?;
-            refresh_review_manifest(
-                &repository,
-                built
-                    .manifest
-                    .clone()
-                    .context("stable review build did not produce a manifest")?,
-            )?;
+            let repository = sideshow::review::ReviewRepository::new(&canonical_dir)
+                .map_err(review_cli_error)?;
             Ok(Arc::new(ReviewServer { repository, nonce }))
         })
         .transpose()?;
+    let built = accept_stable_build(
+        built,
+        review_server.as_ref().map(|server| &server.repository),
+    )?;
+    let (dir, root, out) = normalized_serve_paths(dir, built.output)?;
+    let accepted_state = Arc::new(Mutex::new(AcceptedServeState {
+        output: out.clone(),
+        html: Arc::clone(&built.output_bytes),
+        generation: reload_session_id() << 32,
+    }));
+    let review = review_server;
     let listener = TcpListener::bind(("127.0.0.1", port))?;
     let url = serve_url(&listener)?;
-    if open {
-        open_url(&url).with_context(|| format!("failed to open {url}"))?;
-    }
-    start_rebuild_watcher(
+    let _watcher = start_rebuild_watcher(
         dir.to_path_buf(),
         root.clone(),
-        Arc::clone(&generation),
-        Arc::clone(&current_output),
+        Arc::clone(&accepted_state),
         review.as_ref().map(|server| server.repository.clone()),
         built.input_digest,
     )?;
     let port = listener.local_addr()?.port();
+    let server = start_http_server(
+        listener,
+        root.clone(),
+        Arc::clone(&accepted_state),
+        review.clone(),
+        port,
+    )?;
     println!("serving {} at {url}", root.display());
     if review.is_some() {
         println!("review mode enabled (annotations persist in XDG state)");
     }
-    for stream in listener.incoming() {
-        let root = root.clone();
-        let generation = Arc::clone(&generation);
-        let current_output = Arc::clone(&current_output);
-        let review = review.clone();
-        thread::spawn(move || {
-            if let Ok(mut stream) = stream {
-                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-                let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-                let _ = handle_stream(
-                    &mut stream,
-                    &root,
-                    &current_output,
-                    &generation,
-                    review.as_deref(),
-                    port,
-                );
-            }
-        });
+    if open {
+        open_url(&url).with_context(|| format!("failed to open {url}"))?;
     }
-    Ok(())
+    server.wait()
+}
+
+struct HttpServer {
+    shutdown: mpsc::Sender<()>,
+    worker: Option<thread::JoinHandle<anyhow::Result<()>>>,
+}
+
+impl HttpServer {
+    fn wait(mut self) -> anyhow::Result<()> {
+        let worker = self
+            .worker
+            .take()
+            .context("HTTP server worker is missing")?;
+        worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("HTTP server worker panicked"))?
+    }
+}
+
+impl Drop for HttpServer {
+    fn drop(&mut self) {
+        let _ = self.shutdown.send(());
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn start_http_server(
+    listener: TcpListener,
+    root: PathBuf,
+    accepted_state: Arc<Mutex<AcceptedServeState>>,
+    review: Option<Arc<ReviewServer>>,
+    port: u16,
+) -> anyhow::Result<HttpServer> {
+    listener.set_nonblocking(true)?;
+    let (shutdown_tx, shutdown_rx) = mpsc::channel();
+    let worker = thread::spawn(move || -> anyhow::Result<()> {
+        loop {
+            if shutdown_rx.try_recv().is_ok() {
+                return Ok(());
+            }
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let root = root.clone();
+                    let accepted_state = Arc::clone(&accepted_state);
+                    let review = review.clone();
+                    thread::spawn(move || {
+                        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                        let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+                        let _ = handle_stream(
+                            &mut stream,
+                            &root,
+                            &accepted_state,
+                            review.as_deref(),
+                            port,
+                        );
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(20));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    });
+    Ok(HttpServer {
+        shutdown: shutdown_tx,
+        worker: Some(worker),
+    })
 }
 
 fn serve_url(listener: &TcpListener) -> anyhow::Result<String> {
@@ -1034,6 +1146,10 @@ struct OpenerCommand {
 
 fn open_url(url: &str) -> anyhow::Result<()> {
     let opener = resolve_opener(&SystemOpenEnv)?;
+    run_opener(&opener, url)
+}
+
+fn run_opener(opener: &OpenerCommand, url: &str) -> anyhow::Result<()> {
     let status = ProcessCommand::new(&opener.program)
         .args(&opener.args)
         .arg(url)
@@ -1043,6 +1159,20 @@ fn open_url(url: &str) -> anyhow::Result<()> {
         Ok(())
     } else {
         anyhow::bail!("opener `{}` exited with {status}", opener.program)
+    }
+}
+
+struct RebuildWatcher {
+    shutdown: mpsc::Sender<()>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for RebuildWatcher {
+    fn drop(&mut self) {
+        let _ = self.shutdown.send(());
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 }
 
@@ -1125,11 +1255,10 @@ fn resolve_opener(env: &impl OpenEnv) -> anyhow::Result<OpenerCommand> {
 fn start_rebuild_watcher(
     dir: PathBuf,
     dist: PathBuf,
-    generation: Arc<AtomicU64>,
-    current_output: Arc<Mutex<PathBuf>>,
+    accepted_state: Arc<Mutex<AcceptedServeState>>,
     review_repository: Option<sideshow::review::ReviewRepository>,
     initial_input_digest: String,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<RebuildWatcher> {
     let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
     let mut watcher = RecommendedWatcher::new(
         move |res| {
@@ -1144,13 +1273,19 @@ fn start_rebuild_watcher(
     let rebuild_after_start = deck_input_digest(&dir)
         .map(|digest| digest != initial_input_digest)
         .unwrap_or(true);
-    thread::spawn(move || {
+    let (shutdown_tx, shutdown_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
         let _watcher = watcher;
         let mut should_rebuild = rebuild_after_start;
         loop {
+            if shutdown_rx.try_recv().is_ok() {
+                break;
+            }
             if !should_rebuild {
-                let Ok(res) = rx.recv() else {
-                    break;
+                let res = match rx.recv_timeout(Duration::from_millis(250)) {
+                    Ok(res) => res,
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 };
                 let deadline = std::time::Instant::now() + Duration::from_secs(2);
                 should_rebuild = event_is_relevant(res, &dir, &dist);
@@ -1168,25 +1303,23 @@ fn start_rebuild_watcher(
                 eprintln!("change detected; rebuilding deck...");
                 match stable_build_deck(&dir, review_repository.is_some()) {
                     Ok(built) => {
-                        let path = built.output;
-                        // Refresh first so a successful persistence update is visible before the
-                        // browser sees the reload generation. A failed XDG write is ancillary and
-                        // must not prevent publication.
-                        let review_error = match (&review_repository, built.manifest) {
-                            (Some(repository), Some(manifest)) => {
-                                refresh_review_manifest(repository, manifest).err()
-                            }
-                            _ => None,
-                        };
-                        if let Ok(mut current) = current_output.lock() {
-                            *current = path.clone();
-                        }
-                        generation.fetch_add(1, Ordering::Relaxed);
-                        eprintln!("rebuilt {}", path.display());
-                        if let Some(error) = review_error {
-                            eprintln!(
-                                "rebuilt deck but could not refresh review manifest: {error:#}"
-                            );
+                        match accept_stable_build(built, review_repository.as_ref()) {
+                            Ok(built) => match accepted_state.lock() {
+                                Ok(mut state) => {
+                                    state.output = built.output.clone();
+                                    state.html = Arc::clone(&built.output_bytes);
+                                    // The generation represents an already-published deck whose
+                                    // review identity (when enabled) is durable.
+                                    state.generation = state.generation.wrapping_add(1);
+                                    eprintln!("rebuilt {}", built.output.display());
+                                }
+                                Err(_) => eprintln!(
+                                    "rebuild publication failed: current output lock is poisoned"
+                                ),
+                            },
+                            Err(error) => eprintln!(
+                                "rebuild rejected; continuing to serve the last accepted deck: {error:#}"
+                            ),
                         }
                     }
                     Err(err) => eprintln!("rebuild failed: {err:#}"),
@@ -1195,60 +1328,159 @@ fn start_rebuild_watcher(
             should_rebuild = false;
         }
     });
-    Ok(())
+    Ok(RebuildWatcher {
+        shutdown: shutdown_tx,
+        worker: Some(worker),
+    })
 }
 
-fn refresh_review_manifest(
-    repository: &sideshow::review::ReviewRepository,
-    manifest: sideshow::review::ReviewBuildManifest,
-) -> anyhow::Result<sideshow::review::ReviewArtifact> {
-    let mut revision = repository
-        .load_artifact()
-        .map_err(review_cli_error)?
-        .revision;
-    for attempt in 0..MAX_MANIFEST_UPDATE_ATTEMPTS {
-        match repository.update_build_manifest(revision, manifest.clone()) {
-            Ok(artifact) => return Ok(artifact),
-            Err(sideshow::review::ReviewRepositoryError::Conflict(current)) => {
-                revision = current.revision;
-                if attempt + 1 < MAX_MANIFEST_UPDATE_ATTEMPTS {
-                    thread::sleep(Duration::from_millis(1));
+fn accept_stable_build(
+    built: StableBuild,
+    review_repository: Option<&sideshow::review::ReviewRepository>,
+) -> anyhow::Result<AcceptedBuild> {
+    if let Some(repository) = review_repository {
+        let manifest = built
+            .manifest
+            .clone()
+            .context("stable review build did not produce a manifest")?;
+        let mut revision = repository
+            .load_artifact()
+            .map_err(review_cli_error)
+            .context("could not synchronize review manifest; new deck was not published")?
+            .revision;
+        for attempt in 0..MAX_MANIFEST_UPDATE_ATTEMPTS {
+            match repository.update_build_manifest_and_publish(
+                revision,
+                manifest.clone(),
+                &built.output,
+                |target| built.publish_file(target),
+            ) {
+                Ok(_) => {
+                    return Ok(AcceptedBuild {
+                        output: built.output.clone(),
+                        input_digest: built.input_digest.clone(),
+                        output_bytes: Arc::clone(&built.output_bytes),
+                    });
+                }
+                Err(sideshow::review::ReviewRepositoryError::Conflict(current)) => {
+                    revision = current.revision;
+                    if attempt + 1 < MAX_MANIFEST_UPDATE_ATTEMPTS {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                }
+                Err(error) => {
+                    return Err(review_cli_error(error)).context(
+                        "could not synchronize review manifest; new deck was not published",
+                    );
                 }
             }
-            // A concurrently persisted, newer build is authoritative. Treat rejection of this
-            // older capture as a clean no-op instead of trying to overwrite it or failing serve.
-            Err(sideshow::review::ReviewRepositoryError::Invalid(_error))
-                if repository
-                    .load_artifact()
-                    .ok()
-                    .and_then(|artifact| artifact.build.map(|build| build.built_at_ms))
-                    .is_some_and(|built_at_ms| built_at_ms > manifest.built_at_ms) =>
-            {
-                return repository.load_artifact().map_err(review_cli_error);
-            }
-            Err(error) => return Err(review_cli_error(error)),
+        }
+        anyhow::bail!(
+            "review manifest update conflicted {MAX_MANIFEST_UPDATE_ATTEMPTS} times; new deck was not published"
+        );
+    }
+    built.publish()
+}
+
+fn accept_ordinary_build(
+    mut built: StableBuild,
+    review_repository: Option<&sideshow::review::ReviewRepository>,
+) -> anyhow::Result<AcceptedBuild> {
+    let Some(repository) = review_repository else {
+        return built.publish();
+    };
+    match repository
+        .publish_build_if_initialized(None, &built.output, |target| built.publish_file(target))
+    {
+        Ok(_) => {}
+        Err(sideshow::review::ReviewRepositoryError::ManifestRequired) => {
+            let deck_root = built.deck_root.clone();
+            drop(built);
+            built = stable_build_deck(&deck_root, true)?;
+            let manifest = built
+                .manifest
+                .clone()
+                .context("stable review-aware build did not produce a manifest")?;
+            repository
+                .publish_build_if_initialized(Some(manifest), &built.output, |target| {
+                    built.publish_file(target)
+                })
+                .map_err(review_cli_error)
+                .context("could not safely synchronize an existing review artifact")?;
+        }
+        Err(error) => {
+            return Err(review_cli_error(error))
+                .context("could not safely discover an existing review artifact");
         }
     }
-    anyhow::bail!(
-        "review manifest update conflicted {MAX_MANIFEST_UPDATE_ATTEMPTS} times; retry after current review mutations finish"
-    )
+    Ok(AcceptedBuild {
+        output: built.output.clone(),
+        input_digest: built.input_digest.clone(),
+        output_bytes: Arc::clone(&built.output_bytes),
+    })
 }
 
 fn stable_build_deck(deck_root: &Path, capture_manifest: bool) -> anyhow::Result<StableBuild> {
+    stable_build_deck_with(deck_root, capture_manifest, sideshow::build_deck_to)
+}
+
+fn stable_build_deck_with(
+    deck_root: &Path,
+    capture_manifest: bool,
+    mut build: impl FnMut(&Path, &Path) -> anyhow::Result<PathBuf>,
+) -> anyhow::Result<StableBuild> {
+    let deck_root = deck_root
+        .canonicalize()
+        .with_context(|| format!("failed to resolve deck root {}", deck_root.display()))?;
     for attempt in 1..=MAX_STABLE_BUILD_ATTEMPTS {
-        let before = deck_input_digest(deck_root)?;
-        let output = sideshow::build_deck(deck_root)?;
+        let before = deck_input_digest(&deck_root)?;
+        let staging_dir = create_build_staging_dir(&deck_root)?;
+        let staged_output = match build(&deck_root, &staging_dir) {
+            Ok(output) => output,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&staging_dir);
+                return Err(error);
+            }
+        };
+        let output = deck_root.join("dist").join(
+            staged_output
+                .file_name()
+                .context("staged build output has no file name")?,
+        );
         let manifest = capture_manifest
-            .then(|| review_build_manifest(deck_root, &output))
-            .transpose()?;
-        let after = deck_input_digest(deck_root)?;
+            .then(|| review_build_manifest(&deck_root, &staged_output))
+            .transpose();
+        let manifest = match manifest {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&staging_dir);
+                return Err(error);
+            }
+        };
+        let after = match deck_input_digest(&deck_root) {
+            Ok(digest) => digest,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&staging_dir);
+                return Err(error);
+            }
+        };
         if before == after {
+            let output_bytes: Arc<[u8]> = fs::read(&staged_output)
+                .with_context(|| {
+                    format!("failed to capture built deck {}", staged_output.display())
+                })?
+                .into();
             return Ok(StableBuild {
+                deck_root: deck_root.clone(),
+                staged_output,
                 output,
+                staging_dir,
                 manifest,
                 input_digest: after,
+                output_bytes,
             });
         }
+        let _ = fs::remove_dir_all(&staging_dir);
         if attempt < MAX_STABLE_BUILD_ATTEMPTS {
             eprintln!(
                 "deck inputs changed during build; retrying ({attempt}/{MAX_STABLE_BUILD_ATTEMPTS})"
@@ -1258,6 +1490,29 @@ fn stable_build_deck(deck_root: &Path, capture_manifest: bool) -> anyhow::Result
     anyhow::bail!(
         "deck inputs kept changing during {MAX_STABLE_BUILD_ATTEMPTS} build attempts; try again when edits settle"
     )
+}
+
+fn create_build_staging_dir(deck_root: &Path) -> anyhow::Result<PathBuf> {
+    let dist = deck_root.join("dist");
+    fs::create_dir_all(&dist)?;
+    for _ in 0..16 {
+        let mut random = [0_u8; 12];
+        getrandom::fill(&mut random)
+            .map_err(|error| anyhow::anyhow!("failed to name staged build: {error}"))?;
+        let suffix = random
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        // Keep candidates outside the HTTP-served dist tree while retaining same-filesystem
+        // atomic rename semantics for the final publish.
+        let staging = deck_root.join(format!(".sideshow-stage-{suffix}"));
+        match fs::create_dir(&staging) {
+            Ok(()) => return Ok(staging),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    anyhow::bail!("could not allocate a unique staged build directory")
 }
 
 fn deck_input_digest(deck_root: &Path) -> anyhow::Result<String> {
@@ -1271,6 +1526,9 @@ fn deck_input_digest(deck_root: &Path) -> anyhow::Result<String> {
 }
 
 fn deck_input_files(deck_root: &Path) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
+    let deck_root = deck_root
+        .canonicalize()
+        .with_context(|| format!("failed to resolve deck root {}", deck_root.display()))?;
     let mut inputs = Vec::new();
     let deck_toml_path = deck_root.join("deck.toml");
     let deck_toml = fs::read(&deck_toml_path)
@@ -1282,22 +1540,18 @@ fn deck_input_files(deck_root: &Path) -> anyhow::Result<Vec<(String, Vec<u8>)>> 
         fs::read(&theme_path)
             .with_context(|| format!("failed to read build input {}", theme_path.display()))?,
     ));
-    collect_deck_input_tree(deck_root, Path::new("slides"), true, &mut inputs)?;
-    collect_deck_input_tree(deck_root, Path::new("assets"), false, &mut inputs)?;
+    collect_deck_input_tree(&deck_root, Path::new("slides"), true, &mut inputs)?;
+    collect_deck_input_tree(&deck_root, Path::new("assets"), false, &mut inputs)?;
     // deck.toml can name slide files outside the conventional slides/ directory. Include the
     // exact selected source set as well as the conservative trees above.
     let deck = sideshow::parse_deck_toml(std::str::from_utf8(&deck_toml)?)?;
-    for (index, path) in sideshow::slide_order(deck_root, &deck)?
-        .into_iter()
-        .enumerate()
-    {
-        let name = match path.strip_prefix(deck_root) {
-            Ok(relative) => relative
-                .to_str()
-                .with_context(|| format!("slide path is not valid UTF-8: {}", path.display()))?
-                .replace('\\', "/"),
-            Err(_) => format!("explicit-slide-{index}:{}", path.display()),
-        };
+    for path in sideshow::slide_order(&deck_root, &deck)? {
+        let name = path
+            .strip_prefix(&deck_root)
+            .expect("slide_order confines canonical sources to the canonical deck root")
+            .to_str()
+            .with_context(|| format!("slide path is not valid UTF-8: {}", path.display()))?
+            .replace('\\', "/");
         inputs.push((
             name,
             fs::read(&path)
@@ -1355,6 +1609,9 @@ fn review_build_manifest(
     deck_root: &Path,
     output: &Path,
 ) -> anyhow::Result<sideshow::review::ReviewBuildManifest> {
+    let deck_root = deck_root
+        .canonicalize()
+        .with_context(|| format!("failed to resolve deck root {}", deck_root.display()))?;
     let output_bytes = fs::read(output)
         .with_context(|| format!("failed to read built deck {}", output.display()))?;
     let build_id = sha256_hex(&output_bytes);
@@ -1365,16 +1622,16 @@ fn review_build_manifest(
         Err(error) => return Err(error.into()),
     };
     let deck = sideshow::parse_deck_toml(std::str::from_utf8(&deck_toml)?)?;
-    let slide_paths = sideshow::slide_order(deck_root, &deck)?;
+    let slide_paths = sideshow::slide_order(&deck_root, &deck)?;
     let mut assets = Vec::new();
-    collect_deck_input_tree(deck_root, Path::new("assets"), false, &mut assets)?;
+    collect_deck_input_tree(&deck_root, Path::new("assets"), false, &mut assets)?;
     assets.sort_by(|left, right| left.0.cmp(&right.0));
     let mut slides = Vec::with_capacity(slide_paths.len());
     for path in slide_paths {
         let source = fs::read(&path)
             .with_context(|| format!("failed to read slide source {}", path.display()))?;
         let relative = path
-            .strip_prefix(deck_root)
+            .strip_prefix(&deck_root)
             .with_context(|| format!("slide source is outside deck root: {}", path.display()))?
             .to_str()
             .context("slide source path must be valid UTF-8")?
@@ -1396,15 +1653,13 @@ fn review_build_manifest(
             source_digest: format!("{:x}", digest.finalize()),
         });
     }
-    let deck_argument = shell_quote(deck_root.to_string_lossy().as_ref());
     Ok(sideshow::review::ReviewBuildManifest {
         build_id,
         built_at_ms: unix_time_ms(),
         slides,
-        verification_commands: vec![
-            format!("sideshow check {deck_argument}"),
-            format!("sideshow build {deck_argument}"),
-        ],
+        // Handoff verification is regenerated from ReviewRepository's canonical deck context;
+        // executable text is never persisted in editable review JSON.
+        verification_commands: Vec::new(),
     })
 }
 
@@ -1417,18 +1672,6 @@ fn digest_field(hasher: &mut Sha256, name: &[u8], bytes: &[u8]) {
 
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
-}
-
-fn shell_quote(value: &str) -> String {
-    if !value.is_empty()
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"/_-.".contains(&byte))
-    {
-        value.to_owned()
-    } else {
-        format!("'{}'", value.replace('\'', "'\\''"))
-    }
 }
 
 fn unix_time_ms() -> u64 {
@@ -1625,8 +1868,7 @@ fn read_request(stream: &mut TcpStream) -> anyhow::Result<Option<HttpRequest>> {
 fn handle_stream(
     stream: &mut TcpStream,
     root: &Path,
-    current_output: &Mutex<PathBuf>,
-    generation: &AtomicU64,
+    accepted_state: &Mutex<AcceptedServeState>,
     review: Option<&ReviewServer>,
     port: u16,
 ) -> anyhow::Result<()> {
@@ -1636,6 +1878,11 @@ fn handle_stream(
     if !request_has_allowed_host(&request, port) {
         return respond_status(stream, "421 Misdirected Request");
     }
+    let state = accepted_state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let accepted = state.clone();
+    drop(state);
     if request.path == "__sideshow/review" {
         return match review {
             Some(review) => respond_review(stream, &request, review),
@@ -1646,25 +1893,16 @@ fn handle_stream(
         if request.method != "GET" && request.method != "HEAD" {
             return respond_status(stream, "405 Method Not Allowed");
         }
-        return respond_reload(
-            stream,
-            generation.load(Ordering::Relaxed),
-            request.method == "HEAD",
-        );
+        return respond_reload(stream, accepted.generation, request.method == "HEAD");
     }
     if request.method != "GET" && request.method != "HEAD" {
         return respond_status(stream, "405 Method Not Allowed");
     }
-    let default = current_output
-        .lock()
-        .map(|p| p.clone())
-        .unwrap_or_else(|_| root.join("index.html"));
     respond(
         stream,
         root,
         &request.path,
-        &default,
-        generation.load(Ordering::Relaxed),
+        &accepted,
         request.method == "HEAD",
         review.map(|review| review.nonce.as_str()),
     )
@@ -1727,7 +1965,7 @@ fn respond_status(stream: &mut TcpStream, code: &str) -> anyhow::Result<()> {
     let body = format!("<!doctype html><title>{code}</title><h1>{code}</h1>");
     write!(
         stream,
-        "HTTP/1.1 {code}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nX-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {code}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nContent-Security-Policy: {CSP}\r\nX-Frame-Options: DENY\r\nX-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )?;
     Ok(())
@@ -1736,18 +1974,28 @@ fn respond(
     stream: &mut TcpStream,
     root: &Path,
     path: &str,
-    default: &Path,
-    generation: u64,
+    accepted: &AcceptedServeState,
     head_only: bool,
     review_nonce: Option<&str>,
 ) -> anyhow::Result<()> {
     let requested = if path.is_empty() {
-        default.to_path_buf()
+        accepted.output.clone()
     } else {
         root.join(path)
     };
-    let file = resolve_served_file(root, &requested);
-    let (code, mut body) = if let Some(file) = file.as_ref() {
+    let accepted_name = accepted.output.file_name();
+    let request_path = Path::new(path);
+    let is_accepted_deck = path.is_empty()
+        || (request_path
+            .parent()
+            .is_some_and(|parent| parent.as_os_str().is_empty())
+            && request_path.file_name() == accepted_name);
+    let file = (!is_accepted_deck)
+        .then(|| resolve_served_file(root, &requested))
+        .flatten();
+    let (code, mut body) = if is_accepted_deck {
+        ("200 OK", accepted.html.to_vec())
+    } else if let Some(file) = file.as_ref() {
         ("200 OK", fs::read(file)?)
     } else {
         (
@@ -1764,14 +2012,14 @@ fn respond(
         _ => "application/octet-stream",
     };
     if code == "200 OK" && mime.starts_with("text/html") {
-        body = inject_livereload(&body, generation);
+        body = inject_livereload(&body, accepted.generation);
         if let Some(nonce) = review_nonce {
             body = inject_review(&body, nonce);
         }
     }
     write!(
         stream,
-        "HTTP/1.1 {code}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nContent-Security-Policy: {CSP}\r\nX-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {code}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nContent-Security-Policy: {CSP}\r\nX-Frame-Options: DENY\r\nX-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     if !head_only {
@@ -1797,7 +2045,7 @@ fn respond_reload(stream: &mut TcpStream, generation: u64, head_only: bool) -> a
     let body = generation.to_string();
     write!(
         stream,
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nContent-Security-Policy: {CSP}\r\nX-Frame-Options: DENY\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     if !head_only {
@@ -1993,7 +2241,8 @@ fn respond_review_repository_error(
         }
         sideshow::review::ReviewRepositoryError::Io(_)
         | sideshow::review::ReviewRepositoryError::Malformed(_)
-        | sideshow::review::ReviewRepositoryError::Oversized { .. } => respond_json_error(
+        | sideshow::review::ReviewRepositoryError::Oversized { .. }
+        | sideshow::review::ReviewRepositoryError::ManifestRequired => respond_json_error(
             stream,
             "500 Internal Server Error",
             "review persistence is unavailable",
@@ -2051,7 +2300,7 @@ fn respond_json_etag<T: serde::Serialize>(
         .unwrap_or_default();
     write!(
         stream,
-        "HTTP/1.1 {code}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{etag}X-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {code}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{etag}Content-Security-Policy: {CSP}\r\nX-Frame-Options: DENY\r\nX-Content-Type-Options: nosniff\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     if !head_only {
@@ -2106,6 +2355,7 @@ fn deck_sources_mtime(dir: &Path) -> anyhow::Result<SystemTime> {
 mod serve_tests {
     use super::*;
     use std::collections::BTreeSet;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     struct FakeOpenEnv {
         os: &'static str,
@@ -2160,16 +2410,12 @@ mod serve_tests {
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let output = Mutex::new(PathBuf::from("index.html"));
-            handle_stream(
-                &mut stream,
-                Path::new("."),
-                &output,
-                &AtomicU64::new(1),
-                Some(&review),
-                8000,
-            )
-            .unwrap();
+            let state = Mutex::new(AcceptedServeState {
+                output: PathBuf::from("index.html"),
+                html: Arc::from(b"<!doctype html><body>test</body>".as_slice()),
+                generation: 1,
+            });
+            handle_stream(&mut stream, Path::new("."), &state, Some(&review), 8000).unwrap();
         });
         let mut client = TcpStream::connect(address).unwrap();
         client.write_all(request).unwrap();
@@ -2225,6 +2471,102 @@ mod serve_tests {
     }
 
     #[test]
+    fn http_accept_loop_is_ready_before_opener_phase_and_stops_cleanly() {
+        let deck = tempfile::tempdir().unwrap();
+        let dist = deck.path().join("dist");
+        fs::create_dir(&dist).unwrap();
+        let output = dist.join("deck.html");
+        fs::write(&output, "<!doctype html><body>ready</body>").unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = start_http_server(
+            listener,
+            dist,
+            Arc::new(Mutex::new(AcceptedServeState {
+                output,
+                html: Arc::from(b"<!doctype html><body>ready</body>".as_slice()),
+                generation: 1,
+            })),
+            None,
+            address.port(),
+        )
+        .unwrap();
+
+        let mut client = TcpStream::connect(address).unwrap();
+        write!(
+            client,
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+            address.port()
+        )
+        .unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.contains("ready"), "{response}");
+
+        // The accepted bytes and generation are one immutable snapshot. Replacing the published
+        // pathname behind the server must not expose unaccepted bytes under generation 1.
+        fs::write(deck.path().join("dist/deck.html"), "unaccepted replacement").unwrap();
+        let mut client = TcpStream::connect(address).unwrap();
+        write!(
+            client,
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+            address.port()
+        )
+        .unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.contains("ready"), "{response}");
+        assert!(!response.contains("unaccepted replacement"), "{response}");
+        assert!(response.contains("let g='1'"), "{response}");
+
+        drop(server);
+        TcpListener::bind(address).expect("listener must be released after startup failure");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn accepted_filename_route_uses_immutable_bytes_through_symlinked_dist() {
+        use std::os::unix::fs::symlink;
+
+        let deck = tempfile::tempdir().unwrap();
+        let real_dist = deck.path().join("real-dist");
+        fs::create_dir(&real_dist).unwrap();
+        symlink(&real_dist, deck.path().join("dist")).unwrap();
+        let output = real_dist.join("deck.html");
+        fs::write(&output, "accepted on disk").unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = start_http_server(
+            listener,
+            deck.path().join("dist"),
+            Arc::new(Mutex::new(AcceptedServeState {
+                output: output.canonicalize().unwrap(),
+                html: Arc::from(b"immutable accepted bytes".as_slice()),
+                generation: 7,
+            })),
+            None,
+            address.port(),
+        )
+        .unwrap();
+        fs::write(&output, "unaccepted replacement").unwrap();
+
+        let mut client = TcpStream::connect(address).unwrap();
+        write!(
+            client,
+            "GET /deck.html HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+            address.port()
+        )
+        .unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+
+        assert!(response.contains("immutable accepted bytes"), "{response}");
+        assert!(!response.contains("unaccepted replacement"), "{response}");
+        assert!(response.contains("let g='7'"), "{response}");
+        drop(server);
+    }
+
+    #[test]
     fn opener_resolution_supports_macos_and_linux_desktops() {
         assert_eq!(
             resolve_opener(&FakeOpenEnv::new("macos")).unwrap(),
@@ -2265,6 +2607,187 @@ mod serve_tests {
             .unwrap_err()
             .to_string();
         assert!(unsupported.contains("unsupported on windows"));
+    }
+
+    #[test]
+    fn opener_spawn_failure_is_reported_without_a_gui_process() {
+        let opener = OpenerCommand {
+            program: "/definitely/missing/sideshow-opener".into(),
+            args: Vec::new(),
+        };
+
+        let error = run_opener(&opener, "http://127.0.0.1:1/")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("could not run opener"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opener_nonzero_exit_is_reported_without_a_gui_process() {
+        let opener = OpenerCommand {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "exit 23".into()],
+        };
+
+        let error = run_opener(&opener, "http://127.0.0.1:1/")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("exited with"), "{error}");
+        assert!(error.contains("23"), "{error}");
+    }
+
+    #[test]
+    fn rebuild_watcher_guard_stops_and_joins_worker() {
+        let (shutdown, rx) = mpsc::channel();
+        let stopped = Arc::new(AtomicU64::new(0));
+        let worker_stopped = Arc::clone(&stopped);
+        let worker = thread::spawn(move || {
+            rx.recv().unwrap();
+            worker_stopped.store(1, Ordering::SeqCst);
+        });
+        drop(RebuildWatcher {
+            shutdown,
+            worker: Some(worker),
+        });
+        assert_eq!(stopped.load(Ordering::SeqCst), 1);
+    }
+
+    fn staged_build_fixture() -> tempfile::TempDir {
+        let deck = tempfile::tempdir().unwrap();
+        fs::create_dir(deck.path().join("slides")).unwrap();
+        fs::create_dir(deck.path().join("assets")).unwrap();
+        fs::create_dir(deck.path().join("dist")).unwrap();
+        fs::write(deck.path().join("deck.toml"), "[deck]\ntitle='Stable'\n").unwrap();
+        fs::write(deck.path().join("theme.css"), "body {}\n").unwrap();
+        fs::write(deck.path().join("slides/01.html"), "<h1>old</h1>\n").unwrap();
+        fs::write(deck.path().join("dist/stable.html"), "accepted old\n").unwrap();
+        deck
+    }
+
+    #[test]
+    fn stable_build_does_not_replace_same_path_until_publish() {
+        let deck = staged_build_fixture();
+        let built = stable_build_deck_with(deck.path(), false, |_root, staging| {
+            let output = staging.join("stable.html");
+            fs::write(&output, "candidate new\n")?;
+            Ok(output)
+        })
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(deck.path().join("dist/stable.html")).unwrap(),
+            "accepted old\n"
+        );
+        let accepted = built.publish().unwrap();
+        assert_eq!(
+            accepted.output,
+            deck.path().canonicalize().unwrap().join("dist/stable.html")
+        );
+        assert_eq!(
+            fs::read_to_string(deck.path().join("dist/stable.html")).unwrap(),
+            "candidate new\n"
+        );
+    }
+
+    #[test]
+    fn accepted_candidate_is_revalidated_before_publication() {
+        let deck = staged_build_fixture();
+        let built = stable_build_deck_with(deck.path(), false, |_root, staging| {
+            let output = staging.join("stable.html");
+            fs::write(&output, "obsolete candidate\n")?;
+            Ok(output)
+        })
+        .unwrap();
+        fs::write(deck.path().join("theme.css"), "body { color: newer; }\n").unwrap();
+
+        let error = format!("{:#}", built.publish().unwrap_err());
+
+        assert!(error.contains("inputs changed"), "{error}");
+        assert_eq!(
+            fs::read_to_string(deck.path().join("dist/stable.html")).unwrap(),
+            "accepted old\n"
+        );
+    }
+
+    #[test]
+    fn exhausted_input_race_preserves_last_accepted_output() {
+        let deck = staged_build_fixture();
+        let mut attempt = 0;
+        let error = stable_build_deck_with(deck.path(), false, |root, staging| {
+            attempt += 1;
+            let output = staging.join("stable.html");
+            fs::write(&output, format!("unstable candidate {attempt}\n"))?;
+            fs::write(
+                root.join("theme.css"),
+                format!("body {{ order: {attempt}; }}\n"),
+            )?;
+            Ok(output)
+        })
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("kept changing"), "{error}");
+        assert_eq!(attempt, MAX_STABLE_BUILD_ATTEMPTS);
+        assert_eq!(
+            fs::read_to_string(deck.path().join("dist/stable.html")).unwrap(),
+            "accepted old\n"
+        );
+        assert!(fs::read_dir(deck.path()).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".sideshow-stage-")
+        }));
+    }
+
+    #[test]
+    fn review_manifest_failure_rejects_candidate_deck() {
+        let deck = staged_build_fixture();
+        let state = tempfile::tempdir().unwrap();
+        let repository =
+            sideshow::review::ReviewRepository::with_state_root(deck.path(), state.path()).unwrap();
+        repository.load_artifact().unwrap();
+        fs::write(repository.artifact_path(), b"not valid JSON\n").unwrap();
+
+        let staging_dir = create_build_staging_dir(deck.path()).unwrap();
+        let staged_output = staging_dir.join("stable.html");
+        fs::write(&staged_output, "candidate with unsynchronized identity\n").unwrap();
+        let built = StableBuild {
+            deck_root: deck.path().canonicalize().unwrap(),
+            staged_output,
+            output: deck.path().join("dist/stable.html"),
+            staging_dir: staging_dir.clone(),
+            manifest: Some(sideshow::review::ReviewBuildManifest {
+                build_id: "candidate-build".into(),
+                built_at_ms: 1,
+                slides: vec![sideshow::review::ReviewSlideManifest {
+                    slide_id: "s-01".into(),
+                    source_path: "slides/01.html".into(),
+                    source_digest: "candidate-digest".into(),
+                }],
+                verification_commands: Vec::new(),
+            }),
+            input_digest: "accepted-input".into(),
+            output_bytes: Arc::from(b"candidate with unsynchronized identity\n".as_slice()),
+        };
+
+        let error = accept_stable_build(built, Some(&repository))
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            error.contains("not synchronized") || error.contains("synchronize"),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read_to_string(deck.path().join("dist/stable.html")).unwrap(),
+            "accepted old\n"
+        );
+        assert!(!staging_dir.exists());
     }
 
     #[test]
@@ -2423,6 +2946,8 @@ mod serve_tests {
         let response = exchange_with_review(request, Arc::clone(&fixture.server));
 
         assert!(response.starts_with("HTTP/1.1 421 Misdirected Request"));
+        assert!(response.contains("\r\nX-Frame-Options: DENY\r\n"));
+        assert!(response.contains("frame-ancestors 'none'"));
     }
 
     #[test]
@@ -2519,6 +3044,8 @@ mod serve_tests {
         let response = exchange_with_review(get, Arc::clone(&fixture.server));
         assert!(response.starts_with("HTTP/1.1 200 OK"));
         assert!(response.contains("\r\nETag: \"0\"\r\n"));
+        assert!(response.contains("\r\nX-Frame-Options: DENY\r\n"));
+        assert!(response.contains("frame-ancestors 'none'"));
         assert!(response.contains("\"schema_version\":2"));
 
         let head = b"HEAD /__sideshow/review HTTP/1.1\r\nHost: localhost:8000\r\nX-Sideshow-Review: test-nonce\r\n\r\n";

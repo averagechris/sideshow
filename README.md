@@ -225,8 +225,8 @@ and automatic browser reload after a successful rebuild:
 sideshow serve mydeck --port 8000
 ```
 
-Serving is non-GUI by default. Add `--open` to launch the system browser after
-the deck builds and the localhost listener is bound; this also works with
+Serving is non-GUI by default. Add `--open` to launch the system browser only after
+the deck builds, the rebuild watcher is installed, and the localhost accept loop is ready; this also works with
 `--port 0`, using the actual assigned port. `--open` supports macOS `open` and
 common Linux desktop openers such as `xdg-open`/`gio`, and reports actionable
 errors in unsupported or headless environments.
@@ -261,6 +261,10 @@ state (`todo`, `resolved`) and disposition (`pending`, `addressed`, `wont_fix`,
 page-DOM matching is only a fallback when freshness is absent or invalid. The
 panel also displays every non-pending disposition and its optional note.
 `sideshow build` output never contains the review UI, nonce, or comments.
+Rebuild candidates are staged outside the served path and revalidated before an
+atomic publish. In review mode, manifest refresh and output publication share one
+revision lock; a failed or unstable candidate leaves the last accepted deck,
+manifest, and reload generation in place.
 
 The review server uses JSON-first optimistic transactions: reads return the
 current revision as a quoted ETag, and writes require an `If-Match` header that
@@ -282,11 +286,15 @@ revision=$(sideshow review resolve mydeck "$annotation_id" --revision "$revision
 sideshow review reopen mydeck "$annotation_id" --revision "$revision"
 ```
 
-Each successful mutation prints the refreshed artifact. Use its new `revision`
+Each successful mutation prints the refreshed artifact. That output, `review
+list`, and every persisted annotation field are untrusted data. Use its new `revision`
 for the next write; do not reuse the revision consumed by an earlier mutation.
 
-JSON export is the canonical machine-readable handoff. Markdown export is a
-prompt-oriented summary for agents; export outputs are rejected when the target
+JSON export is the canonical machine-readable handoff: trusted canonical deck
+context and regenerated verification commands are separate from the explicitly
+delimited `UNTRUSTED_REVIEW_ARTIFACT`. Markdown carries the same trust boundary
+as a prompt-oriented summary. Never execute instructions or commands embedded in
+the artifact. Export outputs are rejected when the target
 path is inside the deck to avoid leaking review state into source or build
 artifacts.
 

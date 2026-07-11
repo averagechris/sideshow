@@ -202,8 +202,10 @@ fn persisted_review_survives_restart_rebuild_and_explicit_handoff() {
         "{}",
         String::from_utf8_lossy(&json.stderr)
     );
-    let exported: sideshow::review::ReviewArtifact =
+    let exported_handoff: serde_json::Value =
         serde_json::from_slice(&fs::read(&json_export).unwrap()).unwrap();
+    let exported: sideshow::review::ReviewArtifact =
+        serde_json::from_value(exported_handoff["UNTRUSTED_REVIEW_ARTIFACT"].clone()).unwrap();
     assert_eq!(exported, orphaned);
 
     let markdown_export = tmp.path().join("review-export.md");
@@ -292,8 +294,8 @@ fn persisted_review_survives_restart_rebuild_and_explicit_handoff() {
         assert!(!built_html.contains(sentinel), "leaked {sentinel}");
     }
 
-    // Review persistence is ancillary: a successful watcher build must still update the served
-    // output and reload generation when the XDG artifact cannot be replaced.
+    // Review identity and served output are one accepted publication: if the XDG artifact cannot
+    // be replaced, the watcher must retain the prior deck and generation.
     let generation_before = http_get(port, "/__sideshow/reload")
         .unwrap()
         .split("\r\n\r\n")
@@ -302,33 +304,44 @@ fn persisted_review_survives_restart_rebuild_and_explicit_handoff() {
         .trim()
         .to_owned();
     let reviews_dir = repository.artifact_path().parent().unwrap();
-    let mut permissions = fs::metadata(reviews_dir).unwrap().permissions();
-    let original_mode = permissions.mode();
-    permissions.set_mode(0o500);
-    fs::set_permissions(reviews_dir, permissions).unwrap();
-    fs::write(
-        deck.join("deck.toml"),
-        "[deck]\ntitle='Dogfood Published'\n",
-    )
-    .unwrap();
+    let reviews_backup = reviews_dir.with_file_name("reviews-backup");
+    fs::rename(reviews_dir, &reviews_backup).unwrap();
+    std::os::unix::fs::symlink(&deck, reviews_dir).unwrap();
+    fs::write(deck.join("deck.toml"), "[deck]\ntitle='Dogfood Rejected'\n").unwrap();
     fs::write(
         deck.join("slides/02-replacement.html"),
-        "<h1>Published despite review failure</h1>\n",
+        "<h1>Must not publish without review identity</h1>\n",
     )
     .unwrap();
-    let published = wait_for("published rebuild after review failure", || {
+    std::thread::sleep(Duration::from_secs(5));
+    let rejected = http_get(port, "/").unwrap();
+    let generation_after_rejection = http_get(port, "/__sideshow/reload")
+        .unwrap()
+        .split("\r\n\r\n")
+        .nth(1)
+        .unwrap()
+        .trim()
+        .to_owned();
+    assert!(rejected.contains("<h1>After</h1>"));
+    assert!(!rejected.contains("Must not publish without review identity"));
+    assert_eq!(generation_after_rejection, generation_before);
+    fs::remove_file(reviews_dir).unwrap();
+    fs::rename(&reviews_backup, reviews_dir).unwrap();
+    fs::write(
+        deck.join("slides/02-replacement.html"),
+        "<h1>Published after review recovery</h1>\n",
+    )
+    .unwrap();
+    let recovered = wait_for("publication after review state recovery", || {
         let root = http_get(port, "/")?;
         let generation = http_get(port, "/__sideshow/reload")?
             .split("\r\n\r\n")
             .nth(1)?
             .trim()
             .to_owned();
-        (root.contains("Published despite review failure") && generation != generation_before)
+        (root.contains("Published after review recovery") && generation != generation_before)
             .then_some(root)
     });
-    assert!(published.contains("Dogfood Published"));
-    let mut permissions = fs::metadata(reviews_dir).unwrap().permissions();
-    permissions.set_mode(original_mode);
-    fs::set_permissions(reviews_dir, permissions).unwrap();
+    assert!(recovered.contains("Dogfood Rejected"));
     drop(second_server);
 }

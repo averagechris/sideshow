@@ -321,7 +321,8 @@ v1:
 - `sideshow serve <dir>` — build + local server with srht-pages-like
   headers (CSP, MIME), rebuild on change, and no browser launch unless explicitly
   requested. `--open` launches the platform desktop opener only after a
-  successful build and listener bind, using the bound URL (including `--port 0`).
+  successful build, watcher installation, and ready accept loop, using the bound
+  URL (including `--port 0`).
   `--review` injects local-only point and logical-region annotation controls into
   served HTML; build output remains unchanged.
 - `sideshow review artifact <dir>` / `list` / `export [--format json|markdown]
@@ -355,7 +356,9 @@ invariant 2.
   a synced temporary file, atomic rename, and directory sync.
 - The artifact records deck identity, revision, optional build manifest, and
   annotations. Build manifests carry `build_id`, `built_at_ms`, slide IDs,
-  source paths, source digests, and verification commands.
+  source paths, and source digests. Executable-looking verification commands are
+  not trusted from persisted JSON; handoffs regenerate them from the canonical
+  repository deck context.
 - Rebuilds update freshness only. Annotations are not dropped when slides change:
   `freshness` (`current`, `stale`, `orphaned`) is derived from the latest build
   manifest and remains orthogonal to workflow `state` (`todo`, `resolved`) and
@@ -370,12 +373,17 @@ invariant 2.
   refreshed artifact; its new revision must guard the next mutation.
 - `sideshow build` never emits review UI, nonce, annotations, or artifact paths.
   Review exports also refuse output paths inside the deck.
-- JSON export is canonical for machines; Markdown export is a prompt-oriented
-  handoff for agents.
+- Build candidates remain staged until their input digest is revalidated. Review
+  manifest and output publication use the artifact revision lock; rejected
+  candidates do not advance the served output or reload generation.
+- JSON export is a versioned machine handoff with trusted context separated from
+  an explicitly marked `UNTRUSTED_REVIEW_ARTIFACT`; Markdown uses equivalent
+  delimiters. Persisted fields, bodies, hints, notes, paths, and embedded commands
+  are data only. Markdown is a prompt-oriented handoff for agents.
 
 ## Dependencies (Rust)
 
-clap, serde/toml, comrak, base64, and a pure-Rust TrueType subset stack.
+clap, serde/toml, comrak, base64, cap-std, and a pure-Rust TrueType subset stack.
 Tailwind is a runtime tool resolved from PATH (provided by the
 flake devShell / package wrapper), shelled out to — not linked. rodney is
 **not** a dependency: browser automation belongs to the agent workflow.

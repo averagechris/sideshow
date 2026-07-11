@@ -887,8 +887,11 @@ fn review_artifact_list_and_export_are_stable_and_deck_read_only() {
         .output()
         .unwrap();
     assert!(export.status.success());
-    let exported_artifact: sideshow::review::ReviewArtifact =
+    let exported_handoff: serde_json::Value =
         serde_json::from_slice(&std::fs::read(exported).unwrap()).unwrap();
+    assert!(exported_handoff.get("security_notice").is_some());
+    let exported_artifact: sideshow::review::ReviewArtifact =
+        serde_json::from_value(exported_handoff["UNTRUSTED_REVIEW_ARTIFACT"].clone()).unwrap();
     assert_eq!(exported_artifact, seeded);
 
     #[cfg(unix)]
@@ -1028,8 +1031,9 @@ fn review_artifact_materializes_empty_v2_for_direct_consumers() {
         .args(["export", deck.to_str().unwrap()])
         .output()
         .unwrap();
+    let exported_handoff: serde_json::Value = serde_json::from_slice(&export.stdout).unwrap();
     let exported: sideshow::review::ReviewArtifact =
-        serde_json::from_slice(&export.stdout).unwrap();
+        serde_json::from_value(exported_handoff["UNTRUSTED_REVIEW_ARTIFACT"].clone()).unwrap();
     assert_eq!(direct, listed);
     assert_eq!(listed, exported);
 }
@@ -1126,6 +1130,31 @@ fn standalone_build_refreshes_existing_review_but_does_not_create_one() {
     assert!(build.status.success());
     assert!(!absent_repository.artifact_path().exists());
     assert!(!untouched_state.join("sideshow").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn standalone_build_without_review_ignores_unavailable_xdg_configuration() {
+    let tmp = tempfile::tempdir().unwrap();
+    let deck = prebuilt_t_deck(tmp.path());
+    let tailwind = fake_tailwind(tmp.path());
+    for invalid_xdg in [None, Some("relative/state")] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sideshow"));
+        command
+            .env_remove("HOME")
+            .env_remove("XDG_STATE_HOME")
+            .env("SIDESHOW_TAILWINDCSS", &tailwind)
+            .args(["build", deck.to_str().unwrap()]);
+        if let Some(value) = invalid_xdg {
+            command.env("XDG_STATE_HOME", value);
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[test]

@@ -1,6 +1,8 @@
 [licenses]
 allow = [
   "Apache-2.0",
+  # LLVM's standard permissive exception; used by cap-std's winx dependency.
+  "Apache-2.0 WITH LLVM-exception",
   "BSD-2-Clause",
   "BSD-3-Clause",
   "CC0-1.0",

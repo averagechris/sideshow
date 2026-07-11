@@ -15,6 +15,8 @@ use std::{
 mod fonts;
 mod highlight;
 pub mod review;
+#[doc(hidden)]
+pub mod secure_fs;
 
 pub use fonts::{FontFaceConfig, FontStyle};
 
@@ -361,15 +363,42 @@ fn title_case(s: &str) -> String {
 }
 
 pub fn slide_order(dir: &Path, deck: &DeckToml) -> anyhow::Result<Vec<PathBuf>> {
-    if let Some(slides) = &deck.deck.slides {
-        return Ok(slides.iter().map(|s| dir.join(s)).collect());
+    let canonical_root = dir
+        .canonicalize()
+        .with_context(|| format!("failed to resolve deck root {}", dir.display()))?;
+    let mut paths = if let Some(slides) = &deck.deck.slides {
+        slides.iter().map(|slide| dir.join(slide)).collect()
+    } else {
+        let mut paths = fs::read_dir(dir.join("slides"))?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                matches!(
+                    path.extension().and_then(|extension| extension.to_str()),
+                    Some("html" | "md")
+                )
+            })
+            .collect::<Vec<_>>();
+        paths.sort();
+        paths
+    };
+    for path in &mut paths {
+        let requested = path.clone();
+        let canonical = requested
+            .canonicalize()
+            .with_context(|| format!("failed to resolve slide source {}", requested.display()))?;
+        let metadata = canonical
+            .metadata()
+            .with_context(|| format!("failed to inspect slide source {}", canonical.display()))?;
+        if !metadata.is_file() || !canonical.starts_with(&canonical_root) {
+            bail!(
+                "slide source must be a regular file inside deck root {}: {}",
+                canonical_root.display(),
+                requested.display()
+            );
+        }
+        *path = canonical;
     }
-    let mut paths = fs::read_dir(dir.join("slides"))?
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| matches!(p.extension().and_then(|s| s.to_str()), Some("html" | "md")))
-        .collect::<Vec<_>>();
-    paths.sort();
     Ok(paths)
 }
 
@@ -678,6 +707,20 @@ pub fn check_deck(dir: &Path) -> Vec<CheckFinding> {
     let slides = match slide_order(dir, &deck) {
         Ok(s) => s,
         Err(e) => {
+            if let Some(configured) = &deck.deck.slides {
+                for slide in configured {
+                    let path = dir.join(slide);
+                    if !path.is_file() {
+                        findings.push(CheckFinding {
+                            path: path.display().to_string(),
+                            severity: FindingSeverity::Error,
+                            kind: "missing_slide".into(),
+                            message: "referenced slide does not exist or is not a regular file"
+                                .into(),
+                        });
+                    }
+                }
+            }
             findings.push(CheckFinding {
                 path: slides_dir.display().to_string(),
                 severity: FindingSeverity::Error,
@@ -1388,13 +1431,25 @@ fn html_ids(input: &str) -> anyhow::Result<BTreeSet<String>> {
 }
 
 pub fn build_deck(dir: &Path) -> anyhow::Result<PathBuf> {
+    build_deck_to(dir, &dir.join("dist"))
+}
+
+/// Builds a deck into an explicit output directory. Serve uses this to keep an unaccepted build
+/// isolated until its input digest and review manifest have both been accepted.
+pub fn build_deck_to(dir: &Path, out_dir: &Path) -> anyhow::Result<PathBuf> {
+    let canonical_dir = dir
+        .canonicalize()
+        .with_context(|| format!("failed to resolve deck root {}", dir.display()))?;
     let deck = parse_deck_toml(&fs::read_to_string(dir.join("deck.toml"))?)?;
     let mut sections = String::new();
     let mut rewrite_state = RewriteState::default();
     let slides = slide_order(dir, &deck)?;
     let mut rendered_slides = Vec::new();
     for p in &slides {
-        let rel = p.strip_prefix(dir).unwrap_or(p).to_string_lossy();
+        let rel = p
+            .strip_prefix(&canonical_dir)
+            .with_context(|| format!("slide source escaped deck root: {}", p.display()))?
+            .to_string_lossy();
         let stem = p.file_stem().unwrap().to_string_lossy();
         let raw = fs::read_to_string(p)?;
         let html = if p.extension().and_then(|s| s.to_str()) == Some("md") {
@@ -1430,8 +1485,7 @@ pub fn build_deck(dir: &Path) -> anyhow::Result<PathBuf> {
             .collect::<String>();
         css = format!("{font_css}{css}");
     }
-    let out_dir = dir.join("dist");
-    fs::create_dir_all(&out_dir)?;
+    fs::create_dir_all(out_dir)?;
     let out = out_dir.join(format!("{}.html", slug(&deck.deck.title)));
     let body = format!(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>{}</title>\n<style>\n{}\n</style>\n</head>\n<body data-runtime=\"{}\">\n<main id=\"stage\" aria-live=\"polite\">\n{}\n</main>\n<script>\n{}\n</script>\n</body>\n</html>\n",
@@ -1991,6 +2045,40 @@ mod tests {
             .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
             .collect::<Vec<_>>();
         assert_eq!(names, vec!["a.html", "b.md"]);
+    }
+
+    #[test]
+    fn configured_slides_must_resolve_to_regular_files_inside_deck() {
+        let parent = tempfile::tempdir().unwrap();
+        let deck = parent.path().join("deck");
+        fs::create_dir_all(deck.join("slides")).unwrap();
+        fs::write(parent.path().join("outside.html"), "outside").unwrap();
+
+        let traversal = parse_deck_toml("[deck]\ntitle='T'\nslides=['../outside.html']\n").unwrap();
+        let error = slide_order(&deck, &traversal).unwrap_err().to_string();
+        assert!(error.contains("inside deck root"), "{error}");
+
+        let directory = parse_deck_toml("[deck]\ntitle='T'\nslides=['slides']\n").unwrap();
+        let error = slide_order(&deck, &directory).unwrap_err().to_string();
+        assert!(error.contains("regular file"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn configured_slides_reject_symlinks_that_escape_deck() {
+        use std::os::unix::fs::symlink;
+
+        let parent = tempfile::tempdir().unwrap();
+        let deck = parent.path().join("deck");
+        fs::create_dir_all(deck.join("slides")).unwrap();
+        let outside = parent.path().join("outside.html");
+        fs::write(&outside, "outside").unwrap();
+        symlink(&outside, deck.join("slides/linked.html")).unwrap();
+        let configured =
+            parse_deck_toml("[deck]\ntitle='T'\nslides=['slides/linked.html']\n").unwrap();
+
+        let error = slide_order(&deck, &configured).unwrap_err().to_string();
+        assert!(error.contains("inside deck root"), "{error}");
     }
     #[test]
     fn rewrites_assets() {
