@@ -7,6 +7,140 @@ fn review_command(state: &std::path::Path) -> Command {
     command
 }
 
+fn sideshow_command() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_sideshow"))
+}
+
+#[test]
+fn plan_new_check_and_export_are_agent_consumable() {
+    let temp = tempfile::tempdir().unwrap();
+    let deck = temp.path().join("plan");
+    let status = sideshow_command()
+        .args(["plan", "new"])
+        .arg(&deck)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(
+        std::fs::read_to_string(deck.join("deck.toml"))
+            .unwrap()
+            .contains("title = \"Plan\"")
+    );
+    assert!(!deck.join("slides/02-content.md").exists());
+
+    let status = sideshow_command()
+        .args(["plan", "check", "--format", "json", "--strict"])
+        .arg(&deck)
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let json = sideshow_command()
+        .args(["plan", "export", "--format", "json"])
+        .arg(&deck)
+        .output()
+        .unwrap();
+    assert!(json.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["status"], "draft");
+    assert_eq!(value["workstreams"][0]["owner"], "implementation-agent");
+    assert_eq!(value["workstreams"][0]["tasks"][0]["id"], "task-scaffold");
+
+    let md = sideshow_command()
+        .args(["plan", "export", "--format", "markdown"])
+        .arg(&deck)
+        .output()
+        .unwrap();
+    assert!(md.status.success());
+    let md = String::from_utf8(md.stdout).unwrap();
+    assert!(md.contains("task-scaffold"));
+    assert!(md.contains("outcome-demo"));
+    assert!(md.contains("implementation-agent"));
+    assert!(md.contains("Verification"));
+
+    let overwrite = sideshow_command()
+        .args(["plan", "new"])
+        .arg(&deck)
+        .output()
+        .unwrap();
+    assert!(!overwrite.status.success());
+}
+
+#[test]
+fn plan_check_rejects_unknown_statuses_and_dependency_cycles() {
+    let temp = tempfile::tempdir().unwrap();
+    let deck = temp.path().join("plan");
+    assert!(
+        sideshow_command()
+            .args(["plan", "new"])
+            .arg(&deck)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let path = deck.join("plan.json");
+    let mut plan: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    plan["status"] = serde_json::json!("looks_good_to_me");
+    std::fs::write(&path, serde_json::to_vec_pretty(&plan).unwrap()).unwrap();
+    let invalid_status = sideshow_command()
+        .args(["plan", "check"])
+        .arg(&deck)
+        .output()
+        .unwrap();
+    assert!(!invalid_status.status.success());
+    assert!(String::from_utf8_lossy(&invalid_status.stdout).contains("unknown variant"));
+
+    plan["status"] = serde_json::json!("draft");
+    plan["workstreams"][0]["tasks"][0]["dependencies"] = serde_json::json!(["task-scaffold"]);
+    std::fs::write(&path, serde_json::to_vec_pretty(&plan).unwrap()).unwrap();
+    let cycle = sideshow_command()
+        .args(["plan", "check"])
+        .arg(&deck)
+        .output()
+        .unwrap();
+    assert!(!cycle.status.success());
+    assert!(String::from_utf8_lossy(&cycle.stdout).contains("dependency cycle"));
+}
+
+#[test]
+fn plan_check_rejects_bad_references_and_export_refuses_overwrite() {
+    let temp = tempfile::tempdir().unwrap();
+    let deck = temp.path().join("plan");
+    assert!(
+        sideshow_command()
+            .args(["plan", "new"])
+            .arg(&deck)
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(
+        deck.join("slides/99-bad.html"),
+        "<div data-plan-id=\"missing-id\"></div>",
+    )
+    .unwrap();
+    let check = sideshow_command()
+        .args(["plan", "check"])
+        .arg(&deck)
+        .output()
+        .unwrap();
+    assert!(!check.status.success());
+    assert!(String::from_utf8_lossy(&check.stdout).contains("missing-id"));
+
+    let out = temp.path().join("export.md");
+    std::fs::write(&out, "keep").unwrap();
+    let export = sideshow_command()
+        .args(["plan", "export", "--output"])
+        .arg(&out)
+        .arg(&deck)
+        .output()
+        .unwrap();
+    assert!(!export.status.success());
+    assert_eq!(std::fs::read_to_string(out).unwrap(), "keep");
+}
+
 fn seed_review(
     deck: &std::path::Path,
     state: &std::path::Path,
@@ -157,6 +291,56 @@ fn fake_tailwind(root: &std::path::Path) -> std::path::PathBuf {
         "#!/bin/sh\nin=''\nout=''\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    -i) in=$2; shift 2 ;;\n    -o) out=$2; shift 2 ;;\n    *) shift ;;\n  esac\ndone\ncp \"$in\" \"$out\"\n",
     );
     path
+}
+
+#[cfg(unix)]
+#[test]
+fn plan_component_fixture_builds_with_css_and_no_component_js() {
+    let tmp = tempfile::tempdir().unwrap();
+    let deck = tmp.path().join("plan-components");
+    copy_dir(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plan-components"),
+        &deck,
+    );
+    let tw = fake_tailwind(tmp.path());
+    let config = tmp.path().join("config.toml");
+    std::fs::write(
+        &config,
+        format!("[tools]\ntailwindcss = '{}'\n", tw.display()),
+    )
+    .unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_sideshow"))
+        .env("SIDESHOW_CONFIG", &config)
+        .args(["build", deck.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let html = std::fs::read_to_string(deck.join("dist/plan-components.html")).unwrap();
+    assert!(html.contains(".plan-shell"));
+    assert!(html.contains(".plan-status"));
+    assert!(html.contains("data-state=\"watch\""));
+    assert!(html.contains("Watch: dependency in flight"));
+    assert!(html.contains("Critical dependency"));
+    assert!(!html.contains("plan-components.js"));
+    assert!(!html.contains("customElements.define"));
+}
+
+fn copy_dir(from: impl AsRef<std::path::Path>, to: impl AsRef<std::path::Path>) {
+    std::fs::create_dir_all(&to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let dest = to.as_ref().join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(entry.path(), dest);
+        } else {
+            std::fs::copy(entry.path(), dest).unwrap();
+        }
+    }
 }
 
 #[test]

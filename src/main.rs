@@ -81,6 +81,11 @@ enum Command {
         #[command(subcommand)]
         command: ReviewCommand,
     },
+    /// Scaffold, validate, and export canonical plan decks.
+    Plan {
+        #[command(subcommand)]
+        command: PlanCommand,
+    },
     /// Publish an existing dist output to S3 or SourceHut Pages.
     Publish {
         dir: PathBuf,
@@ -170,6 +175,52 @@ enum ReviewCommand {
 enum ReviewExportFormat {
     Json,
     Markdown,
+}
+
+#[derive(Debug, Subcommand)]
+enum PlanCommand {
+    /// Scaffold a plan deck with canonical plan.json and visual slides.
+    New {
+        dir: PathBuf,
+        #[arg(long, default_value = "signal")]
+        theme: String,
+    },
+    /// Run normal deck checks plus plan schema/reference checks.
+    Check {
+        dir: PathBuf,
+        #[arg(long, value_enum, default_value_t = PlanCheckFormat::Text)]
+        format: PlanCheckFormat,
+        #[arg(long)]
+        strict: bool,
+    },
+    /// Export deterministic agent-consumable plan data.
+    Export {
+        dir: PathBuf,
+        #[arg(long, value_enum, default_value_t = PlanExportFormat::Markdown)]
+        format: PlanExportFormat,
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    /// Serve the plan deck with local review controls.
+    Serve {
+        dir: PathBuf,
+        #[arg(long, default_value_t = 8000)]
+        port: u16,
+        #[arg(long)]
+        open: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum PlanCheckFormat {
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum PlanExportFormat {
+    Markdown,
+    Json,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -326,6 +377,7 @@ fn main() -> anyhow::Result<()> {
             review,
         } => serve(&dir, port, review, open),
         Command::Review { command } => review_command(command),
+        Command::Plan { command } => plan_command(command),
         Command::Publish {
             dir,
             target,
@@ -348,6 +400,75 @@ fn main() -> anyhow::Result<()> {
             },
         ),
     }
+}
+
+fn plan_command(command: PlanCommand) -> anyhow::Result<()> {
+    match command {
+        PlanCommand::New { dir, theme } => {
+            sideshow::plan::new_plan_deck(&dir, &theme)?;
+            println!("created plan deck {} (theme: {theme})", dir.display());
+            println!(
+                "next: edit {}/plan.json and {}/slides/, then run sideshow plan check {} --strict",
+                dir.display(),
+                dir.display(),
+                dir.display()
+            );
+            println!("review: sideshow plan serve {} --open", dir.display());
+            Ok(())
+        }
+        PlanCommand::Check {
+            dir,
+            format,
+            strict,
+        } => {
+            let findings = sideshow::plan::check(&dir);
+            match format {
+                PlanCheckFormat::Json => println!("{}", serde_json::to_string_pretty(&findings)?),
+                PlanCheckFormat::Text if findings.is_empty() => {
+                    println!("ok: plan deck checks passed")
+                }
+                PlanCheckFormat::Text => {
+                    for f in &findings {
+                        println!("{:?}: {}: {}: {}", f.severity, f.path, f.kind, f.message);
+                    }
+                }
+            }
+            let fail = findings.iter().any(|f| {
+                f.severity == sideshow::FindingSeverity::Error
+                    || (strict && f.severity == sideshow::FindingSeverity::Warning)
+            });
+            if fail { std::process::exit(1) } else { Ok(()) }
+        }
+        PlanCommand::Export {
+            dir,
+            format,
+            output,
+        } => {
+            let plan = sideshow::plan::load(&dir)?;
+            let rendered = match format {
+                PlanExportFormat::Json => sideshow::plan::canonical_json(&plan)?,
+                PlanExportFormat::Markdown => sideshow::plan::markdown(&plan),
+            };
+            if let Some(path) = output {
+                write_new_file(&path, rendered.as_bytes())?;
+            } else {
+                print!("{rendered}");
+            }
+            Ok(())
+        }
+        PlanCommand::Serve { dir, port, open } => serve(&dir, port, true, open),
+    }
+}
+
+fn write_new_file(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    if path.exists() {
+        anyhow::bail!("refusing to overwrite existing output {}", path.display());
+    }
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(path, bytes).with_context(|| format!("failed to write {}", path.display()))
 }
 
 fn review_command(command: ReviewCommand) -> anyhow::Result<()> {

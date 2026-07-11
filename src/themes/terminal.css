@@ -5,6 +5,10 @@
   --color-muted: #8dae9b;
   --color-accent: #7dff9b;
   --color-panel: #0d1b16;
+  --plan-good: #7dff9b;
+  --plan-warn: #ffe66d;
+  --plan-risk: #ff6b8a;
+  --plan-info: #7cfff0;
   /* Optional code highlighting tokens:
      --code-keyword, --code-string, --code-comment, --code-number, --code-function */
   --text-hero: 6.7rem;

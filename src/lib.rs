@@ -20,8 +20,613 @@ pub mod secure_fs;
 
 pub use fonts::{FontFaceConfig, FontStyle};
 
+pub mod plan {
+    use super::*;
+
+    #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum PlanStatus {
+        Draft,
+        InReview,
+        Approved,
+        Active,
+        Blocked,
+        Completed,
+        Superseded,
+    }
+
+    #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum DecisionStatus {
+        Proposed,
+        Accepted,
+        Rejected,
+        Deferred,
+        Superseded,
+    }
+
+    #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum WorkStatus {
+        Todo,
+        InProgress,
+        Blocked,
+        InReview,
+        Done,
+        Dropped,
+    }
+
+    #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum RiskLevel {
+        Low,
+        Medium,
+        High,
+    }
+
+    macro_rules! display_enum {
+        ($type:ty, {$($variant:path => $value:literal),+ $(,)?}) => {
+            impl std::fmt::Display for $type {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.write_str(match self {$($variant => $value),+})
+                }
+            }
+        };
+    }
+    display_enum!(PlanStatus, {
+        PlanStatus::Draft => "draft",
+        PlanStatus::InReview => "in_review",
+        PlanStatus::Approved => "approved",
+        PlanStatus::Active => "active",
+        PlanStatus::Blocked => "blocked",
+        PlanStatus::Completed => "completed",
+        PlanStatus::Superseded => "superseded",
+    });
+    display_enum!(DecisionStatus, {
+        DecisionStatus::Proposed => "proposed",
+        DecisionStatus::Accepted => "accepted",
+        DecisionStatus::Rejected => "rejected",
+        DecisionStatus::Deferred => "deferred",
+        DecisionStatus::Superseded => "superseded",
+    });
+    display_enum!(WorkStatus, {
+        WorkStatus::Todo => "todo",
+        WorkStatus::InProgress => "in_progress",
+        WorkStatus::Blocked => "blocked",
+        WorkStatus::InReview => "in_review",
+        WorkStatus::Done => "done",
+        WorkStatus::Dropped => "dropped",
+    });
+    display_enum!(RiskLevel, {
+        RiskLevel::Low => "low",
+        RiskLevel::Medium => "medium",
+        RiskLevel::High => "high",
+    });
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Plan {
+        pub schema_version: u32,
+        pub title: String,
+        pub status: PlanStatus,
+        pub objective: String,
+        #[serde(default)]
+        pub outcomes: Vec<Outcome>,
+        #[serde(default)]
+        pub constraints: Vec<Constraint>,
+        #[serde(default)]
+        pub non_goals: Vec<String>,
+        #[serde(default)]
+        pub decisions: Vec<Decision>,
+        #[serde(default)]
+        pub workstreams: Vec<Workstream>,
+        #[serde(default)]
+        pub risks: Vec<Risk>,
+    }
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Outcome {
+        pub id: String,
+        pub description: String,
+        #[serde(default)]
+        pub proof: Vec<String>,
+    }
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Constraint {
+        pub id: String,
+        pub description: String,
+    }
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Decision {
+        pub id: String,
+        pub title: String,
+        pub status: DecisionStatus,
+        pub rationale: String,
+    }
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Workstream {
+        pub id: String,
+        pub title: String,
+        pub status: WorkStatus,
+        #[serde(default)]
+        pub owner: Option<String>,
+        #[serde(default)]
+        pub tasks: Vec<Task>,
+    }
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Task {
+        pub id: String,
+        pub title: String,
+        pub status: WorkStatus,
+        #[serde(default)]
+        pub owner: Option<String>,
+        #[serde(default)]
+        pub outcomes: Vec<String>,
+        #[serde(default)]
+        pub dependencies: Vec<String>,
+        #[serde(default)]
+        pub files: Vec<String>,
+        #[serde(default)]
+        pub acceptance_checks: Vec<String>,
+        #[serde(default)]
+        pub verification_commands: Vec<String>,
+    }
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Risk {
+        pub id: String,
+        pub description: String,
+        pub likelihood: RiskLevel,
+        pub impact: RiskLevel,
+        pub mitigation: String,
+    }
+
+    pub fn new_plan_deck(dir: &Path, theme: &str) -> anyhow::Result<()> {
+        if dir.exists() {
+            bail!(
+                "refusing to overwrite existing plan directory {}",
+                dir.display()
+            );
+        }
+        new_deck(dir, theme)?;
+        let title = dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(plan_title)
+            .unwrap_or_else(|| "Implementation Plan".into());
+        let deck_toml_path = dir.join("deck.toml");
+        let deck_toml = fs::read_to_string(&deck_toml_path)?;
+        let title_line = format!("title = \"{} Demo\"", title_case(theme));
+        fs::write(
+            &deck_toml_path,
+            deck_toml.replacen(&title_line, &format!("title = \"{title}\""), 1),
+        )?;
+        let _ = fs::remove_file(dir.join("slides/02-content.md"));
+        let plan = Plan {
+            schema_version: 1,
+            title: title.clone(),
+            status: PlanStatus::Draft,
+            objective: "Ship a focused, reviewable increment with clear proof and verification."
+                .into(),
+            outcomes: vec![Outcome {
+                id: "outcome-demo".into(),
+                description: "A working implementation path is ready for agents.".into(),
+                proof: vec!["plan.json passes sideshow plan check".into()],
+            }],
+            constraints: vec![Constraint {
+                id: "constraint-focused-tooling".into(),
+                description: "Add dependencies only when they materially improve the workflow."
+                    .into(),
+            }],
+            non_goals: vec!["Do not mix review annotations into plan.json.".into()],
+            decisions: vec![Decision {
+                id: "decision-json-canonical".into(),
+                title: "Use plan.json as canonical data".into(),
+                status: DecisionStatus::Accepted,
+                rationale: "Slides are a projection; agents need stable structured input.".into(),
+            }],
+            workstreams: vec![Workstream {
+                id: "ws-implementation".into(),
+                title: "Implementation".into(),
+                status: WorkStatus::Todo,
+                owner: Some("implementation-agent".into()),
+                tasks: vec![Task {
+                    id: "task-scaffold".into(),
+                    title: "Replace scaffold with project-specific work".into(),
+                    status: WorkStatus::Todo,
+                    owner: Some("implementation-agent".into()),
+                    outcomes: vec!["outcome-demo".into()],
+                    dependencies: vec![],
+                    files: vec!["plan.json".into(), "slides/".into()],
+                    acceptance_checks: vec![
+                        "Every actionable task has files, acceptance, and verification.".into(),
+                    ],
+                    verification_commands: vec!["sideshow plan check . --strict".into()],
+                }],
+            }],
+            risks: vec![Risk {
+                id: "risk-drift".into(),
+                description: "Slides drift from canonical plan data.".into(),
+                likelihood: RiskLevel::Medium,
+                impact: RiskLevel::High,
+                mitigation: "Run plan check and keep data-plan-id references current.".into(),
+            }],
+        };
+        fs::write(dir.join("plan.json"), canonical_json(&plan)?)?;
+        fs::write(
+            dir.join("slides/01-title.html"),
+            format!(
+                "<section class=\"plan-shell\">\n  <header class=\"plan-header\">\n    <div><p class=\"plan-eyebrow\">Implementation plan</p><h1 class=\"plan-title\">{title}</h1></div>\n    <span class=\"plan-status\" data-state=\"draft\" data-tone=\"info\">Draft</span>\n  </header>\n  <article class=\"plan-callout\" data-tone=\"info\" data-plan-kind=\"outcome\" data-plan-id=\"outcome-demo\"><strong>Objective:</strong> Ship a focused, reviewable increment with clear proof and verification.</article>\n  <footer class=\"plan-footer\"><span class=\"plan-meta\">Review before execution</span></footer>\n</section>\n"
+            ),
+        )?;
+        fs::write(
+            dir.join("slides/02-plan.html"),
+            "<section class=\"plan-shell\">\n  <header class=\"plan-header\"><div><p class=\"plan-eyebrow\">Execution</p><h2 class=\"plan-title\">One actionable workstream</h2></div></header>\n  <div class=\"plan-grid\">\n    <article class=\"plan-workstream\" data-plan-kind=\"workstream\" data-plan-id=\"ws-implementation\"><h3>Implementation</h3><span class=\"plan-status\" data-state=\"todo\" data-tone=\"info\">Todo</span><div class=\"plan-milestone\" data-plan-kind=\"task\" data-plan-id=\"task-scaffold\"><strong>Replace scaffold with project-specific work</strong><p>Files, acceptance checks, and verification commands are required.</p></div></article>\n    <div class=\"plan-cards\"><aside class=\"plan-decision\" data-plan-kind=\"decision\" data-plan-id=\"decision-json-canonical\"><strong>Accepted:</strong> plan.json is canonical.</aside><aside class=\"plan-callout\" data-tone=\"info\" data-plan-kind=\"constraint\" data-plan-id=\"constraint-focused-tooling\"><strong>Constraint:</strong> dependencies must unlock the workflow.</aside></div>\n  </div>\n</section>\n",
+        )?;
+        fs::write(
+            dir.join("slides/03-verify.html"),
+            "<section class=\"plan-shell\">\n  <header class=\"plan-header\"><div><p class=\"plan-eyebrow\">Guardrails</p><h2 class=\"plan-title\">Make risk and proof visible</h2></div></header>\n  <div class=\"plan-grid\"><aside class=\"plan-risk\" data-critical=\"true\" data-plan-kind=\"risk\" data-plan-id=\"risk-drift\"><strong>Risk:</strong> slides drift from canonical data.<p>Mitigation: run plan check and keep anchors current.</p></aside><article class=\"plan-card\"><h3>Verification</h3><code>sideshow plan check . --strict</code></article></div>\n</section>\n",
+        )?;
+        Ok(())
+    }
+
+    fn plan_title(name: &str) -> String {
+        name.split(|c: char| !c.is_alphanumeric())
+            .filter(|part| !part.is_empty())
+            .map(title_case)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    pub fn load(dir: &Path) -> anyhow::Result<Plan> {
+        serde_json::from_slice(
+            &fs::read(dir.join("plan.json"))
+                .with_context(|| format!("failed to read {}", dir.join("plan.json").display()))?,
+        )
+        .context("failed to parse plan.json")
+    }
+    pub fn canonical_json(plan: &Plan) -> anyhow::Result<String> {
+        Ok(format!("{}\n", serde_json::to_string_pretty(plan)?))
+    }
+
+    pub fn markdown(plan: &Plan) -> String {
+        let mut out = format!(
+            "# {}\n\n- Schema: {}\n- Status: {}\n\n## Objective\n{}\n",
+            plan.title, plan.schema_version, plan.status, plan.objective
+        );
+        out.push_str("\n## Outcomes\n");
+        for outcome in &plan.outcomes {
+            out.push_str(&format!(
+                "\n### {}\n{}\n\nProof:\n{}\n",
+                outcome.id,
+                outcome.description,
+                bullets(&outcome.proof)
+            ));
+        }
+        out.push_str("\n## Constraints\n");
+        for constraint in &plan.constraints {
+            out.push_str(&format!(
+                "- **{}:** {}\n",
+                constraint.id, constraint.description
+            ));
+        }
+        out.push_str("\n## Non-goals\n");
+        out.push_str(&format!("{}\n", bullets(&plan.non_goals)));
+        out.push_str("\n## Execution\n");
+        for ws in &plan.workstreams {
+            out.push_str(&format!(
+                "\n### {} ({})\n\n- Status: {}\n- Owner: {}\n",
+                ws.title,
+                ws.id,
+                ws.status,
+                ws.owner.as_deref().unwrap_or("unassigned")
+            ));
+            for t in &ws.tasks {
+                out.push_str(&format!("\n#### {} ({})\n- Status: {}\n- Owner: {}\n- Outcomes: {}\n- Dependencies: {}\n- Files: {}\n- Acceptance:\n{}\n- Verification:\n{}\n", t.title, t.id, t.status, t.owner.as_deref().unwrap_or("unassigned"), list(&t.outcomes), list(&t.dependencies), list(&t.files), bullets(&t.acceptance_checks), bullets(&t.verification_commands)));
+            }
+        }
+        out.push_str("\n## Decisions\n");
+        for d in &plan.decisions {
+            out.push_str(&format!(
+                "- {} ({}): {} — {}\n",
+                d.title, d.id, d.status, d.rationale
+            ));
+        }
+        out.push_str("\n## Risks\n");
+        for r in &plan.risks {
+            out.push_str(&format!(
+                "- **{}** (likelihood: {}, impact: {}): {} Mitigation: {}\n",
+                r.id, r.likelihood, r.impact, r.description, r.mitigation
+            ));
+        }
+        out
+    }
+    fn list(v: &[String]) -> String {
+        if v.is_empty() {
+            "none".into()
+        } else {
+            v.join(", ")
+        }
+    }
+    fn bullets(v: &[String]) -> String {
+        if v.is_empty() {
+            "  - none".into()
+        } else {
+            v.iter()
+                .map(|s| format!("  - {s}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    }
+
+    pub fn check(dir: &Path) -> Vec<CheckFinding> {
+        let mut findings = check_deck(dir);
+        let plan = match load(dir) {
+            Ok(p) => p,
+            Err(e) => {
+                findings.push(err("plan.json", "plan-schema", format!("{e:#}")));
+                return findings;
+            }
+        };
+        if plan.schema_version != 1 {
+            findings.push(err("plan.json", "plan-schema", "schema_version must be 1"));
+        }
+        if plan.title.trim().is_empty() || plan.objective.trim().is_empty() {
+            findings.push(err(
+                "plan.json",
+                "plan-schema",
+                "title and objective must not be empty",
+            ));
+        }
+        if plan.outcomes.is_empty() || plan.workstreams.is_empty() {
+            findings.push(err(
+                "plan.json",
+                "plan-actionability",
+                "a plan needs at least one outcome and one workstream",
+            ));
+        }
+        let mut ids = BTreeSet::new();
+        let mut outcome_ids = BTreeSet::new();
+        let mut task_ids = BTreeSet::new();
+        macro_rules! id {
+            ($id:expr) => {
+                if $id.trim().is_empty() {
+                    findings.push(err("plan.json", "plan-id", "ids must not be empty"));
+                } else if !valid_plan_id(&$id) {
+                    findings.push(err(
+                        "plan.json",
+                        "plan-id",
+                        format!("id {} must use lowercase kebab-case", $id),
+                    ));
+                } else if !ids.insert($id.clone()) {
+                    findings.push(err("plan.json", "plan-id", format!("duplicate id {}", $id)));
+                }
+            };
+        }
+        for o in &plan.outcomes {
+            id!(o.id);
+            outcome_ids.insert(o.id.clone());
+            if o.description.trim().is_empty() {
+                findings.push(err(
+                    "plan.json",
+                    "plan-outcome",
+                    format!("outcome {} needs a description", o.id),
+                ));
+            }
+            if o.proof.is_empty() {
+                findings.push(warn(
+                    "plan.json",
+                    "plan-coverage",
+                    format!("outcome {} has no proof", o.id),
+                ));
+            }
+        }
+        for c in &plan.constraints {
+            id!(c.id);
+            if c.description.trim().is_empty() {
+                findings.push(err(
+                    "plan.json",
+                    "plan-constraint",
+                    format!("constraint {} needs a description", c.id),
+                ));
+            }
+        }
+        for d in &plan.decisions {
+            id!(d.id);
+            if d.title.trim().is_empty() || d.rationale.trim().is_empty() {
+                findings.push(err(
+                    "plan.json",
+                    "plan-decision",
+                    format!("decision {} needs status and rationale", d.id),
+                ));
+            }
+        }
+        for r in &plan.risks {
+            id!(r.id);
+            if r.mitigation.trim().is_empty() {
+                findings.push(err(
+                    "plan.json",
+                    "plan-risk",
+                    format!("risk {} needs mitigation", r.id),
+                ));
+            }
+        }
+        for ws in &plan.workstreams {
+            id!(ws.id);
+            if ws.title.trim().is_empty() || ws.tasks.is_empty() {
+                findings.push(err(
+                    "plan.json",
+                    "plan-workstream",
+                    format!("workstream {} needs a title and at least one task", ws.id),
+                ));
+            }
+            if ws.owner.as_deref().is_none_or(str::is_empty) {
+                findings.push(warn(
+                    "plan.json",
+                    "plan-ownership",
+                    format!("workstream {} has no owner", ws.id),
+                ));
+            }
+            for t in &ws.tasks {
+                id!(t.id);
+                task_ids.insert(t.id.clone());
+                if t.title.trim().is_empty()
+                    || t.files.is_empty()
+                    || t.acceptance_checks.is_empty()
+                    || t.verification_commands.is_empty()
+                {
+                    findings.push(err("plan.json", "plan-task", format!("task {} needs status, files, acceptance_checks, and verification_commands", t.id)));
+                }
+                if t.owner.as_deref().is_none_or(str::is_empty) {
+                    findings.push(warn(
+                        "plan.json",
+                        "plan-ownership",
+                        format!("task {} has no owner", t.id),
+                    ));
+                }
+                for outcome in &t.outcomes {
+                    if !outcome_ids.contains(outcome) {
+                        findings.push(err(
+                            "plan.json",
+                            "plan-reference",
+                            format!("task {} targets unknown outcome {}", t.id, outcome),
+                        ));
+                    }
+                }
+            }
+        }
+        for ws in &plan.workstreams {
+            for t in &ws.tasks {
+                for dep in &t.dependencies {
+                    if !task_ids.contains(dep) {
+                        findings.push(err(
+                            "plan.json",
+                            "plan-reference",
+                            format!("task {} depends on unknown task {}", t.id, dep),
+                        ));
+                    }
+                }
+            }
+        }
+        for c in cycles(&plan) {
+            findings.push(err(
+                "plan.json",
+                "plan-cycle",
+                format!("task dependency cycle: {}", c.join(" -> ")),
+            ));
+        }
+        check_slide_refs(dir, &ids, &mut findings);
+        for id in ids {
+            if !slide_refs(dir).contains(&id) {
+                findings.push(warn(
+                    "slides",
+                    "plan-coverage",
+                    format!("plan id {id} is not referenced by any data-plan-id"),
+                ));
+            }
+        }
+        findings
+    }
+    fn valid_plan_id(id: &str) -> bool {
+        static PLAN_ID_RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"^[a-z0-9]+(?:-[a-z0-9]+)*$").unwrap());
+        PLAN_ID_RE.is_match(id)
+    }
+    fn err(path: &str, kind: &str, message: impl Into<String>) -> CheckFinding {
+        CheckFinding {
+            path: path.into(),
+            severity: FindingSeverity::Error,
+            kind: kind.into(),
+            message: message.into(),
+        }
+    }
+    fn warn(path: &str, kind: &str, message: impl Into<String>) -> CheckFinding {
+        CheckFinding {
+            path: path.into(),
+            severity: FindingSeverity::Warning,
+            kind: kind.into(),
+            message: message.into(),
+        }
+    }
+    fn slide_refs(dir: &Path) -> BTreeSet<String> {
+        let Ok(slides) = fs::read_dir(dir.join("slides")) else {
+            return BTreeSet::new();
+        };
+        let re = Regex::new(r#"data-plan-id\s*=\s*[\"']([^\"']+)[\"']"#).unwrap();
+        slides
+            .filter_map(Result::ok)
+            .filter_map(|e| fs::read_to_string(e.path()).ok())
+            .flat_map(|s| {
+                re.captures_iter(&s)
+                    .map(|c| c[1].to_string())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+    fn check_slide_refs(dir: &Path, ids: &BTreeSet<String>, findings: &mut Vec<CheckFinding>) {
+        for id in slide_refs(dir) {
+            if !ids.contains(&id) {
+                findings.push(err(
+                    "slides",
+                    "plan-reference",
+                    format!("data-plan-id references unknown id {id}"),
+                ));
+            }
+        }
+    }
+    fn cycles(plan: &Plan) -> Vec<Vec<String>> {
+        let deps: BTreeMap<_, _> = plan
+            .workstreams
+            .iter()
+            .flat_map(|w| &w.tasks)
+            .map(|t| {
+                (
+                    t.id.as_str(),
+                    t.dependencies
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        let mut out = vec![];
+        for start in deps.keys() {
+            visit(start, start, &deps, &mut vec![], &mut out);
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+    fn visit<'a>(
+        start: &'a str,
+        node: &'a str,
+        deps: &BTreeMap<&'a str, Vec<&'a str>>,
+        stack: &mut Vec<String>,
+        out: &mut Vec<Vec<String>>,
+    ) {
+        stack.push(node.into());
+        if let Some(nexts) = deps.get(node) {
+            for &n in nexts {
+                if n == start {
+                    let mut c = stack.clone();
+                    c.push(start.into());
+                    out.push(c);
+                } else if !stack.iter().any(|s| s == n) {
+                    visit(start, n, deps, stack, out);
+                }
+            }
+        }
+        stack.pop();
+    }
+}
+
 pub const RUNTIME_MARKER: &str = "sideshow-runtime-v1";
 const STAGE_CSS: &str = include_str!("runtime/stage.css");
+const PLAN_CSS: &str = include_str!("components/plan.css");
 const RUNTIME_JS: &str = include_str!("runtime/runtime.js");
 const SIGNAL_CSS: &str = include_str!("themes/signal.css");
 const LEDGER_CSS: &str = include_str!("themes/ledger.css");
@@ -871,7 +1476,7 @@ pub fn check_deck(dir: &Path) -> Vec<CheckFinding> {
                 fonts::glyph_corpus(
                     &deck.deck.title,
                     &rendered_content,
-                    &format!("{STAGE_CSS}\n{theme}"),
+                    &format!("{STAGE_CSS}\n{PLAN_CSS}\n{theme}"),
                 )
             })
             .and_then(|corpus| fonts::prepare_fonts(dir, &deck.fonts, &corpus))
@@ -1538,9 +2143,10 @@ fn compile_css(dir: &Path) -> anyhow::Result<String> {
     fs::write(
         &input,
         format!(
-            "@import \"tailwindcss\" source(none);\n@source {};\n{}\n{}\n",
+            "@import \"tailwindcss\" source(none);\n@source {};\n{}\n{}\n{}\n",
             slides_source,
             STAGE_CSS,
+            PLAN_CSS,
             fs::read_to_string(dir.join("theme.css"))?
         ),
     )?;
@@ -2463,6 +3069,29 @@ mod tests {
             .map(|t| t["name"].as_str().unwrap())
             .collect::<Vec<_>>();
         assert_eq!(names, vec!["signal", "ledger", "terminal", "poster"]);
+    }
+
+    #[test]
+    fn plan_component_css_is_compiler_owned_and_js_free() {
+        assert!(PLAN_CSS.contains(".plan-shell"));
+        assert!(PLAN_CSS.contains(".plan-status[data-state=\"blocked\"]"));
+        assert!(PLAN_CSS.contains(".plan-diagram [data-node]"));
+        assert!(!PLAN_CSS.to_ascii_lowercase().contains("javascript"));
+        assert!(!RUNTIME_JS.contains("plan-"));
+    }
+
+    #[test]
+    fn builtin_themes_define_plan_contract_tokens() {
+        for (name, css) in [
+            ("signal", SIGNAL_CSS),
+            ("ledger", LEDGER_CSS),
+            ("terminal", TERMINAL_CSS),
+            ("poster", POSTER_CSS),
+        ] {
+            for token in ["--plan-good", "--plan-warn", "--plan-risk", "--plan-info"] {
+                assert!(css.contains(token), "{name} missing {token}");
+            }
+        }
     }
 
     #[test]

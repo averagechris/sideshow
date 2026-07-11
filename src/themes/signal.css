@@ -5,6 +5,10 @@
   --color-muted: #a7adbb;
   --color-accent: #7cfff0;
   --color-panel: #111827;
+  --plan-good: #47d16c;
+  --plan-warn: #ffd166;
+  --plan-risk: #ff6b6b;
+  --plan-info: #61dafb;
   --text-hero: 7rem;
   --text-display: 5rem;
   --text-body: 2rem;
