@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+askama = "0.16"
 base64 = "0.22"
 cap-std = "4"
 clap = { version = "4", features = ["derive", "env"] }

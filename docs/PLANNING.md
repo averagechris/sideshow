@@ -218,17 +218,34 @@ tools and judgment.
 
 ## Static component and theme architecture
 
-Plan projections should be built from deterministic static components, not
-bespoke generated markup per plan.
+Plan projection is an extension of ordinary Sideshow authoring, not a second
+renderer. The accepted future registry direction is documented in
+[ADR 0001](adr/0001-shared-configurable-authoring-registry.md). Plan projections
+should be assembled from the same registered themes and deterministic static
+components as ordinary decks, while raw authored HTML and Markdown remain
+available as escape hatches.
 
-- Components render server/build-time HTML with semantic elements first.
-- CSS uses Sideshow theme tokens and a plan-specific component layer.
+- The current built-in themes, scaffold HTML, and component CSS should move into
+  a bundled default configuration pack rather than remain planning-only special
+  cases.
+- Registry metadata maps human or agent intent to components, accepted inputs,
+  presets, and CLI composition operations.
+- Components render build-time HTML with semantic elements first. Project-defined
+  component HTML/CSS must be deterministic, confined, and checked; presentation
+  JavaScript is explicit and constrained rather than implicitly trusted.
+- CSS uses shared Sideshow theme tokens plus component layers.
 - Components carry `data-plan-kind`, `data-plan-id`, and optional
   `data-plan-status` attributes.
 - Visual state derives from schema fields, never from CSS class names alone.
 - The theme can change color, density, typography, and card treatment without
   changing canonical data.
 - The build should produce a single self-contained HTML file like decks do.
+- Planning adds typed `plan.json` mutation and component-binding semantics,
+  strict validation, anchors, and exports. It does not add a separate registry,
+  theme system, deck renderer, or feedback overlay.
+- Stage/navigation/audit code and the served feedback overlay JavaScript remain
+  fixed compiler runtime infrastructure and cannot be replaced by configured
+  presentation resources.
 
 Suggested component taxonomy:
 
@@ -437,7 +454,7 @@ prototype CLI.
   does not mirror execution state?
 - Should `sideshow check` auto-detect `plan.json`, or should all plan validation
   require `sideshow plan ...` subcommands?
-- Which existing review overlay pieces are generic enough to reuse directly, and
-  which need a small shared abstraction?
+- What constrained runtime template contract should project-local registered
+  components use, while compile-time compiler templates continue to use Askama?
 - Do dependency diagrams need a build-time graph layout dependency in v1, or are
   semantic tables and swimlanes enough for the prototype?

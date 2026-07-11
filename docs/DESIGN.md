@@ -21,8 +21,10 @@ progressive-disclosure theme selection.
    deck source. sideshow never shells out to a browser.
 3. **Minimal node.** Tailwind v4 standalone binary (nixpkgs `tailwindcss_4`)
    is the only JS-ecosystem tool, provided via nix, never npm/npx.
-4. **Deterministic boilerplate.** Stage CSS, nav runtime, print CSS, theme
-   tokens are emitted by the compiler, never authored by the agent.
+4. **Deterministic infrastructure.** Stage behavior, navigation, audit, print
+   behavior, asset processing, and the served feedback overlay are owned by the
+   compiler. Presentation themes, components, and scaffolds may be selected from
+   registered resources, but an existing deck must resolve them reproducibly.
 
 ## Deck source layout
 
@@ -312,6 +314,31 @@ Before any production implementation ships:
   the theme into the deck so decks are self-contained and forkable).
 - Theme index metadata (mood/density/best-for) lives alongside themes for
   progressive-disclosure selection by the skill.
+
+## Future configurable authoring registry
+
+The accepted architectural direction is a shared registry for ordinary decks and
+plans. See [ADR 0001](adr/0001-shared-configurable-authoring-registry.md). This is
+not current user-facing functionality.
+
+- The original themes, scaffold HTML, and slide/component CSS become a bundled
+  default pack registered through the same contract as future project-local
+  presentation resources.
+- Component registrations include machine-readable intent, accepted literal or
+  typed inputs, and their HTML/CSS resources. Presentation JavaScript is explicit
+  and policy-constrained rather than implicitly trusted.
+- Registry discovery and declarative slide-composition commands give humans and
+  agents a stable mapping from intent to supported Sideshow operations. Raw HTML
+  and Markdown remain supported escape hatches.
+- Planning reuses the same registry, themes, components, composition model, and
+  build. Its additions are canonical `plan.json` semantics, typed mutations and
+  bindings, stable plan anchors, strict checks, and exports.
+- Stage/navigation/audit code and the served feedback overlay JavaScript are
+  fixed compiler runtime infrastructure. Configured packs cannot replace or
+  shadow them, and feedback code never enters ordinary build artifacts.
+- The effective registry must be deterministic and inspectable. Global user
+  defaults cannot silently alter an existing deck; resources that affect a build
+  are bundled defaults or explicit project inputs.
 
 ## CLI surface
 

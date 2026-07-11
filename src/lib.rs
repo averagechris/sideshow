@@ -1,4 +1,5 @@
 use anyhow::{Context, bail};
+use askama::Template;
 use base64::Engine;
 use comrak::{Options, Plugins, markdown_to_html_with_plugins};
 use lol_html::{RewriteStrSettings, element, html_content::ContentType};
@@ -20,8 +21,102 @@ pub mod secure_fs;
 
 pub use fonts::{FontFaceConfig, FontStyle};
 
+fn render_template<T: Template>(
+    template: &T,
+    output: &str,
+    template_path: &str,
+) -> anyhow::Result<String> {
+    template
+        .render()
+        .with_context(|| format!("failed to render {output} from {template_path}"))
+}
+
+#[derive(Template)]
+#[template(path = "deck.html")]
+struct DeckTemplate<'a> {
+    title: &'a str,
+    css: TrustedCompilerOutput<'a>,
+    runtime_marker: &'a str,
+    slides: &'a [SlideSectionView<'a>],
+    runtime_js: TrustedCompilerOutput<'a>,
+}
+
+struct SlideSectionView<'a> {
+    class: &'a str,
+    stem: &'a str,
+    source: &'a str,
+    html: TrustedSlideHtml<'a>,
+}
+
+#[derive(Clone, Copy)]
+struct TrustedCompilerOutput<'a>(&'a str);
+
+#[derive(Clone, Copy)]
+struct TrustedSlideHtml<'a>(&'a str);
+
+impl std::fmt::Display for TrustedCompilerOutput<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::fmt::Display for TrustedSlideHtml<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+#[cfg(test)]
+mod compiler_template_tests {
+    use super::*;
+
+    #[test]
+    fn deck_template_escapes_metadata_and_preserves_audited_compiler_output() {
+        let slide = SlideSectionView {
+            class: "slide",
+            stem: "01\" onmouseover=\"alert(1)",
+            source: "slides/01\" onfocus=\"alert(2).html",
+            html: TrustedSlideHtml("<h1>Rendered once</h1>"),
+        };
+        let rendered = render_template(
+            &DeckTemplate {
+                title: "<img src=x onerror=alert(3)>",
+                css: TrustedCompilerOutput(".slide > h1 { color: red; }"),
+                runtime_marker: RUNTIME_MARKER,
+                slides: &[slide],
+                runtime_js: TrustedCompilerOutput("window.sideshowTemplateTest = true;"),
+            },
+            "test deck",
+            "templates/deck.html",
+        )
+        .unwrap();
+
+        assert!(!rendered.contains("<img src=x"));
+        assert!(!rendered.contains(r#"id="s-01" onmouseover="#));
+        assert!(!rendered.contains(r#"data-src="slides/01" onfocus="#));
+        assert_eq!(rendered.matches("<h1>Rendered once</h1>").count(), 1);
+        assert!(rendered.contains(".slide > h1 { color: red; }"));
+        assert!(rendered.contains("window.sideshowTemplateTest = true;"));
+        assert!(!rendered.contains("&lt;h1&gt;Rendered once"));
+    }
+}
+
 pub mod plan {
     use super::*;
+
+    #[derive(Template)]
+    #[template(path = "plan/slides/title.html")]
+    struct PlanTitleSlideTemplate<'a> {
+        title: &'a str,
+    }
+
+    #[derive(Template)]
+    #[template(path = "plan/slides/proposal.html")]
+    struct PlanProposalSlideTemplate;
+
+    #[derive(Template)]
+    #[template(path = "plan/slides/guardrails.html")]
+    struct PlanGuardrailsSlideTemplate;
 
     #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
     #[serde(rename_all = "snake_case")]
@@ -261,17 +356,27 @@ pub mod plan {
         fs::write(dir.join("plan.json"), canonical_json(&plan)?)?;
         fs::write(
             dir.join("slides/01-title.html"),
-            format!(
-                "<section class=\"plan-shell\">\n  <header class=\"plan-header\">\n    <div><p class=\"plan-eyebrow\">Alignment plan</p><h1 class=\"plan-title\">{title}</h1></div>\n    <span class=\"plan-status\" data-state=\"draft\" data-tone=\"info\">Draft</span>\n  </header>\n  <article class=\"plan-callout\" data-tone=\"info\" data-plan-kind=\"outcome\" data-plan-id=\"outcome-alignment\"><strong>Objective:</strong> Frame scope, explore proposal options, and refine a reviewed planning digest.</article>\n  <footer class=\"plan-footer\"><span class=\"plan-meta\">Alignment before execution decisions</span></footer>\n</section>\n"
-            ),
+            render_template(
+                &PlanTitleSlideTemplate { title: &title },
+                "slides/01-title.html",
+                "templates/plan/slides/title.html",
+            )?,
         )?;
         fs::write(
             dir.join("slides/02-plan.html"),
-            "<section class=\"plan-shell\">\n  <header class=\"plan-header\"><div><p class=\"plan-eyebrow\">Proposed work</p><h2 class=\"plan-title\">Frame → explore → refine digest</h2></div></header>\n  <div class=\"plan-grid\">\n    <article data-plan-kind=\"workstream\" data-plan-id=\"ws-alignment\"><h3>Alignment proposal</h3><ol class=\"plan-rail\" aria-label=\"Planning digest sequence\"><li data-plan-kind=\"task\" data-plan-id=\"task-align\"><strong>Frame scope, risks, and review criteria</strong><p>Establish outcomes and constraints before proposal exploration.</p></li><li data-plan-kind=\"task\" data-plan-id=\"task-explore\"><strong>Explore proposal options</strong><p>Depends on alignment and stays tracker-neutral.</p></li><li data-plan-kind=\"task\" data-plan-id=\"task-refine-digest\"><strong>Refine reviewed planning digest</strong><p>Depends on exploration and preserves digest-ready verification intent.</p></li></ol></article>\n    <section class=\"plan-layers\" aria-label=\"Planning authority layers\"><article class=\"plan-layer\" data-layer=\"Canonical\" data-plan-kind=\"decision\" data-plan-id=\"decision-json-canonical\"><h3>plan.json is canonical</h3><p>Stable planning data drives alignment work.</p></article><article class=\"plan-layer\" data-layer=\"Projection\" data-plan-kind=\"constraint\" data-plan-id=\"constraint-authored-projection\"><h3>Slides explain the plan</h3><p>Expressive narrative never becomes the only task source.</p></article><article class=\"plan-layer\" data-layer=\"Proof\" data-plan-kind=\"decision\" data-plan-id=\"decision-verify-intent\"><h3>Intent and commands stay separate</h3><p>Humans see why; digest readers retain exact commands.</p></article></section>\n  </div>\n</section>\n",
+            render_template(
+                &PlanProposalSlideTemplate,
+                "slides/02-plan.html",
+                "templates/plan/slides/proposal.html",
+            )?,
         )?;
         fs::write(
             dir.join("slides/03-verify.html"),
-            "<section class=\"plan-shell\">\n  <header class=\"plan-header\"><div><p class=\"plan-eyebrow\">Guardrails</p><h2 class=\"plan-title\">Make risk and proof visible</h2></div></header>\n  <div class=\"plan-grid\"><aside class=\"plan-risk\" data-critical=\"true\" data-plan-kind=\"risk\" data-plan-id=\"risk-drift\"><strong>Risk:</strong> slides drift from canonical data.<p>Mitigation: run strict checks and keep anchors current.</p></aside><section class=\"plan-connectors\" aria-label=\"Proof dependencies\"><article class=\"plan-connector\" data-from=\"Proposal\" data-to=\"Digest\" data-plan-kind=\"outcome\" data-plan-id=\"outcome-proposal\"><strong>Proposal stays tracker-neutral</strong><p>Exploration clarifies options without live workflow claims.</p></article><article class=\"plan-connector\" data-from=\"Strict check\" data-to=\"Reviewed digest\" data-plan-kind=\"outcome\" data-plan-id=\"outcome-reviewed-digest\"><strong>Reviewed digest is clean</strong><p>Only checked planning source is ready for decision-making.</p></article></section><details class=\"plan-evidence\" data-plan-kind=\"constraint\" data-plan-id=\"constraint-strict-clean\"><summary>Proof intent: validate structure and generated output</summary><div class=\"plan-evidence-body\"><p>Run exact trusted commands from plan.json.</p><code>sideshow plan check . --strict</code></div></details></div>\n</section>\n",
+            render_template(
+                &PlanGuardrailsSlideTemplate,
+                "slides/03-verify.html",
+                "templates/plan/slides/guardrails.html",
+            )?,
         )?;
         Ok(())
     }
@@ -882,6 +987,29 @@ pub mod plan {
             }
         }
         stack.pop();
+    }
+
+    #[cfg(test)]
+    mod template_tests {
+        use super::*;
+
+        #[test]
+        fn title_template_escapes_dynamic_markup() {
+            let hostile = r#"<img src=x onerror="alert(1)"><script>alert(2)</script>"#;
+            let rendered = render_template(
+                &PlanTitleSlideTemplate { title: hostile },
+                "slides/01-title.html",
+                "templates/plan/slides/title.html",
+            )
+            .unwrap();
+
+            assert!(rendered.contains("img src=x onerror="));
+            assert!(rendered.contains("script"));
+            assert!(rendered.contains("alert(2)"));
+            assert!(!rendered.contains("<img"));
+            assert!(!rendered.contains("<script>"));
+            assert!(!rendered.contains("onerror=\"alert(1)\""));
+        }
     }
 }
 
@@ -2335,12 +2463,14 @@ pub fn build_deck_to(dir: &Path, out_dir: &Path) -> anyhow::Result<PathBuf> {
             html,
         ));
     }
+    let mut slide_sections = Vec::new();
     for (rel, stem, is_md, html) in rendered_slides {
         let html = rewrite_asset_refs_with_state(dir, &html, deck.images, &mut rewrite_state)?;
         let class = if is_md { "slide slide-md" } else { "slide" };
         sections.push_str(&format!(
             "<section class=\"{class}\" id=\"s-{stem}\" data-src=\"{rel}\">\n{html}\n</section>\n"
         ));
+        slide_sections.push((rel, stem, class, html));
     }
     let mut css = compile_css(dir)?;
     if !deck.fonts.is_empty() {
@@ -2353,14 +2483,26 @@ pub fn build_deck_to(dir: &Path, out_dir: &Path) -> anyhow::Result<PathBuf> {
     }
     fs::create_dir_all(out_dir)?;
     let out = out_dir.join(format!("{}.html", slug(&deck.deck.title)));
-    let body = format!(
-        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>{}</title>\n<style>\n{}\n</style>\n</head>\n<body data-runtime=\"{}\">\n<main id=\"stage\" aria-live=\"polite\">\n{}\n</main>\n<script>\n{}\n</script>\n</body>\n</html>\n",
-        escape(&deck.deck.title),
-        css,
-        RUNTIME_MARKER,
-        sections,
-        RUNTIME_JS
-    );
+    let slide_views = slide_sections
+        .iter()
+        .map(|(source, stem, class, html)| SlideSectionView {
+            class,
+            stem,
+            source,
+            html: TrustedSlideHtml(html),
+        })
+        .collect::<Vec<_>>();
+    let body = render_template(
+        &DeckTemplate {
+            title: &deck.deck.title,
+            css: TrustedCompilerOutput(&css),
+            runtime_marker: RUNTIME_MARKER,
+            slides: &slide_views,
+            runtime_js: TrustedCompilerOutput(RUNTIME_JS),
+        },
+        &out.display().to_string(),
+        "templates/deck.html",
+    )?;
     atomic_write(&out, body.as_bytes())?;
     Ok(out)
 }
@@ -2452,12 +2594,6 @@ fn slug(s: &str) -> String {
         out = out.replace("--", "-");
     }
     out.trim_matches('-').to_string()
-}
-fn escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 fn mime_for(p: &str) -> &'static str {
     match Path::new(p)

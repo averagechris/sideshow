@@ -193,6 +193,103 @@ fn plan_new_check_and_export_are_agent_consumable() {
     assert!(!overwrite.status.success());
 }
 
+#[cfg(unix)]
+#[test]
+fn plan_scaffold_templates_escape_titles_and_build_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let hostile = "<img src=x onerror=alert(1)><script>alert(2)</script>";
+    let deck = temp.path().join("hostile-plan");
+    assert!(
+        sideshow_command()
+            .args(["plan", "new"])
+            .arg(&deck)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let title = std::fs::read_to_string(deck.join("slides/01-title.html")).unwrap();
+    assert!(title.contains("<h1 class=\"plan-title\">Hostile Plan</h1>"));
+    assert!(!title.contains("<script>"));
+    assert!(!title.contains("onerror="));
+    assert_eq!(std::fs::read_dir(deck.join("slides")).unwrap().count(), 3);
+
+    std::fs::write(
+        deck.join("deck.toml"),
+        format!("[deck]\ntitle = {:?}\n", hostile),
+    )
+    .unwrap();
+
+    let tw = fake_tailwind(temp.path());
+    let config = temp.path().join("config.toml");
+    std::fs::write(
+        &config,
+        format!("[tools]\ntailwindcss = '{}'\n", tw.display()),
+    )
+    .unwrap();
+    let out = sideshow_command()
+        .env("SIDESHOW_CONFIG", &config)
+        .arg("build")
+        .arg(&deck)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let html_path = std::fs::read_dir(deck.join("dist"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let html = std::fs::read_to_string(html_path).unwrap();
+    assert!(html.starts_with("<!doctype html>\n<html lang=\"en\">"));
+    assert!(html.contains("data-runtime=\"sideshow-runtime-v1\""));
+    assert!(html.contains("@import \"tailwindcss\" source(none);"));
+    assert!(html.contains("(() => {"));
+    assert!(html.contains("<main id=\"stage\" aria-live=\"polite\">"));
+    assert_eq!(html.matches("id=\"s-01-title\"").count(), 1);
+    assert_eq!(html.matches("<h1 class=\"plan-title\">").count(), 1);
+    let title = &html[html.find("<title>").unwrap()..html.find("</title>").unwrap()];
+    assert!(title.contains("img src=x onerror=alert(1)"));
+    assert!(title.contains("script"));
+    assert!(!html.contains("<img src=x"));
+    assert!(!html.contains("<script>alert(2)</script>"));
+    assert!(
+        html.contains(
+            "<section class=\"slide\" id=\"s-02-plan\" data-src=\"slides/02-plan.html\">"
+        )
+    );
+
+    assert!(
+        sideshow_command()
+            .args(["plan", "check", "--strict"])
+            .arg(&deck)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        sideshow_command()
+            .args(["plan", "export", "--format", "markdown"])
+            .arg(&deck)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        sideshow_command()
+            .args(["plan", "export", "--format", "json"])
+            .arg(&deck)
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
 #[test]
 fn plan_markdown_export_appends_tracker_neutral_issue_packets() {
     let temp = tempfile::tempdir().unwrap();

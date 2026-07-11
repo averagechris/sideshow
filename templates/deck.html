@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }}</title>
+<style>
+{{ css|safe }}
+</style>
+</head>
+<body data-runtime="{{ runtime_marker }}">
+<main id="stage" aria-live="polite">
+{% for slide in slides %}<section class="{{ slide.class }}" id="s-{{ slide.stem }}" data-src="{{ slide.source }}">
+{{ slide.html|safe }}
+</section>
+{% endfor %}
+</main>
+<script>
+{{ runtime_js|safe }}
+</script>
+</body>
+</html>
