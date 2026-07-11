@@ -3,6 +3,10 @@
 ## Unreleased
 
 
+## v0.5.1 - 2026-07-10
+
+- Open readable directory descriptors for review-state locking and durability on
+  Linux instead of attempting `flock`/`fsync` on `O_PATH` capability handles.
 ## v0.5.0 - 2026-07-10
 
 - Persist local review annotations in XDG state as schema v2 tool-neutral JSON
