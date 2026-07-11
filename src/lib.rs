@@ -9,10 +9,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::{
-        LazyLock,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::LazyLock,
 };
 
 mod fonts;
@@ -39,7 +36,6 @@ static CSS_COMMENT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?s)/\*.
 static LOCAL_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"url\(\s*['\"]?\s*#([A-Za-z_][A-Za-z0-9_.:-]*)\s*['\"]?\s*\)"#).unwrap()
 });
-static CSS_BUILD_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub fn find_tool(
     binary: &str,
@@ -873,7 +869,7 @@ pub fn check_deck(dir: &Path) -> Vec<CheckFinding> {
                 path: font.source.clone(),
                 severity: FindingSeverity::Warning,
                 kind: "asset_size_budget".into(),
-                message: format!("generated inlined WOFF2 is {generated} bytes (> 500KB)"),
+                message: format!("generated inlined TrueType font is {generated} bytes (> 500KB)"),
             });
         }
     }
@@ -1482,14 +1478,9 @@ fn compile_css(dir: &Path) -> anyhow::Result<String> {
     )?;
     let slides_dir = fs::canonicalize(dir.join("slides"))?;
     let slides_source = css_string(&slides_dir.to_string_lossy());
-    let tmp = std::env::temp_dir().join(format!(
-        "sideshow-{}-{}",
-        std::process::id(),
-        CSS_BUILD_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::create_dir_all(&tmp)?;
-    let input = tmp.join("entry.css");
-    let output = tmp.join("out.css");
+    let tmp = tempfile::Builder::new().prefix("sideshow-").tempdir()?;
+    let input = tmp.path().join("entry.css");
+    let output = tmp.path().join("out.css");
     fs::write(
         &input,
         format!(
@@ -1561,8 +1552,6 @@ fn mime_for(p: &str) -> &'static str {
         "webm" => "video/webm",
         "mp4" => "video/mp4",
         "css" => "text/css",
-        "ttf" => "font/ttf",
-        "woff2" => "font/woff2",
         _ => "application/octet-stream",
     }
 }
@@ -2445,7 +2434,7 @@ mod tests {
     }
 
     #[test]
-    fn build_inlines_subsetted_font_without_source_url_or_mutation() {
+    fn build_inlines_subsetted_true_type_font_without_source_url_or_mutation() {
         if which::which("tailwindcss").is_err() {
             eprintln!("skipping font build test: tailwindcss not on PATH");
             return;
@@ -2481,11 +2470,11 @@ weight = 400
         let output = fs::read_to_string(build_deck(t.path()).unwrap()).unwrap();
 
         assert!(output.contains("@font-face{font-family:\"Tiny Five\""));
-        assert!(output.contains("data:font/woff2;base64,"));
-        assert!(output.contains("format(\"woff2\")"));
+        assert!(output.contains("data:font/ttf;base64,"));
+        assert!(output.contains("format(\"truetype\")"));
         assert!(!output.contains("assets/tiny5.ttf"));
         let encoded = output
-            .split("data:font/woff2;base64,")
+            .split("data:font/ttf;base64,")
             .nth(1)
             .unwrap()
             .split(')')
@@ -2494,11 +2483,28 @@ weight = 400
         let payload = base64::engine::general_purpose::STANDARD
             .decode(encoded)
             .unwrap();
-        assert!(payload.starts_with(b"wOF2"));
+        assert!(payload.starts_with(&[0x00, 0x01, 0x00, 0x00]));
         assert_eq!(
             fs::read(t.path().join("assets/tiny5.ttf")).unwrap(),
             fixture
         );
+    }
+
+    #[test]
+    fn ordinary_ttf_asset_without_font_declarations_keeps_octet_stream_mime() {
+        let t = tempfile::tempdir().unwrap();
+        minimal_deck(&t);
+        fs::write(t.path().join("assets/ordinary.ttf"), b"ordinary asset").unwrap();
+
+        let output = rewrite_asset_refs(
+            t.path(),
+            "<a href='assets/ordinary.ttf'>download</a>",
+            ImagesConfig::default(),
+        )
+        .unwrap();
+
+        assert!(output.contains("data:application/octet-stream;base64,"));
+        assert!(!output.contains("data:font/ttf"));
     }
 
     #[test]

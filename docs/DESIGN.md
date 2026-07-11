@@ -293,14 +293,18 @@ Before any production implementation ships:
   literal CSS generated content, common markers, and Unicode case closure; each
   declared face receives that conservative corpus. It subsets supported
   TrueType/glyf sources in memory, retains all licensing name records and
-  supported OpenType layout closure, emits deterministic
-  WOFF2 data-URI `@font-face` CSS, and never mutates source files. No declaration
+  supported OpenType layout closure, emits deterministic browser-usable
+  TrueType `data:font/ttf;base64` `@font-face` CSS, and never mutates source
+  files. No declaration
   means this stage is skipped exactly.
 - The supported source surface is intentionally narrow: individual `.ttf`
   TrueType fonts with `glyf` outlines. Reject WOFF/WOFF2 input, CFF/CFF2, font
   collections, malformed required tables, and restrictive OS/2 embedding flags.
-  Also reject licensing name records that cannot be retained and legacy
-  `kern`-only fonts without equivalent GPOS positioning.
+  Mandatory `head`, `hhea`, `maxp`, `cmap`, `glyf`, `loca`, `hmtx`, `name`,
+  `OS/2`, and `post` tables and their glyph/location/metric relationships are
+  validated before subsetting. Also reject licensing name records that cannot
+  be retained, every legacy `kern` table (including fonts that also have GPOS),
+  and unsupported AAT `kerx`, `morx`, and `mort` tables.
   Dynamic runtime text and CSS `attr()`/counter/custom-property content are not
   statically inferable and must be represented by static corpus text. Font
   licensing remains the deck author's responsibility.
@@ -371,7 +375,7 @@ invariant 2.
 
 ## Dependencies (Rust)
 
-clap, serde/toml, comrak, base64, and a pure-Rust TrueType subset/WOFF2 stack.
+clap, serde/toml, comrak, base64, and a pure-Rust TrueType subset stack.
 Tailwind is a runtime tool resolved from PATH (provided by the
 flake devShell / package wrapper), shelled out to — not linked. rodney is
 **not** a dependency: browser automation belongs to the agent workflow.

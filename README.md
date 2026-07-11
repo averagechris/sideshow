@@ -135,8 +135,9 @@ one deterministic, deck-wide Unicode corpus from the title, rendered HTML text
 (including decoded entities and inline SVG text), literal CSS `content` strings,
 common list markers, and Unicode case variants. It subsets every declared face
 against that conservative corpus, preserves all copyright/license name records
-and supported OpenType layout features, encodes the
-result as WOFF2, and prepends data-URI `@font-face` rules to the compiled CSS.
+and supported OpenType layout features, validates the subset as a browser-usable
+TrueType font, and prepends `data:font/ttf;base64` `@font-face` rules to the
+compiled CSS.
 The source font is read only. Decks without `[[fonts]]` take the existing build
 path and their output is unchanged.
 
@@ -145,7 +146,10 @@ fonts with `glyf` outlines. WOFF/WOFF2 inputs, OpenType CFF/CFF2 fonts, and font
 collections are rejected rather than copied or converted unreliably. Fonts whose
 OS/2 metadata restricts embedding, subsetting, or outline embedding are also
 rejected, as are name-table forms whose licensing records cannot be retained
-exactly and legacy `kern`-only fonts without equivalent GPOS positioning. These
+exactly. Sources containing legacy `kern` are rejected even when GPOS is also
+present, because equivalence cannot be established; unsupported AAT `kerx`,
+`morx`, and `mort` shaping/positioning tables are rejected for the same reason.
+These
 technical checks do not grant redistribution rights: authors must
 verify the font's web embedding/subsetting license, preserve any required license
 sidecar, and account for reserved-font-name terms. If a sidecar must travel in
@@ -158,8 +162,11 @@ deck text or a literal `content: "…"` string. Each face receives the full corp
 faces with no matching glyphs are omitted from that build, and browser fallback
 still applies for characters a source face does not contain.
 `sideshow check` treats declared sources as referenced assets, checks source and
-generated WOFF2 sizes against the per-asset budget, and includes generated data
+generated TrueType subset sizes against the per-asset budget, and includes generated data
 URI sizes in the total deck budget.
+
+Font processing is limited to 16 declared faces, 8 MiB per unique source, and
+32 MiB of unique source data per deck. Generated subsets are limited to 8 MiB.
 
 ## Videos
 

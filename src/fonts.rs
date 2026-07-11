@@ -4,9 +4,15 @@ use lol_html::{RewriteStrSettings, text};
 use regex::Regex;
 use serde::Deserialize;
 use skera::{DEFAULT_DROP_TABLES, Plan, SubsetFlags, subset_font};
-use std::{collections::BTreeSet, fmt, fs, path::Path, sync::LazyLock};
+use std::{
+    collections::BTreeSet,
+    fmt, fs,
+    io::Read,
+    path::{Path, PathBuf},
+    sync::LazyLock,
+};
 use write_fonts::{
-    read::{FontRef, TableProvider, collections::IntSet},
+    read::{FontRef, TableProvider, collections::IntSet, tables::glyf::Glyph},
     types::{GlyphId, NameId, Tag},
 };
 
@@ -32,12 +38,25 @@ static HTML_ENTITIES: LazyLock<Vec<(&'static str, &'static str)>> = LazyLock::ne
 const REQUIRED_TABLES: &[(&str, &[u8; 4])] = &[
     ("cmap", b"cmap"),
     ("glyf", b"glyf"),
+    ("head", b"head"),
+    ("hhea", b"hhea"),
     ("loca", b"loca"),
     ("hmtx", b"hmtx"),
+    ("maxp", b"maxp"),
     ("name", b"name"),
     ("OS/2", b"OS/2"),
     ("post", b"post"),
 ];
+const UNSUPPORTED_POSITIONING_TABLES: &[(&str, &[u8; 4])] = &[
+    ("kern", b"kern"),
+    ("kerx", b"kerx"),
+    ("morx", b"morx"),
+    ("mort", b"mort"),
+];
+const MAX_FONT_FACES: usize = 16;
+const MAX_FONT_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_TOTAL_FONT_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_SUBSET_FONT_BYTES: usize = 8 * 1024 * 1024;
 type LicenseRecord = (u16, u16, u16, u16, Vec<u8>);
 
 #[derive(Debug, Deserialize, PartialEq, Eq, Clone)]
@@ -69,7 +88,7 @@ impl fmt::Display for FontStyle {
 #[derive(Debug)]
 pub(crate) struct EmbeddedFont {
     pub(crate) source: String,
-    pub(crate) woff2: Vec<u8>,
+    pub(crate) ttf: Vec<u8>,
     family: String,
     style: FontStyle,
     weight: u16,
@@ -77,16 +96,16 @@ pub(crate) struct EmbeddedFont {
 
 impl EmbeddedFont {
     pub(crate) fn projected_inline_size(&self) -> u64 {
-        crate::projected_data_uri_size(self.woff2.len() as u64, "font/woff2")
+        crate::projected_data_uri_size(self.ttf.len() as u64, "font/ttf")
     }
 
     pub(crate) fn css(&self) -> String {
         format!(
-            "@font-face{{font-family:{};font-style:{};font-weight:{};font-display:swap;src:url(data:font/woff2;base64,{}) format(\"woff2\")}}\n",
+            "@font-face{{font-family:{};font-style:{};font-weight:{};font-display:swap;src:url(data:font/ttf;base64,{}) format(\"truetype\")}}\n",
             css_string(&self.family),
             self.style,
             self.weight,
-            base64::engine::general_purpose::STANDARD.encode(&self.woff2),
+            base64::engine::general_purpose::STANDARD.encode(&self.ttf),
         )
     }
 }
@@ -269,6 +288,7 @@ pub(crate) fn prepare_fonts(
     corpus: &BTreeSet<u32>,
 ) -> anyhow::Result<Vec<EmbeddedFont>> {
     validate_declarations(faces)?;
+    preflight_sources(deck_dir, faces)?;
     let mut embedded = Vec::new();
     for face in faces {
         if let Some(font) = prepare_font(deck_dir, face, corpus)? {
@@ -279,6 +299,12 @@ pub(crate) fn prepare_fonts(
 }
 
 fn validate_declarations(faces: &[FontFaceConfig]) -> anyhow::Result<()> {
+    if faces.len() > MAX_FONT_FACES {
+        bail!(
+            "too many font faces: {} declared, maximum is {MAX_FONT_FACES}",
+            faces.len()
+        );
+    }
     let mut metadata = BTreeSet::new();
     for face in faces {
         if face.family.trim().is_empty() {
@@ -320,15 +346,59 @@ fn validate_declarations(faces: &[FontFaceConfig]) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn preflight_sources(deck_dir: &Path, faces: &[FontFaceConfig]) -> anyhow::Result<()> {
+    let mut sources = BTreeSet::new();
+    let mut total = 0u64;
+    for face in faces {
+        let source = normalize_asset_ref(&face.source)?;
+        if !sources.insert(source.clone()) {
+            continue;
+        }
+        let path = validate_asset_path(deck_dir, &source)
+            .with_context(|| format!("font source {source}"))?;
+        let size = fs::metadata(&path)
+            .with_context(|| format!("cannot inspect font source {source}"))?
+            .len();
+        if size > MAX_FONT_SOURCE_BYTES {
+            bail!(
+                "font source {source} is {size} bytes; maximum supported source size is {MAX_FONT_SOURCE_BYTES} bytes"
+            );
+        }
+        total = total
+            .checked_add(size)
+            .ok_or_else(|| anyhow::anyhow!("total font source size overflow"))?;
+        if total > MAX_TOTAL_FONT_SOURCE_BYTES {
+            bail!(
+                "total font source size is {total} bytes; maximum supported total is {MAX_TOTAL_FONT_SOURCE_BYTES} bytes"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn read_bounded_font(path: &Path, source: &str) -> anyhow::Result<Vec<u8>> {
+    let file = fs::File::open(path).with_context(|| format!("cannot read font source {source}"))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_FONT_SOURCE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("cannot read font source {source}"))?;
+    if bytes.len() as u64 > MAX_FONT_SOURCE_BYTES {
+        bail!(
+            "font source {source} exceeds the maximum supported source size of {MAX_FONT_SOURCE_BYTES} bytes"
+        );
+    }
+    Ok(bytes)
+}
+
 fn prepare_font(
     deck_dir: &Path,
     config: &FontFaceConfig,
     corpus: &BTreeSet<u32>,
 ) -> anyhow::Result<Option<EmbeddedFont>> {
     let source = normalize_asset_ref(&config.source)?;
-    let path =
+    let path: PathBuf =
         validate_asset_path(deck_dir, &source).with_context(|| format!("font source {source}"))?;
-    let bytes = fs::read(&path).with_context(|| format!("cannot read font source {source}"))?;
+    let bytes = read_bounded_font(&path, &source)?;
     if !bytes.starts_with(&[0x00, 0x01, 0x00, 0x00]) {
         bail!(
             "unsupported font source {source}: expected an individual TrueType .ttf font with glyf outlines (WOFF, WOFF2, OpenType/CFF, and collections are not supported)"
@@ -374,21 +444,22 @@ fn prepare_font(
     );
     let subset = subset_font(&font, &plan)
         .map_err(|e| anyhow::anyhow!("could not subset font source {source}: {e}"))?;
+    if subset.len() > MAX_SUBSET_FONT_BYTES {
+        bail!(
+            "subset font for {source} is {} bytes; maximum supported subset size is {MAX_SUBSET_FONT_BYTES} bytes",
+            subset.len()
+        );
+    }
     let subset_font = FontRef::new(&subset)
         .map_err(|_| anyhow::anyhow!("subsetter produced a malformed font for {source}"))?;
-    validate_required_tables(&source, &subset_font)?;
+    validate_true_type_tables(&source, &subset_font)?;
     if licensing_records(&subset_font)? != source_license_records {
         bail!("subsetting {source} did not preserve all licensing name records");
-    }
-    let woff2 = ttf2woff2::encode(&subset, ttf2woff2::BrotliQuality::default())
-        .map_err(|e| anyhow::anyhow!("could not encode browser WOFF2 for {source}: {e}"))?;
-    if !woff2.starts_with(b"wOF2") {
-        bail!("WOFF2 encoder produced an invalid payload for {source}");
     }
 
     Ok(Some(EmbeddedFont {
         source,
-        woff2,
+        ttf: subset,
         family: config.family.clone(),
         style: config.style,
         weight: config.weight,
@@ -396,7 +467,14 @@ fn prepare_font(
 }
 
 fn validate_source_font(source: &str, font: &FontRef<'_>) -> anyhow::Result<()> {
-    validate_required_tables(source, font)?;
+    validate_true_type_tables(source, font)?;
+    for (name, tag) in UNSUPPORTED_POSITIONING_TABLES {
+        if font.table_data(Tag::new(tag)).is_some() {
+            bail!(
+                "font source {source} contains unsupported {name} shaping/positioning data, which cannot be subset safely"
+            );
+        }
+    }
     let name = font
         .name()
         .map_err(|e| anyhow::anyhow!("font source {source} has a malformed name table: {e}"))?;
@@ -413,12 +491,6 @@ fn validate_source_font(source: &str, font: &FontRef<'_>) -> anyhow::Result<()> 
     }) {
         bail!(
             "font source {source} has legacy-platform licensing name records that cannot be preserved by the supported subsetter"
-        );
-    }
-    if font.table_data(Tag::new(b"kern")).is_some() && font.table_data(Tag::new(b"GPOS")).is_none()
-    {
-        bail!(
-            "font source {source} relies on a legacy kern table without GPOS, which cannot be subset safely"
         );
     }
     let os2 = font
@@ -451,10 +523,86 @@ fn validate_source_font(source: &str, font: &FontRef<'_>) -> anyhow::Result<()> 
     Ok(())
 }
 
-fn validate_required_tables(source: &str, font: &FontRef<'_>) -> anyhow::Result<()> {
+fn validate_true_type_tables(source: &str, font: &FontRef<'_>) -> anyhow::Result<()> {
     for (name, tag) in REQUIRED_TABLES {
         if font.table_data(Tag::new(tag)).is_none() {
             bail!("font source {source} is missing required TrueType table {name}");
+        }
+    }
+
+    let malformed = |table: &str, error: write_fonts::read::ReadError| {
+        anyhow::anyhow!("font source {source} has a malformed {table} table: {error}")
+    };
+    let head = font.head().map_err(|e| malformed("head", e))?;
+    if !matches!(head.index_to_loc_format(), 0 | 1) {
+        bail!("font source {source} has an invalid head indexToLocFormat");
+    }
+    let hhea = font.hhea().map_err(|e| malformed("hhea", e))?;
+    let maxp = font.maxp().map_err(|e| malformed("maxp", e))?;
+    let glyph_count = usize::from(maxp.num_glyphs());
+    if glyph_count == 0 {
+        bail!("font source {source} has no glyphs in its maxp table");
+    }
+    let cmap = font.cmap().map_err(|e| malformed("cmap", e))?;
+    if cmap.best_subtable().is_none() {
+        bail!("font source {source} has no usable cmap subtable");
+    }
+    font.name().map_err(|e| malformed("name", e))?;
+    font.os2().map_err(|e| malformed("OS/2", e))?;
+    font.post().map_err(|e| malformed("post", e))?;
+
+    let glyf = font.glyf().map_err(|e| malformed("glyf", e))?;
+    let loca = font.loca(None).map_err(|e| malformed("loca", e))?;
+    if loca.len() != glyph_count {
+        bail!(
+            "font source {source} has {} loca entries for {glyph_count} glyphs",
+            loca.len()
+        );
+    }
+    if !loca.all_offsets_are_ascending() {
+        bail!("font source {source} has non-ascending loca offsets");
+    }
+    let glyf_len = font
+        .table_data(Tag::new(b"glyf"))
+        .map(|data| data.len())
+        .unwrap_or_default();
+    if loca
+        .get_raw(glyph_count)
+        .is_none_or(|offset| offset as usize > glyf_len)
+    {
+        bail!("font source {source} has loca offsets outside its glyf table");
+    }
+    for gid in 0..glyph_count {
+        let glyph = loca
+            .get_glyf(GlyphId::new(gid as u32), &glyf)
+            .map_err(|e| malformed("glyf/loca", e))?;
+        if let Some(Glyph::Composite(composite)) = glyph {
+            for component in composite.components() {
+                if component.glyph.to_u32() as usize >= glyph_count {
+                    bail!(
+                        "font source {source} has a composite glyph referencing an out-of-range glyph"
+                    );
+                }
+            }
+        }
+    }
+
+    let metric_count = usize::from(hhea.number_of_h_metrics());
+    if metric_count == 0 || metric_count > glyph_count {
+        bail!(
+            "font source {source} has invalid hhea numberOfHMetrics {metric_count} for {glyph_count} glyphs"
+        );
+    }
+    let hmtx = font.hmtx().map_err(|e| malformed("hmtx", e))?;
+    if hmtx.h_metrics().len() != metric_count
+        || hmtx.left_side_bearings().len() != glyph_count - metric_count
+    {
+        bail!("font source {source} has inconsistent hhea/maxp/hmtx metrics");
+    }
+    for gid in 0..glyph_count {
+        let gid = GlyphId::new(gid as u32);
+        if hmtx.advance(gid).is_none() || hmtx.side_bearing(gid).is_none() {
+            bail!("font source {source} has missing horizontal metrics for a glyph");
         }
     }
     Ok(())
@@ -531,6 +679,7 @@ fn unescape_css_string(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::Digest;
 
     const FIXTURE: &[u8] = include_bytes!("../tests/fixtures/fonts/Tiny5-Regular.ttf");
 
@@ -588,7 +737,7 @@ mod tests {
     }
 
     #[test]
-    fn subsets_deterministically_to_woff2_without_mutating_source() {
+    fn subsets_deterministically_to_browser_true_type_without_mutating_source() {
         let deck = fixture_deck();
         let face = fixture_face("assets/tiny5.ttf", "Tiny Five", FontStyle::Normal, 400);
         let corpus = "Café Ελληνικά e\u{301}"
@@ -599,9 +748,11 @@ mod tests {
         let first = prepare_fonts(deck.path(), std::slice::from_ref(&face), &corpus).unwrap();
         let second = prepare_fonts(deck.path(), &[face], &corpus).unwrap();
 
-        assert_eq!(first[0].woff2, second[0].woff2);
-        assert!(first[0].woff2.starts_with(b"wOF2"));
-        assert!(first[0].woff2.len() < FIXTURE.len());
+        assert_eq!(first[0].ttf, second[0].ttf);
+        assert!(first[0].ttf.starts_with(&[0x00, 0x01, 0x00, 0x00]));
+        assert!(first[0].ttf.len() < FIXTURE.len());
+        validate_true_type_tables("generated subset", &FontRef::new(&first[0].ttf).unwrap())
+            .unwrap();
         assert_eq!(
             fs::read(deck.path().join("assets/tiny5.ttf")).unwrap(),
             FIXTURE
@@ -628,7 +779,8 @@ mod tests {
         assert!(css.contains("font-family:\"Tiny Five\""));
         assert!(css.contains("font-style:normal;font-weight:400"));
         assert!(css.contains("font-style:italic;font-weight:700"));
-        assert_eq!(css.matches("data:font/woff2;base64,").count(), 2);
+        assert_eq!(css.matches("data:font/ttf;base64,").count(), 2);
+        assert_eq!(css.matches("format(\"truetype\")").count(), 2);
         assert!(!css.contains("assets/tiny5.ttf"));
     }
 
@@ -679,6 +831,133 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("restricted OS/2 embedding")
+        );
+    }
+
+    fn table_record_offset(bytes: &[u8], tag: &[u8; 4]) -> usize {
+        let table_count = u16::from_be_bytes(bytes[4..6].try_into().unwrap()) as usize;
+        (0..table_count)
+            .map(|index| 12 + index * 16)
+            .find(|offset| &bytes[*offset..*offset + 4] == tag)
+            .unwrap()
+    }
+
+    fn rename_table(bytes: &[u8], from: &[u8; 4], to: &[u8; 4]) -> Vec<u8> {
+        let mut changed = bytes.to_vec();
+        let offset = table_record_offset(&changed, from);
+        changed[offset..offset + 4].copy_from_slice(to);
+        changed
+    }
+
+    fn truncate_table(bytes: &[u8], tag: &[u8; 4]) -> Vec<u8> {
+        let mut changed = bytes.to_vec();
+        let offset = table_record_offset(&changed, tag);
+        changed[offset + 12..offset + 16].copy_from_slice(&1u32.to_be_bytes());
+        changed
+    }
+
+    #[test]
+    fn every_missing_or_truncated_mandatory_table_returns_an_error() {
+        for (name, tag) in REQUIRED_TABLES {
+            let missing = rename_table(FIXTURE, tag, b"ZZZZ");
+            let font = FontRef::new(&missing).unwrap();
+            let error = validate_source_font("missing.ttf", &font).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("missing required TrueType table"),
+                "missing {name} returned {error:#}"
+            );
+
+            let truncated = truncate_table(FIXTURE, tag);
+            let font = FontRef::new(&truncated).unwrap();
+            let error = validate_source_font("truncated.ttf", &font).unwrap_err();
+            assert!(
+                error.to_string().contains(name)
+                    || error.to_string().contains("loca")
+                    || error.to_string().contains("glyf")
+                    || error.to_string().contains("metrics"),
+                "truncated {name} returned {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_legacy_kerning_and_aat_tables_even_when_gpos_exists() {
+        for tag in [b"kern", b"kerx", b"morx", b"mort"] {
+            let changed = rename_table(FIXTURE, b"gasp", tag);
+            let font = FontRef::new(&changed).unwrap();
+            let error = validate_source_font("unsupported.ttf", &font).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(std::str::from_utf8(tag).unwrap()),
+                "{tag:?} returned {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn enforces_face_and_source_processing_limits_before_parsing() {
+        let deck = fixture_deck();
+        let corpus = BTreeSet::from([u32::from('A')]);
+        let faces = (0..=MAX_FONT_FACES)
+            .map(|index| {
+                fixture_face(
+                    "assets/tiny5.ttf",
+                    &format!("Face {index}"),
+                    FontStyle::Normal,
+                    400,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            prepare_fonts(deck.path(), &faces, &corpus)
+                .unwrap_err()
+                .to_string()
+                .contains("too many font faces")
+        );
+
+        fs::write(
+            deck.path().join("assets/oversized.ttf"),
+            vec![0; MAX_FONT_SOURCE_BYTES as usize + 1],
+        )
+        .unwrap();
+        let oversized = fixture_face("assets/oversized.ttf", "Oversized", FontStyle::Normal, 400);
+        assert!(
+            prepare_fonts(deck.path(), &[oversized], &corpus)
+                .unwrap_err()
+                .to_string()
+                .contains("maximum supported source size")
+        );
+
+        let mut total_faces = Vec::new();
+        for index in 0..5 {
+            let source = format!("assets/total-{index}.ttf");
+            fs::File::create(deck.path().join(&source))
+                .unwrap()
+                .set_len(MAX_FONT_SOURCE_BYTES)
+                .unwrap();
+            total_faces.push(fixture_face(
+                &source,
+                &format!("Total {index}"),
+                FontStyle::Normal,
+                400,
+            ));
+        }
+        assert!(
+            prepare_fonts(deck.path(), &total_faces, &corpus)
+                .unwrap_err()
+                .to_string()
+                .contains("maximum supported total")
+        );
+    }
+
+    #[test]
+    fn fixture_matches_immutable_upstream_digest() {
+        assert_eq!(
+            format!("{:x}", sha2::Sha256::digest(FIXTURE)),
+            "cb8168f80cfee2f47f6db59f2a7afbde31cdcdcdcf262e7a993e4d468a5bf4b0"
         );
     }
 

@@ -125,14 +125,18 @@ Default slide order is lexicographic over `slides/*.{html,md}`. Name files with 
   additional faces. Use the declared family from `theme.css`.
 - Only individual TrueType `.ttf` fonts with `glyf` outlines are supported.
   Sideshow rejects WOFF/WOFF2 inputs, CFF/CFF2 OTFs, collections, malformed
-  fonts, and restrictive OS/2 embedding flags. Confirm redistribution, web
+  fonts, restrictive OS/2 embedding flags, every legacy `kern` table, and AAT
+  `kerx`, `morx`, or `mort` shaping tables. Confirm redistribution, web
   embedding, subsetting, attribution, license-sidecar, and reserved-name terms
   yourself; technical font metadata is not a license grant.
-- Builds subset all faces from the static rendered deck corpus and inline WOFF2
-  data URIs without changing sources. Runtime-generated strings and dynamic CSS
+- Builds subset all faces from the static rendered deck corpus and inline
+  browser-usable TrueType `data:font/ttf;base64` URIs without changing sources.
+  Runtime-generated strings and dynamic CSS
   `content` using `attr()`, counters, or custom properties cannot be discovered;
   include required characters in static slide text or literal CSS `content`.
   Font source/generated payloads count toward `sideshow check` asset budgets.
+  Processing is capped at 16 faces, 8 MiB per source, 32 MiB total unique source
+  data, and 8 MiB per generated subset.
 
 ### Videos
 
