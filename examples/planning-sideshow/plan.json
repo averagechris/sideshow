@@ -151,7 +151,7 @@
           "owner": "implementation-agent",
           "outcomes": ["outcome-repository-example", "outcome-tracker-neutral-digest"],
           "dependencies": ["task-author-expressive-slides"],
-          "files": ["README.md", "docs/PLANNING.md", "skills/sideshow-deck-author/SKILL.md", "skills/sideshow-deck-author/planning-components.md", "examples/planning-sideshow/README.md", "examples/planning-sideshow/plan.json", "examples/planning-sideshow/slides/05-manual-digest.html"],
+          "files": ["README.md", "docs/PLANNING.md", "skills/sideshow-deck-author/SKILL.md", "skills/sideshow-deck-author/planning-components.md", "examples/planning-sideshow/README.md", "examples/planning-sideshow/plan.json", "examples/planning-sideshow/slides/05-manual-digest.html", "examples/planning-sideshow/theme.css"],
           "acceptance_checks": [
             "documentation describes an alignment-first lifecycle that ends with a human- or agent-authored tracker digest rather than synchronized execution",
             "documentation presents later demos and project summaries as separate authoring workflows assembled from available context without built-in ingestion",
@@ -180,7 +180,8 @@
           "acceptance_checks": [
             "README, planning docs, example docs, and authoring skill guidance describe the tracker-neutral digest contract without adding tracker APIs or execution history",
             "the dogfood deck includes an anchored expressive slide that maps rationale to per-task packets to manual tracker translation using rails, layers, and connectors",
-            "every new canonical ID has a data-plan-kind/data-plan-id slide anchor and strict projection coverage remains complete"
+            "every new canonical ID has a data-plan-kind/data-plan-id slide anchor and strict projection coverage remains complete",
+            "each packet repeats the objective, names a stable canonical workstream/task path, points to shared plan context, and preserves exact commands in individually fenced shell blocks"
           ],
           "verification": {
             "intent": "Confirm the documentation/dogfood digest increment preserves strict projection coverage and builds without committing generated output.",

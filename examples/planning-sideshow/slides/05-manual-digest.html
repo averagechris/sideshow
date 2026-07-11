@@ -15,7 +15,7 @@
       </li>
       <li data-plan-kind="task" data-plan-id="task-dogfood-manual-digest">
         <strong>Per-task packets</strong>
-        <span>Each packet carries outcomes, files, acceptance checks, dependencies, risks, and exact trusted verification commands.</span>
+        <span>Each packet repeats the objective, names its canonical ID path, points to shared plan context, and fences exact trusted commands.</span>
       </li>
       <li data-plan-kind="constraint" data-plan-id="constraint-manual-tracker-translation">
         <strong>Manual tracker translation</strong>
@@ -23,14 +23,14 @@
       </li>
     </ol>
 
-    <section class="plan-layers" aria-label="Digest trust layers">
+    <section class="plan-layers digest-trust-layers" aria-label="Digest trust layers">
       <article class="plan-layer" data-layer="Machine" data-plan-kind="constraint" data-plan-id="constraint-trust-boundary">
         <h3>JSON boundary</h3>
         <p>Normalized strict schema v2 is trusted source material for tools and agents.</p>
       </article>
       <article class="plan-layer" data-layer="Drafting" data-plan-kind="task" data-plan-id="task-document-repeatable-loop">
         <h3>Markdown digest</h3>
-        <p>Readable packets help draft issues, but they are not guaranteed one-to-one with tracker records.</p>
+        <p>Standalone packets remain traceable to plan.json, but they are not guaranteed one-to-one with tracker records.</p>
       </article>
       <article class="plan-layer" data-layer="Excluded" data-plan-kind="constraint" data-plan-id="constraint-scope-boundary">
         <h3>No automation leap</h3>

@@ -98,8 +98,7 @@ fn plan_markdown_export_appends_tracker_neutral_issue_packets() {
     let plan_path = deck.join("plan.json");
     let mut plan: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&plan_path).unwrap()).unwrap();
-    let awkward =
-        " printf 'one two' && cargo test -- --exact 'name with spaces' # keep $HOME `literal` ";
+    let awkward = " printf 'one two' && cargo test -- --exact 'name with spaces' # keep $HOME `literal` \nnext line with ``` and ```` backticks\ntrailing space follows ";
     plan["workstreams"][0]["tasks"][0]["verification"]["commands"] =
         serde_json::json!([awkward, "second command --flag='still exact'"]);
     plan["workstreams"][0]["tasks"][1]["dependencies"] = serde_json::json!(["task-align"]);
@@ -148,20 +147,35 @@ fn plan_markdown_export_appends_tracker_neutral_issue_packets() {
         awkward
     );
 
-    let md = sideshow_command()
+    let md_output = sideshow_command()
         .args(["plan", "export", "--format", "markdown"])
         .arg(&deck)
         .output()
         .unwrap();
-    assert!(md.status.success());
-    let md = String::from_utf8(md.stdout).unwrap();
+    assert!(md_output.status.success());
+    let md = String::from_utf8(md_output.stdout).unwrap();
+    let md_again = sideshow_command()
+        .args(["plan", "export", "--format", "markdown"])
+        .arg(&deck)
+        .output()
+        .unwrap();
+    assert!(md_again.status.success());
+    assert_eq!(md.as_bytes(), md_again.stdout.as_slice());
     assert!(md.contains("## Objective\n"));
+    let rendered = comrak::markdown_to_html(&md, &comrak::Options::default());
+    assert!(rendered.contains("Exact commands (verbatim, authored order):"));
+    assert!(rendered.contains("<code class=\"language-sh\">"));
     assert!(md.contains("## Risks\n"));
     assert!(md.contains("## Manual issue-drafting packets"));
     assert!(md.contains("Tracker-neutral disclaimer: these packets are source material"));
     assert!(md.contains("may be split or combined"));
     assert!(md.contains("translator chooses issue boundaries, labels, teams, priority, milestones, and tracker conventions"));
     assert!(md.contains("no live tracker state"));
+    assert!(md.contains("- Objective: Align stakeholders on a focused, reviewable increment"));
+    assert!(
+        md.contains("- Canonical source: plan.json → workstream ws-delivery → task task-align")
+    );
+    assert!(md.contains("Use the plan-level constraints, non-goals, decisions, and risks above as the canonical source context"));
 
     let align = md
         .find("### Issue source packet: Frame scope, risks, and review criteria (task-align)")
@@ -186,8 +200,43 @@ fn plan_markdown_export_appends_tracker_neutral_issue_packets() {
     assert!(
         md.contains("- Verification intent: Show no-dependency work can be drafted independently.")
     );
-    assert!(md.contains(&format!("  - {awkward}")));
-    assert!(md.contains("  - second command --flag='still exact'"));
+    let align_packet = &md[align..implement];
+    assert_command_fence_round_trips(align_packet, 1, awkward);
+    assert_command_fence_round_trips(align_packet, 2, "second command --flag='still exact'");
+    assert!(
+        align_packet.find("Command 1:\n\n").unwrap() < align_packet.find("Command 2:\n\n").unwrap(),
+        "authored command order should be preserved"
+    );
+    assert!(align_packet.contains("Exact commands (verbatim, authored order):\nCommand 1:\n\n"));
+    assert!(!align_packet.contains("- Exact commands:\n  1."));
+    assert!(!align_packet.contains("Command 1:\n\n    ```"));
+}
+
+fn assert_command_fence_round_trips(packet: &str, number: usize, expected: &str) {
+    let marker = format!("Command {number}:\n\n");
+    let start = packet
+        .find(&marker)
+        .unwrap_or_else(|| panic!("missing {marker:?}"));
+    let block = &packet[start + marker.len()..];
+    let first_newline = block.find('\n').unwrap();
+    let opening = &block[..first_newline];
+    assert!(
+        opening.ends_with("sh"),
+        "opening fence should be sh: {opening:?}"
+    );
+    let fence = opening.strip_suffix("sh").unwrap();
+    assert!(fence.chars().all(|ch| ch == '`'));
+    assert!(fence.len() >= 3);
+    let closing = format!("\n{fence}");
+    let body = &block[first_newline + 1..];
+    let end = body.find(&closing).unwrap();
+    assert_eq!(&body[..end], expected);
+    let longest_backtick_run = expected
+        .split(|ch| ch != '`')
+        .map(str::len)
+        .max()
+        .unwrap_or(0);
+    assert!(fence.len() > longest_backtick_run);
 }
 
 #[test]

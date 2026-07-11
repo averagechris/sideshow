@@ -169,6 +169,11 @@ Schema rules:
   strings remain trusted/verbatim executable material copied from canonical plan
   data; review annotations and other untrusted feedback are never included in the
   digest as commands or plan facts.
+- Each manual drafting packet repeats the plan objective, identifies its stable
+  canonical record path by workstream and task ID, and points back to plan-level
+  constraints, non-goals, decisions, and risks. Exact commands appear in authored
+  order in individually fenced shell blocks so whitespace, multiline commands,
+  shell metacharacters, and backticks survive copy/paste without normalization.
 - The plan deliberately keeps execution evidence and status history out of v2.
   Those belong in the eventual issue tracker, code review, CI, and delivery
   systems rather than a second project tracker.
@@ -269,6 +274,11 @@ tracker records: the translator still chooses split/combine boundaries, labels,
 teams, priority, milestones, and tracker-specific conventions. Direct tracker
 adapters, credentials, imports, issue creation, synchronization, and execution
 history are outside the product contract.
+
+Packets use stable plan IDs rather than tracker identifiers or inferred source
+line numbers. A canonical source reference such as `plan.json → workstream
+ws-delivery → task task-align` remains meaningful across formatting changes and
+directs accepted feedback back to structured source.
 
 Links to resulting issues may be added to ordinary narrative source when useful,
 but Sideshow does not need a tracker-state model. Once execution begins, the

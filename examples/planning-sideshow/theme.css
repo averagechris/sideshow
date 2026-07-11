@@ -21,3 +21,8 @@ body {
 .slide pre {
   font-family: var(--font-mono);
 }
+
+.digest-trust-layers {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: none;
+}

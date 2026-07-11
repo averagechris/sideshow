@@ -361,8 +361,11 @@ pub mod plan {
         for ws in &plan.workstreams {
             for task in &ws.tasks {
                 out.push_str(&format!(
-                    "\n### Issue source packet: {} ({})\n\n- Workstream: {} — {}\n- Task: {} — {}\n- Proposed planning status: {}\n- Proposed owner: {}\n",
+                    "\n### Issue source packet: {} ({})\n\n- Objective: {}\n- Canonical source: plan.json → workstream {} → task {}\n- Drafting context: Use the plan-level constraints, non-goals, decisions, and risks above as the canonical source context; do not infer tracker IDs, labels, teams, priority, milestones, or live tracker state.\n- Workstream: {} — {}\n- Task: {} — {}\n- Proposed planning status: {}\n- Proposed owner: {}\n",
                     task.title,
+                    task.id,
+                    plan.objective,
+                    ws.id,
                     task.id,
                     ws.id,
                     ws.title,
@@ -410,11 +413,11 @@ pub mod plan {
                     }
                 }
                 out.push_str(&format!(
-                    "- Files:\n{}\n- Acceptance checks:\n{}\n- Verification intent: {}\n- Exact commands:\n{}\n",
+                    "- Files:\n{}\n- Acceptance checks:\n{}\n- Verification intent: {}\n\nExact commands (verbatim, authored order):\n{}\n",
                     bullets(&task.files),
                     bullets(&task.acceptance_checks),
                     task.verification.intent,
-                    bullets(&task.verification.commands)
+                    fenced_commands(&task.verification.commands)
                 ));
             }
         }
@@ -447,6 +450,34 @@ pub mod plan {
                 .collect::<Vec<_>>()
                 .join("\n")
         }
+    }
+    fn fenced_commands(commands: &[String]) -> String {
+        if commands.is_empty() {
+            "none".into()
+        } else {
+            commands
+                .iter()
+                .enumerate()
+                .map(|(index, command)| {
+                    let fence = command_fence(command);
+                    format!("Command {}:\n\n{fence}sh\n{command}\n{fence}", index + 1)
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        }
+    }
+    fn command_fence(command: &str) -> String {
+        let mut max_run = 0;
+        let mut current_run = 0;
+        for ch in command.chars() {
+            if ch == '`' {
+                current_run += 1;
+                max_run = max_run.max(current_run);
+            } else {
+                current_run = 0;
+            }
+        }
+        "`".repeat((max_run + 1).max(3))
     }
 
     pub fn check(dir: &Path) -> Vec<CheckFinding> {
