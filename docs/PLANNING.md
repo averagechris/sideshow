@@ -6,13 +6,13 @@ projection. It is intentionally narrower than a general project-management app.
 
 ## Goals
 
-- Capture the planning artifact that already emerges from human-agent work:
-  outcomes, constraints, decisions, workstreams, tasks, dependencies, touched
-  files, acceptance criteria, verification, risks, and status.
+- Capture the alignment artifact that already emerges from human-agent work:
+  outcomes, constraints, decisions, proposed workstreams, dependencies, touched
+  files, acceptance criteria, verification intent, risks, and planning maturity.
 - Keep the canonical plan machine-readable and diff-friendly while allowing many
   projections: HTML review pages, slides, diagrams, exports, and future 2D maps.
-- Give humans and agents a shared lifecycle: draft, align, execute, verify,
-  update, and hand off.
+- Give humans and agents a shared lifecycle: frame, explore, optionally prototype,
+  align, refine, share, and digest into the team's execution system.
 - Reuse Sideshow's existing static build, review, markup, theming, accessibility,
   and asset guardrails wherever the contracts match.
 - Make the prototype useful without a database, hosted service, browser editor,
@@ -22,6 +22,10 @@ projection. It is intentionally narrower than a general project-management app.
 
 - Replacing issue trackers, Linear, todo.sr.ht, GitHub Projects, or source-control
   history.
+- Directly integrating with issue trackers, importing their state, or keeping a
+  plan synchronized with execution after handoff.
+- Driving the complete development loop or becoming the live source of task
+  assignment, scheduling, implementation status, blockers, or completion evidence.
 - Inventing a live collaborative editor or a hosted planning service.
 - Making the visual projection the source of truth.
 - Running arbitrary user JavaScript inside plan review output.
@@ -31,26 +35,32 @@ projection. It is intentionally narrower than a general project-management app.
 
 ## Human-agent-team alignment lifecycle
 
-Planning is a loop, not a one-time generated document:
+Planning is an alignment loop, not a one-time generated document and not a
+project-execution loop:
 
 1. **Frame**: human names the desired outcome, boundaries, audience, and known
    constraints.
-2. **Structure**: agent creates or updates the canonical plan data, splitting
-   work into outcomes, workstreams, tasks, dependencies, risks, and verification.
-3. **Align**: human and team review a static projection. Comments may point at
+2. **Explore**: humans and agents develop alternatives, proposed workstreams,
+   dependencies, risks, decisions, and verification intent.
+3. **Prototype when useful**: build only enough to test an uncertain assumption
+   or make an important tradeoff concrete, then record what was learned.
+4. **Align**: human and team review a static projection. Comments may point at
    plan IDs, rendered cards, or source lines, but accepted changes update the
    canonical data.
-4. **Execute**: agents and humans work from task IDs and file references. Status
-   changes are explicit and reviewable.
-5. **Verify**: acceptance criteria and verification commands/evidence are checked
-   before marking outcomes complete.
-6. **Reconcile**: decisions, scope changes, blockers, and newly discovered risks
-   are recorded in the same plan, not buried in chat.
-7. **Hand off**: the plan exports a concise status artifact for teammates and a
-   durable record for future agents.
+5. **Refine and share**: accepted feedback sharpens the proposal until the team
+   has enough context and confidence to decide what should enter execution.
+6. **Digest**: a human or agent uses the structured plan and exports to draft
+   appropriately shaped issues in Linear, todo.sr.ht, GitHub Issues, or another
+   organizational system. Sideshow supplies the building blocks; it does not call
+   tracker APIs, import tracker state, or synchronize the two artifacts.
+7. **Conclude planning**: after handoff, the issue tracker owns assignment,
+   priority, scheduling, implementation status, blockers, and completion. The
+   plan remains a durable rationale and alignment record, not a competing ledger.
 
 The lifecycle should be visible in the data model. A plan is not merely a slide
-deck; it is a working agreement with traceable intent and status.
+deck; it is a working agreement with traceable intent and proposed execution
+shape. Status fields describe planning maturity or the state proposed at handoff,
+not an obligation to mirror live tracker state.
 
 ## Canonical data vs visual projection
 
@@ -59,7 +69,7 @@ generated HTML or review artifact. The prototype uses:
 
 ```text
 my-plan/
-  plan.json        # canonical execution data
+  plan.json        # canonical alignment and proposed-work data
   deck.toml        # projection metadata
   theme.css        # forkable visual identity
   slides/          # authored human-facing projection
@@ -69,8 +79,8 @@ my-plan/
 
 Rules:
 
-- `plan.json` owns IDs, status, relationships, files, acceptance checks, and
-  verification commands.
+- `plan.json` owns IDs, planning state, proposed relationships and files,
+  acceptance checks, and verification intent/commands for a future implementer.
 - Slides explain the plan to humans and may be deliberately more expressive,
   but must not contain the only copy of an actionable task or dependency.
 - Generated HTML is disposable. Authored slides remain normal deck source.
@@ -79,16 +89,16 @@ Rules:
 - Manual edits to generated output are unsupported and should be overwritten by
   the next build.
 
-## Schema v1
+## Schema v2
 
-Use strict JSON for the prototype because it is a direct, unambiguous integration
-boundary for implementation agents. The checked schema rejects unknown fields,
+Use strict JSON for the prototype because it is a direct, unambiguous handoff
+boundary for humans and agents. The checked schema rejects unknown fields,
 unknown enum values, duplicate IDs, broken references, and dependency cycles.
 Markdown export is the semi-structured reading and prompt handoff.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "title": "Planning feature prototype",
   "status": "in_review",
   "objective": "Create an actionable, reviewable planning workflow.",
@@ -104,9 +114,9 @@ Markdown export is the semi-structured reading and prompt handoff.
   "non_goals": ["Replace the issue tracker."],
   "decisions": [{
     "id": "decision-canonical-data",
-    "title": "Keep execution data separate from its visual projection",
+    "title": "Keep proposed work separate from its visual projection",
     "status": "accepted",
-    "rationale": "Agents need strict data while humans need visual explanation."
+    "rationale": "Issue drafting needs strict data while humans need visual explanation."
   }],
   "workstreams": [{
     "id": "workstream-cli",
@@ -122,7 +132,10 @@ Markdown export is the semi-structured reading and prompt handoff.
       "dependencies": [],
       "files": ["src/lib.rs", "src/main.rs", "tests/cli.rs"],
       "acceptance_checks": ["Broken IDs and dependency cycles fail."],
-      "verification_commands": ["cargo test plan_ --test cli"]
+      "verification": {
+        "intent": "Prove the CLI rejects malformed plans and preserves exact agent commands in canonical JSON.",
+        "commands": ["cargo test plan_ --test cli"]
+      }
     }]
   }],
   "risks": [{
@@ -139,12 +152,20 @@ Schema rules:
 
 - All IDs are stable, lowercase, unique within a plan, and safe for HTML anchors.
 - References must resolve: task outcomes and dependencies are checked.
-- Status values are closed enums. Unknown statuses fail `plan check`.
+- Status values are closed enums. Unknown statuses fail `plan check`; these values
+  express planning maturity and proposed state, not synchronized tracker status.
 - Task file paths are repository-relative when the plan lives inside a repo.
-- Task acceptance checks state observable completion conditions; verification
-  commands state how an implementation agent should prove them.
-- The prototype keeps evidence/status history out of v1 until real usage proves
-  the right shape rather than preemptively becoming a project tracker.
+- Task acceptance checks state observable completion conditions; verification is
+  a required object with nonblank human-readable `intent` and at least one
+  nonblank verbatim agent command in `commands`.
+- Unknown fields are rejected. The old `verification_commands` task field is not
+  accepted by schema v2; keep command strings exactly as the agent should run
+  them.
+- The Markdown export separates `Verification intent` from `Agent commands` so
+  reviewers understand purpose without weakening exact command handoff.
+- The plan deliberately keeps execution evidence and status history out of v2.
+  Those belong in the eventual issue tracker, code review, CI, and delivery
+  systems rather than a second project tracker.
 
 ## CLI workflow
 
@@ -155,7 +176,7 @@ sideshow plan new my-plan --theme signal
 sideshow plan check my-plan
 sideshow build my-plan
 sideshow plan serve my-plan --open
-sideshow plan export my-plan --format markdown --output IMPLEMENTATION_PLAN.md
+sideshow plan export my-plan --format markdown --output PLAN_DIGEST.md
 ```
 
 Command contract:
@@ -169,10 +190,14 @@ Command contract:
 - `sideshow plan serve DIR` reuses the existing live rebuild server and enables
   review markup by default. Serving must not mutate canonical plan data.
 - `sideshow plan export DIR --format json|markdown` exports normalized data or a
-  human-readable status report. JSON export is the stable integration boundary.
+  human-readable planning digest. JSON is a stable tool boundary that a human or
+  agent may use while drafting tracker issues; it is not a tracker integration.
 
 Plan-specific commands exist where they add semantics. Build remains shared so a
 plan is still a normal, expressive Sideshow deck rather than a second renderer.
+No command authenticates to, reads from, or writes to an issue tracker. Agents can
+combine exports with separately obtained organizational context using their own
+tools and judgment.
 
 ## Static component and theme architecture
 
@@ -194,15 +219,15 @@ Suggested component taxonomy:
 - `OutcomeList` / `OutcomeCard`: actionable outcomes with acceptance coverage.
 - `ConstraintPanel`: accepted/proposed constraints grouped by type.
 - `DecisionLog`: decisions, rationale, date, supersession.
-- `WorkstreamBoard`: workstreams with task rollups and status.
-- `TaskCard`: task owner, priority, status, outcomes, files, acceptance,
-  verification, blockers.
+- `WorkstreamBoard`: proposed workstreams and their relationships.
+- `TaskCard`: proposed owner, outcomes, files, acceptance, and verification.
 - `DependencyMap`: dependency list or diagram with unresolved references called
   out by `plan check` before build.
 - `FileImpactList`: files grouped by role and linked tasks.
-- `VerificationPanel`: commands, evidence, and pending checks.
+- `VerificationPanel`: proof intent and suggested implementation commands.
 - `RiskRegister`: severity/likelihood/status/mitigation.
-- `StatusTimeline`: dated status entries and blockers.
+- `AlignmentRail`: questions, decisions, prototype findings, and readiness to
+  digest into external issues.
 - `ReviewAnchors`: stable invisible or visible anchors for comments and markup.
 
 The vocabulary must not collapse into a wall of cards. Components should also
@@ -213,9 +238,46 @@ evidence. Card containers are one primitive, not the default answer to every
 planning concept.
 
 Verification needs progressive disclosure. The human projection should lead with
-the proof strategy (for example, schema rejection coverage, browser interaction,
-or migration rollback), while exact commands remain available in an expandable
-detail and are preserved verbatim in the structured implementation-agent export.
+the proposed proof strategy (for example, schema rejection coverage, browser
+interaction, or migration rollback), while suggested exact commands remain
+available in an expandable detail and are preserved verbatim for issue drafting
+or a future implementation agent.
+
+## Handoff to organizational systems
+
+The plan ends at a reviewed digest, not at automated issue creation. Sideshow
+provides strict source, stable IDs, Markdown/JSON exports, expressive slides, and
+review guardrails. A human or agent can use those pieces to draft work in the
+appropriate system:
+
+- Linear for an organization's internal execution;
+- todo.sr.ht for SourceHut projects an owner maintains;
+- GitHub Issues for projects that use GitHub, including external contributions;
+- another tracker or written process chosen by the team.
+
+The digest should carry enough context to make that translation reliable:
+outcomes, rationale, scope, proposed decomposition, dependencies, acceptance
+checks, risks, and verification intent. The translator still chooses issue
+granularity, labels, teams, milestones, and tracker-specific conventions. Direct
+tracker adapters, imports, synchronization, and embedded credentials are outside
+the product contract.
+
+Links to resulting issues may be added to ordinary narrative source when useful,
+but Sideshow does not need a tracker-state model. Once execution begins, the
+tracker and code-hosting systems are authoritative for what is actually happening.
+
+## After the work
+
+A project summary, demo, retrospective, or “how we built it” story is a natural
+Sideshow deck, but it is a separate authoring activity rather than a continuation
+of the planning state machine. An agent or author may manually combine the
+original plan, tracker state, code changes, screenshots, demos, and lessons using
+ordinary deck and planning components.
+
+Sideshow only needs the composable building blocks: static slides, diagrams,
+evidence disclosure, local assets, review, exports, and visual QA. It does not
+need to ingest the original plan, query trackers, inspect repositories, or encode
+the synthesis workflow itself.
 
 ## Diagram strategy
 
@@ -253,8 +315,8 @@ plans painful:
 
 - Fail on broken references, duplicate IDs, invalid statuses, unsafe HTML, and
   output budget violations.
-- Warn on missing owners, stale `updated` dates, tasks without verification,
-  outcomes without acceptance criteria, and risks without mitigation.
+- Warn on missing proposed owners, tasks without verification, outcomes without
+  proof, and risks without mitigation.
 - Keep escape hatches explicit: `--strict` promotes warnings to failures;
   `--allow-warnings` may be used in prototype scripts but should be visible.
 - Prefer actionable diagnostics that name the record ID and field.
@@ -305,7 +367,7 @@ The first implementation should deliver:
    markup validation.
 3. Shared `sideshow build` plus `sideshow plan serve`, with served review enabled
    by default and no review state in built output.
-4. JSON export of normalized schema v1.
+4. JSON export of normalized schema v2.
 5. Documentation and one example plan used by tests.
 
 Explicitly defer:
@@ -314,6 +376,9 @@ Explicitly defer:
 - Hosted collaboration.
 - Client-side graph libraries.
 - Automatic scheduling/resource leveling.
+- Tracker API integrations, tracker imports, and live synchronization.
+- Execution evidence/history and implementation status tracking after handoff.
+- Automatic ingestion of plans, trackers, or repositories for retrospective decks.
 - Full slide-deck projection, except where the review page can reuse existing
   Sideshow components cheaply.
 
@@ -327,27 +392,25 @@ dependencies already form a graph. Future 2D projection can map:
   audience layers;
 - edges: dependencies and decision lineage.
 
-This is a projection concern. Schema v1 should preserve enough stable IDs and
+This is a projection concern. Schema v2 should preserve enough stable IDs and
 relationships for 2D layouts without exposing a 2D authoring model in the
 prototype CLI.
 
 ## Open questions
 
-- Should freeform narrative remain only in slides, or should schema v2 gain an
+- Should freeform narrative remain only in slides, or should a future schema gain an
   optional Markdown context file for dense handoffs?
-- Should acceptance and verification become independently status-bearing records
-  after execution tracking is proven useful?
-- Should schema v2 represent verification as `{ intent, commands, evidence }` so
-  human projections do not have to infer meaning from shell invocations?
-- What status vocabulary best matches todo.sr.ht and Linear without coupling to
-  either service?
+- Which tracker-neutral digest shape best helps an agent or human draft issues
+  without encoding Linear, todo.sr.ht, or GitHub conventions?
+- Should planning status vocabulary be simplified further now that it explicitly
+  does not mirror execution state?
 - Should `sideshow check` auto-detect `plan.json`, or should all plan validation
   require `sideshow plan ...` subcommands?
 - Which existing review overlay pieces are generic enough to reuse directly, and
   which need a small shared abstraction?
 - Do dependency diagrams need a build-time graph layout dependency in v1, or are
   semantic tables and swimlanes enough for the prototype?
-- How should source locations be reported for JSON records so GitHub/sr.ht review
-  comments can land on the right lines?
-- What import/export bridges are worth adding first: JSON only, Markdown status,
-  todo.sr.ht issues, Linear issues, or GitHub task lists?
+- How should source locations be reported so review comments and manually created
+  issues can refer back to the right planning record?
+- What export presentation best supports a reviewed, manual issue-drafting step
+  while keeping JSON tracker-neutral?

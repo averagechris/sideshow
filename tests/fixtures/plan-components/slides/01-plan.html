@@ -3,14 +3,28 @@
     <div><p class="plan-eyebrow">Specimen</p><h1 class="plan-title">Planning components</h1></div>
     <span class="plan-status" data-state="watch">Watch: dependency in flight</span>
   </header>
-  <main class="plan-grid" style="--plan-cols: 2">
-    <article class="plan-card"><h3>Decision</h3><p class="plan-decision">Use ordinary HTML and compiler-owned CSS.</p></article>
-    <aside class="plan-callout" data-tone="risk"><strong>Risk:</strong> status must be readable as text.</aside>
-    <section class="plan-metrics"><p class="plan-metric"><strong>4</strong> workstreams</p><p class="plan-metric"><strong>0</strong> component scripts</p></section>
-    <section class="plan-flow"><p class="plan-step">Draft</p><p class="plan-step">Review</p><p class="plan-step">Ship</p></section>
-    <section class="plan-timeline"><p class="plan-event"><time>Week 1</time><span>Prototype</span></p><p class="plan-event"><time>Week 2</time><span>Integrate</span></p></section>
-    <section class="plan-lanes"><article class="plan-lane"><h3>Build</h3><p>CSS fixture</p></article><article class="plan-lane"><h3>Docs</h3><p>Agent reference</p></article></section>
-    <section class="plan-matrix"><table><caption>Dependency matrix</caption><tr><th>Item</th><th>Status</th></tr><tr><td>Plan API</td><td data-critical="true">Critical dependency</td></tr></table></section>
+  <main class="plan-grid" style="--plan-cols: 3">
+    <ol class="plan-rail" aria-label="Ordered proof path">
+      <li><article><h3>Intent</h3><p>Lead with the claim humans should verify.</p></article></li>
+      <li><article><h3>Evidence</h3><p>Expose the command without making it the headline.</p></article></li>
+      <li><article><h3>Decision</h3><p>Ship only if statuses are readable as text.</p></article></li>
+    </ol>
+    <section class="plan-layers" aria-label="System context layers">
+      <article class="plan-layer" data-layer="Context"><h3>Audience</h3><p>Reviewers need a static, proof-led planning view.</p></article>
+      <article class="plan-layer" data-layer="System"><h3>Compiler</h3><p>Owns CSS and keeps component JavaScript out.</p></article>
+      <article class="plan-layer" data-layer="Constraint" data-tone="risk"><h3>Accessibility</h3><p>Status labels and disclosure text remain visible.</p></article>
+    </section>
+    <section class="plan-connectors" aria-label="Dependency connectors">
+      <article class="plan-connector" data-from="Fixture" data-to="CSS"><h3>Demonstrates</h3><p>Semantic HTML exercises each visual primitive.</p></article>
+      <article class="plan-connector" data-from="Docs" data-to="Authors" data-critical="true"><h3>Guides</h3><p><span class="plan-status" data-state="blocked">Blocked if undocumented</span></p></article>
+    </section>
+    <details class="plan-evidence">
+      <summary>Proof intent: no component JavaScript</summary>
+      <div class="plan-evidence-body"><p>Run <code>cargo test plan_component_css_is_compiler_owned_and_js_free --lib</code>.</p></div>
+    </details>
+    <section class="plan-metrics"><p class="plan-metric"><strong>4</strong> new primitives</p><p class="plan-metric"><strong>0</strong> component scripts</p></section>
+    <section class="plan-lanes"><article class="plan-lane"><h3>Rail</h3><p>Use for ordered proof paths.</p></article><article class="plan-lane"><h3>Layers</h3><p>Use for context and system boundaries.</p></article></section>
+    <section class="plan-matrix"><table><caption>Dependency matrix</caption><tr><th>Item</th><th>Status</th></tr><tr><td>Authoring docs</td><td data-critical="true">Critical dependency: required before reuse</td></tr></table></section>
     <figure class="plan-diagram"><svg viewBox="0 0 260 90" role="img" aria-label="Two accessible nodes connected by an edge"><path data-edge d="M95 45h70"/><rect data-node x="10" y="20" width="85" height="50" rx="8"/><text x="24" y="51">Input</text><rect data-node x="165" y="20" width="85" height="50" rx="8"/><text x="181" y="51">Output</text></svg><figcaption>Diagram uses text labels and a caption.</figcaption></figure>
   </main>
   <footer class="plan-footer"><span class="plan-meta">Native elements only</span></footer>

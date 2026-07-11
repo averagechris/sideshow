@@ -172,8 +172,13 @@ pub mod plan {
         pub files: Vec<String>,
         #[serde(default)]
         pub acceptance_checks: Vec<String>,
-        #[serde(default)]
-        pub verification_commands: Vec<String>,
+        pub verification: Verification,
+    }
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct Verification {
+        pub intent: String,
+        pub commands: Vec<String>,
     }
     #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
@@ -207,69 +212,66 @@ pub mod plan {
         )?;
         let _ = fs::remove_file(dir.join("slides/02-content.md"));
         let plan = Plan {
-            schema_version: 1,
+            schema_version: 2,
             title: title.clone(),
             status: PlanStatus::Draft,
-            objective: "Ship a focused, reviewable increment with clear proof and verification."
+            objective: "Align stakeholders on a focused, reviewable increment, execute it in dependency order, and hand off strict-check-clean evidence."
                 .into(),
-            outcomes: vec![Outcome {
-                id: "outcome-demo".into(),
-                description: "A working implementation path is ready for agents.".into(),
-                proof: vec!["plan.json passes sideshow plan check".into()],
-            }],
-            constraints: vec![Constraint {
-                id: "constraint-focused-tooling".into(),
-                description: "Add dependencies only when they materially improve the workflow."
-                    .into(),
-            }],
-            non_goals: vec!["Do not mix review annotations into plan.json.".into()],
-            decisions: vec![Decision {
-                id: "decision-json-canonical".into(),
-                title: "Use plan.json as canonical data".into(),
-                status: DecisionStatus::Accepted,
-                rationale: "Slides are a projection; agents need stable structured input.".into(),
-            }],
+            outcomes: vec![
+                Outcome { id: "outcome-alignment".into(), description: "Readers understand the goal, scope boundaries, sequencing, and review criteria before work begins.".into(), proof: vec!["slides/01-title.html and slides/02-plan.html reference alignment anchors".into(), "plan.json captures constraints, decisions, risks, owners, and dependencies".into()] },
+                Outcome { id: "outcome-implementation".into(), description: "The planned increment is implemented as a small, reviewable set of code and documentation changes.".into(), proof: vec!["implementation task acceptance checks are complete".into(), "dependent handoff task remains blocked until implementation evidence exists".into()] },
+                Outcome { id: "outcome-verification".into(), description: "Generated output and strict checks are clean enough for reviewer trust and agent handoff.".into(), proof: vec!["sideshow plan check . --strict succeeds".into(), "agent command output is pasted into the handoff".into()] },
+            ],
+            constraints: vec![
+                Constraint { id: "constraint-authored-projection".into(), description: "Slides remain authored projection; plan.json is the canonical machine-readable contract.".into() },
+                Constraint { id: "constraint-strict-clean".into(), description: "Do not hand off until generated output and strict planning checks are clean.".into() },
+            ],
+            non_goals: vec!["Do not store private review annotations or ad-hoc agent notes in plan.json.".into(), "Do not broaden scope without adding outcomes, dependencies, and verification intent.".into()],
+            decisions: vec![
+                Decision { id: "decision-json-canonical".into(), title: "Use plan.json as canonical data".into(), status: DecisionStatus::Accepted, rationale: "Slides persuade humans, but agents need stable structured input with exact commands.".into() },
+                Decision { id: "decision-verify-intent".into(), title: "Separate verification intent from commands".into(), status: DecisionStatus::Accepted, rationale: "Human reviewers need the purpose of verification while agents need verbatim commands.".into() },
+            ],
             workstreams: vec![Workstream {
-                id: "ws-implementation".into(),
-                title: "Implementation".into(),
+                id: "ws-delivery".into(),
+                title: "Delivery sequence".into(),
                 status: WorkStatus::Todo,
                 owner: Some("implementation-agent".into()),
-                tasks: vec![Task {
-                    id: "task-scaffold".into(),
-                    title: "Replace scaffold with project-specific work".into(),
+                tasks: vec![
+                  Task {
+                    id: "task-align".into(),
+                    title: "Frame scope, risks, and review criteria".into(),
                     status: WorkStatus::Todo,
                     owner: Some("implementation-agent".into()),
-                    outcomes: vec!["outcome-demo".into()],
+                    outcomes: vec!["outcome-alignment".into()],
                     dependencies: vec![],
                     files: vec!["plan.json".into(), "slides/".into()],
-                    acceptance_checks: vec![
-                        "Every actionable task has files, acceptance, and verification.".into(),
-                    ],
-                    verification_commands: vec!["sideshow plan check . --strict".into()],
-                }],
+                    acceptance_checks: vec!["Outcomes, constraints, decisions, and risks explain why this increment is safe to execute.".into(), "Slides contain stable data-plan-id anchors for the framing artifacts.".into()],
+                    verification: Verification { intent: "Confirm the planning contract is internally consistent before implementation starts.".into(), commands: vec!["sideshow plan check . --strict".into()] },
+                  },
+                  Task { id: "task-implement".into(), title: "Implement the focused increment".into(), status: WorkStatus::Todo, owner: Some("implementation-agent".into()), outcomes: vec!["outcome-implementation".into()], dependencies: vec!["task-align".into()], files: vec!["src/".into(), "tests/".into(), "docs/".into()], acceptance_checks: vec!["Code, tests, and docs match the approved scope and preserve review trust boundaries.".into(), "No unrelated examples or fixtures are modified.".into()], verification: Verification { intent: "Run the narrow checks that prove the implemented increment behaves as planned.".into(), commands: vec!["cargo test plan_ --test cli".into()] } },
+                  Task { id: "task-verify-handoff".into(), title: "Verify generated output and prepare handoff".into(), status: WorkStatus::Todo, owner: Some("implementation-agent".into()), outcomes: vec!["outcome-verification".into()], dependencies: vec!["task-implement".into()], files: vec!["plan.json".into(), "dist/".into(), "handoff-notes.md".into()], acceptance_checks: vec!["Strict planning checks pass after generated output is refreshed.".into(), "Handoff names the exact verification intent and command output reviewers can trust.".into()], verification: Verification { intent: "Prove the final deck and plan are strict-check-clean for reviewer handoff.".into(), commands: vec!["sideshow plan check . --strict".into(), "sideshow build .".into()] } },
+                ],
             }],
-            risks: vec![Risk {
-                id: "risk-drift".into(),
-                description: "Slides drift from canonical plan data.".into(),
+            risks: vec![Risk { id: "risk-drift".into(), description: "Slides drift from canonical plan data or generated output is not refreshed.".into(),
                 likelihood: RiskLevel::Medium,
                 impact: RiskLevel::High,
-                mitigation: "Run plan check and keep data-plan-id references current.".into(),
+                mitigation: "Run strict plan checks, keep data-plan-id references current, and report generated-output status in handoff.".into(),
             }],
         };
         fs::write(dir.join("plan.json"), canonical_json(&plan)?)?;
         fs::write(
             dir.join("slides/01-title.html"),
             format!(
-                "<section class=\"plan-shell\">\n  <header class=\"plan-header\">\n    <div><p class=\"plan-eyebrow\">Implementation plan</p><h1 class=\"plan-title\">{title}</h1></div>\n    <span class=\"plan-status\" data-state=\"draft\" data-tone=\"info\">Draft</span>\n  </header>\n  <article class=\"plan-callout\" data-tone=\"info\" data-plan-kind=\"outcome\" data-plan-id=\"outcome-demo\"><strong>Objective:</strong> Ship a focused, reviewable increment with clear proof and verification.</article>\n  <footer class=\"plan-footer\"><span class=\"plan-meta\">Review before execution</span></footer>\n</section>\n"
+                "<section class=\"plan-shell\">\n  <header class=\"plan-header\">\n    <div><p class=\"plan-eyebrow\">Implementation plan</p><h1 class=\"plan-title\">{title}</h1></div>\n    <span class=\"plan-status\" data-state=\"draft\" data-tone=\"info\">Draft</span>\n  </header>\n  <article class=\"plan-callout\" data-tone=\"info\" data-plan-kind=\"outcome\" data-plan-id=\"outcome-alignment\"><strong>Objective:</strong> Align scope, execute in order, and hand off strict-check-clean evidence.</article>\n  <footer class=\"plan-footer\"><span class=\"plan-meta\">Review before execution</span></footer>\n</section>\n"
             ),
         )?;
         fs::write(
             dir.join("slides/02-plan.html"),
-            "<section class=\"plan-shell\">\n  <header class=\"plan-header\"><div><p class=\"plan-eyebrow\">Execution</p><h2 class=\"plan-title\">One actionable workstream</h2></div></header>\n  <div class=\"plan-grid\">\n    <article class=\"plan-workstream\" data-plan-kind=\"workstream\" data-plan-id=\"ws-implementation\"><h3>Implementation</h3><span class=\"plan-status\" data-state=\"todo\" data-tone=\"info\">Todo</span><div class=\"plan-milestone\" data-plan-kind=\"task\" data-plan-id=\"task-scaffold\"><strong>Replace scaffold with project-specific work</strong><p>Files, acceptance checks, and verification commands are required.</p></div></article>\n    <div class=\"plan-cards\"><aside class=\"plan-decision\" data-plan-kind=\"decision\" data-plan-id=\"decision-json-canonical\"><strong>Accepted:</strong> plan.json is canonical.</aside><aside class=\"plan-callout\" data-tone=\"info\" data-plan-kind=\"constraint\" data-plan-id=\"constraint-focused-tooling\"><strong>Constraint:</strong> dependencies must unlock the workflow.</aside></div>\n  </div>\n</section>\n",
+            "<section class=\"plan-shell\">\n  <header class=\"plan-header\"><div><p class=\"plan-eyebrow\">Execution</p><h2 class=\"plan-title\">Alignment → implementation → verification</h2></div></header>\n  <div class=\"plan-grid\">\n    <article data-plan-kind=\"workstream\" data-plan-id=\"ws-delivery\"><h3>Delivery sequence</h3><ol class=\"plan-rail\" aria-label=\"Ordered delivery sequence\"><li data-plan-kind=\"task\" data-plan-id=\"task-align\"><strong>Frame scope, risks, and review criteria</strong><p>Establish outcomes and constraints before implementation.</p></li><li data-plan-kind=\"task\" data-plan-id=\"task-implement\"><strong>Implement the focused increment</strong><p>Depends on alignment and preserves review boundaries.</p></li><li data-plan-kind=\"task\" data-plan-id=\"task-verify-handoff\"><strong>Verify and hand off</strong><p>Depends on implementation and reports exact commands.</p></li></ol></article>\n    <section class=\"plan-layers\" aria-label=\"Planning authority layers\"><article class=\"plan-layer\" data-layer=\"Canonical\" data-plan-kind=\"decision\" data-plan-id=\"decision-json-canonical\"><strong>plan.json is canonical</strong><p>Stable execution data drives agent work.</p></article><article class=\"plan-layer\" data-layer=\"Projection\" data-plan-kind=\"constraint\" data-plan-id=\"constraint-authored-projection\"><strong>Slides explain the plan</strong><p>Expressive narrative never becomes the only task source.</p></article><article class=\"plan-layer\" data-layer=\"Proof\" data-plan-kind=\"decision\" data-plan-id=\"decision-verify-intent\"><strong>Intent and commands stay separate</strong><p>Humans see why; agents retain exact commands.</p></article></section>\n  </div>\n</section>\n",
         )?;
         fs::write(
             dir.join("slides/03-verify.html"),
-            "<section class=\"plan-shell\">\n  <header class=\"plan-header\"><div><p class=\"plan-eyebrow\">Guardrails</p><h2 class=\"plan-title\">Make risk and proof visible</h2></div></header>\n  <div class=\"plan-grid\"><aside class=\"plan-risk\" data-critical=\"true\" data-plan-kind=\"risk\" data-plan-id=\"risk-drift\"><strong>Risk:</strong> slides drift from canonical data.<p>Mitigation: run plan check and keep anchors current.</p></aside><article class=\"plan-card\"><h3>Verification</h3><code>sideshow plan check . --strict</code></article></div>\n</section>\n",
+            "<section class=\"plan-shell\">\n  <header class=\"plan-header\"><div><p class=\"plan-eyebrow\">Guardrails</p><h2 class=\"plan-title\">Make risk and proof visible</h2></div></header>\n  <div class=\"plan-grid\"><aside class=\"plan-risk\" data-critical=\"true\" data-plan-kind=\"risk\" data-plan-id=\"risk-drift\"><strong>Risk:</strong> slides drift from canonical data.<p>Mitigation: run strict checks and keep anchors current.</p></aside><section class=\"plan-connectors\" aria-label=\"Proof dependencies\"><article class=\"plan-connector\" data-from=\"Implementation\" data-to=\"Handoff\" data-plan-kind=\"outcome\" data-plan-id=\"outcome-implementation\"><strong>Acceptance stays tied to changed files</strong><p>Implementation evidence unlocks final verification.</p></article><article class=\"plan-connector\" data-from=\"Strict check\" data-to=\"Reviewer trust\" data-plan-kind=\"outcome\" data-plan-id=\"outcome-verification\"><strong>Generated output is clean</strong><p>Only checked source is ready to hand off.</p></article></section><details class=\"plan-evidence\" data-plan-kind=\"constraint\" data-plan-id=\"constraint-strict-clean\"><summary>Proof intent: validate structure and generated output</summary><div class=\"plan-evidence-body\"><p>Run exact trusted commands from plan.json.</p><code>sideshow plan check . --strict</code></div></details></div>\n</section>\n",
         )?;
         Ok(())
     }
@@ -326,7 +328,7 @@ pub mod plan {
                 ws.owner.as_deref().unwrap_or("unassigned")
             ));
             for t in &ws.tasks {
-                out.push_str(&format!("\n#### {} ({})\n- Status: {}\n- Owner: {}\n- Outcomes: {}\n- Dependencies: {}\n- Files: {}\n- Acceptance:\n{}\n- Verification:\n{}\n", t.title, t.id, t.status, t.owner.as_deref().unwrap_or("unassigned"), list(&t.outcomes), list(&t.dependencies), list(&t.files), bullets(&t.acceptance_checks), bullets(&t.verification_commands)));
+                out.push_str(&format!("\n#### {} ({})\n- Status: {}\n- Owner: {}\n- Outcomes: {}\n- Dependencies: {}\n- Files: {}\n- Acceptance:\n{}\n- Verification intent: {}\n- Agent commands:\n{}\n", t.title, t.id, t.status, t.owner.as_deref().unwrap_or("unassigned"), list(&t.outcomes), list(&t.dependencies), list(&t.files), bullets(&t.acceptance_checks), t.verification.intent, bullets(&t.verification.commands)));
             }
         }
         out.push_str("\n## Decisions\n");
@@ -372,8 +374,8 @@ pub mod plan {
                 return findings;
             }
         };
-        if plan.schema_version != 1 {
-            findings.push(err("plan.json", "plan-schema", "schema_version must be 1"));
+        if plan.schema_version != 2 {
+            findings.push(err("plan.json", "plan-schema", "schema_version must be 2"));
         }
         if plan.title.trim().is_empty() || plan.objective.trim().is_empty() {
             findings.push(err(
@@ -477,9 +479,14 @@ pub mod plan {
                 if t.title.trim().is_empty()
                     || t.files.is_empty()
                     || t.acceptance_checks.is_empty()
-                    || t.verification_commands.is_empty()
+                    || t.verification.intent.trim().is_empty()
+                    || t.verification.commands.is_empty()
+                    || t.verification
+                        .commands
+                        .iter()
+                        .any(|command| command.trim().is_empty())
                 {
-                    findings.push(err("plan.json", "plan-task", format!("task {} needs status, files, acceptance_checks, and verification_commands", t.id)));
+                    findings.push(err("plan.json", "plan-task", format!("task {} needs status, files, acceptance_checks, verification.intent, and verification.commands", t.id)));
                 }
                 if t.owner.as_deref().is_none_or(str::is_empty) {
                     findings.push(warn(

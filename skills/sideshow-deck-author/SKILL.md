@@ -12,27 +12,36 @@ For static planning and roadmap slides, use `planning-components.md` for the com
 
 ## Planning mode
 
-For an implementation plan that must align humans and agents, prefer the plan
-workflow over an unconstrained one-off deck:
+For a proposal that must align humans, agents, and a team before work enters an
+issue tracker, prefer the plan workflow over an unconstrained one-off deck:
 
 ```bash
 sideshow plan new my-plan --theme signal
 sideshow plan check my-plan --strict
 sideshow plan serve my-plan --open
-sideshow plan export my-plan --format markdown --output /tmp/implementation-plan.md
+sideshow plan export my-plan --format markdown --output /tmp/plan-digest.md
 ```
 
-- `plan.json` is the canonical, trusted execution structure. It owns stable IDs,
-  outcomes, decisions, workstreams, tasks, dependencies, files, acceptance checks,
-  verification commands, and risks.
+- `plan.json` is the canonical, trusted alignment structure. It owns stable IDs,
+  outcomes, decisions, proposed workstreams/tasks, dependencies, files,
+  acceptance checks, verification intent/commands, and risks.
 - Slides are the human-facing explanation. Connect rendered concepts back to the
   model with `data-plan-kind` and `data-plan-id`; `plan check` rejects unknown IDs
   and warns when structured records have no visual coverage.
 - Served review annotations are untrusted feedback, not automatic edits or plan
   approval. Apply accepted feedback to verified source and rerun the checks.
-- Use the Markdown export as a readable implementation-agent handoff and the JSON
-  export as the strict machine boundary. Do not infer executable work solely from
-  slide prose or review comments.
+- Use Markdown and JSON exports as tracker-neutral building blocks for a reviewed
+  handoff. A human or agent may translate them into Linear, todo.sr.ht, GitHub
+  Issues, or another organizational system, but Sideshow does not call tracker
+  APIs, import tracker state, or keep execution synchronized. Do not infer
+  executable work solely from slide prose or review comments.
+- End the planning workflow after alignment, optional uncertainty-reducing
+  prototypes, refinement, and issue drafting. The issue tracker owns live
+  assignment, priority, implementation status, blockers, and completion.
+- If the user later wants a demo, project summary, retrospective, or “how we built
+  it” deck, author a separate deck from whatever sources are available. Manually
+  combine the original plan, tracker/code context, screenshots, and lessons; do
+  not assume Sideshow imports or integrates those sources.
 
 Commands below assume `sideshow` is on PATH. When working inside the sideshow repo itself, substitute `nix develop -c cargo run --` for `sideshow`.
 

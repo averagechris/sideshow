@@ -1,0 +1,38 @@
+<section class="plan-shell">
+  <header class="plan-header">
+    <div>
+      <p class="plan-eyebrow">Tracks and dependencies</p>
+      <h2 class="plan-title">Three tracks, one strict handoff</h2>
+    </div>
+  </header>
+
+  <div class="plan-connectors" aria-label="Dependency chain">
+    <div class="plan-connector" data-from="Intent" data-to="Contract" data-plan-kind="task" data-plan-id="task-model-canonical-plan">
+      <strong>Model</strong>
+      <span>plan.json establishes outcomes, constraints, risks, files, acceptance checks, and trusted commands.</span>
+    </div>
+    <div class="plan-connector" data-from="Contract" data-to="Projection" data-plan-kind="task" data-plan-id="task-author-expressive-slides">
+      <strong>Project</strong>
+      <span>slides depend on canonical IDs and turn the plan into a readable sequence, not a card dump.</span>
+    </div>
+    <div class="plan-connector" data-from="Projection" data-to="Handoff" data-plan-kind="task" data-plan-id="task-document-repeatable-loop">
+      <strong>Repeat</strong>
+      <span>README commands make check, build, serve/review, and exports reproducible.</span>
+    </div>
+  </div>
+
+  <div class="plan-grid">
+    <article class="plan-card" data-plan-kind="outcome" data-plan-id="outcome-visual-grammar">
+      <h3>Visual grammar outcome</h3>
+      <p>Use native planning components to show sequence, dependency, context, and proof.</p>
+    </article>
+    <article class="plan-card" data-plan-kind="outcome" data-plan-id="outcome-repository-example">
+      <h3>Repository outcome</h3>
+      <p>Leave behind a clear source-only example under <code>examples/planning-sideshow/</code>.</p>
+    </article>
+    <aside class="plan-risk" data-plan-kind="risk" data-plan-id="risk-anchor-drift">
+      <strong>Risk: anchor drift</strong>
+      <p>Mitigation is strict checking after edits so authored projection cannot silently drop canonical IDs.</p>
+    </aside>
+  </div>
+</section>

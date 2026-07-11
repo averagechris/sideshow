@@ -22,6 +22,36 @@ passes Sideshow's conservative static-SVG checks; unsupported SVGs stay passive
 data-URI images. Tailwind CSS v4's standalone `tailwindcss` binary must be
 available; packaged installs bundle it.
 
+## Planning mode
+
+Planning mode creates an alignment artifact for framing an idea, exploring
+alternatives, optionally prototyping uncertain parts, collecting feedback, and
+refining a proposal before execution moves into the team's issue tracker:
+
+```sh
+sideshow plan new my-plan --theme signal
+sideshow plan check my-plan --strict
+sideshow plan serve my-plan --open
+sideshow plan export my-plan --format markdown --output /tmp/my-plan.md
+```
+
+`plan.json` is strict, tracker-neutral planning data; authored slides are its
+expressive human-facing projection. Review annotations are feedback only and
+never silently edit either source.
+
+The workflow intentionally stops at a reviewed digest. A human or agent can use
+the JSON or Markdown export to draft issues in Linear, todo.sr.ht, GitHub Issues,
+or another organizational system. Sideshow does not authenticate to trackers,
+import tracker state, create issues, or synchronize execution. Once handed off,
+the tracker owns assignment, priority, implementation status, blockers, and
+completion.
+
+A later demo, retrospective, project summary, or “how we built it” presentation
+is a separate ordinary Sideshow deck. Authors and agents can manually synthesize
+the original plan, tracker and code context, screenshots, and lessons using the
+same static authoring, review, evidence, and visual components; no ingestion or
+tracker integration is required from Sideshow itself.
+
 ## External tools
 
 Sideshow resolves external tools in this order: environment override, user config,
@@ -360,6 +390,31 @@ publisher can serve it; regenerate it after editing the example deck:
 sideshow build examples/making-of-sideshow
 cp examples/making-of-sideshow/dist/the-making-of-sideshow.html docs/pages/demo.html
 ```
+
+`examples/planning-sideshow/` is a source-only Phase 2 planning dogfood example
+for ticket #166. It demonstrates a schema-version-2 `plan.json`, authored slide
+projections with stable `data-plan-kind`/`data-plan-id` anchors, and a repeatable
+alignment-to-digest workflow. The example stops before tracker execution and does
+not integrate with a tracker. Validate and build it from the repository root:
+
+```sh
+cargo run -- plan check examples/planning-sideshow --strict
+cargo run -- build examples/planning-sideshow
+```
+
+When using the Nix development environment, the same commands can be run through
+the toolchain wrapper:
+
+```sh
+nix develop -c cargo run -- plan check examples/planning-sideshow --strict
+nix develop -c cargo run -- build examples/planning-sideshow
+```
+
+Generated HTML belongs in `examples/planning-sideshow/dist/` for local review and
+should not be committed. See the example-local README for serve/review and
+JSON/Markdown export commands, including the trust-boundary rule: review
+annotations are feedback only, while canonical edits happen in `plan.json` and
+`slides/`.
 
 ## Issues
 

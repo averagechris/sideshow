@@ -28,6 +28,14 @@ fn plan_new_check_and_export_are_agent_consumable() {
     );
     assert!(!deck.join("slides/02-content.md").exists());
 
+    let plan_path = deck.join("plan.json");
+    let mut authored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&plan_path).unwrap()).unwrap();
+    let exact_command = "  cargo test plan_ --test cli && printf '%s' \"$HOME\"  ";
+    authored["workstreams"][0]["tasks"][0]["verification"]["commands"][0] =
+        serde_json::json!(exact_command);
+    std::fs::write(&plan_path, serde_json::to_vec_pretty(&authored).unwrap()).unwrap();
+
     let status = sideshow_command()
         .args(["plan", "check", "--format", "json", "--strict"])
         .arg(&deck)
@@ -42,10 +50,16 @@ fn plan_new_check_and_export_are_agent_consumable() {
         .unwrap();
     assert!(json.status.success());
     let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
-    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["schema_version"], 2);
     assert_eq!(value["status"], "draft");
-    assert_eq!(value["workstreams"][0]["owner"], "implementation-agent");
-    assert_eq!(value["workstreams"][0]["tasks"][0]["id"], "task-scaffold");
+    let task = &value["workstreams"][0]["tasks"][0];
+    assert_eq!(task["id"], "task-align");
+    assert_eq!(
+        task["verification"]["intent"],
+        "Confirm the planning contract is internally consistent before implementation starts."
+    );
+    assert_eq!(task["verification"]["commands"][0], exact_command);
+    assert!(task.get("verification_commands").is_none());
 
     let md = sideshow_command()
         .args(["plan", "export", "--format", "markdown"])
@@ -54,10 +68,11 @@ fn plan_new_check_and_export_are_agent_consumable() {
         .unwrap();
     assert!(md.status.success());
     let md = String::from_utf8(md.stdout).unwrap();
-    assert!(md.contains("task-scaffold"));
-    assert!(md.contains("outcome-demo"));
+    assert!(md.contains("task-align"));
+    assert!(md.contains("outcome-alignment"));
     assert!(md.contains("implementation-agent"));
-    assert!(md.contains("Verification"));
+    assert!(md.contains("Verification intent: Confirm the planning contract"));
+    assert!(md.contains("Agent commands:"));
 
     let overwrite = sideshow_command()
         .args(["plan", "new"])
@@ -65,6 +80,66 @@ fn plan_new_check_and_export_are_agent_consumable() {
         .output()
         .unwrap();
     assert!(!overwrite.status.success());
+}
+
+#[test]
+fn repository_planning_example_stays_strict_check_clean() {
+    let example =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/planning-sideshow");
+    let output = sideshow_command()
+        .args(["plan", "check"])
+        .arg(&example)
+        .arg("--strict")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn plan_check_rejects_malformed_verification_contract() {
+    let temp = tempfile::tempdir().unwrap();
+    let deck = temp.path().join("plan");
+    assert!(
+        sideshow_command()
+            .args(["plan", "new"])
+            .arg(&deck)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let path = deck.join("plan.json");
+    let mut plan: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+
+    plan["workstreams"][0]["tasks"][0]["verification"]["commands"] = serde_json::json!(["   "]);
+    std::fs::write(&path, serde_json::to_vec_pretty(&plan).unwrap()).unwrap();
+    let blank_command = sideshow_command()
+        .args(["plan", "check"])
+        .arg(&deck)
+        .output()
+        .unwrap();
+    assert!(!blank_command.status.success());
+    assert!(String::from_utf8_lossy(&blank_command.stdout).contains("verification.intent"));
+
+    plan["workstreams"][0]["tasks"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("verification");
+    plan["workstreams"][0]["tasks"][0]["verification_commands"] =
+        serde_json::json!(["cargo test plan_ --test cli"]);
+    std::fs::write(&path, serde_json::to_vec_pretty(&plan).unwrap()).unwrap();
+    let old_field = sideshow_command()
+        .args(["plan", "check"])
+        .arg(&deck)
+        .output()
+        .unwrap();
+    assert!(!old_field.status.success());
+    assert!(String::from_utf8_lossy(&old_field.stdout).contains("verification_commands"));
 }
 
 #[test]
@@ -93,7 +168,7 @@ fn plan_check_rejects_unknown_statuses_and_dependency_cycles() {
     assert!(String::from_utf8_lossy(&invalid_status.stdout).contains("unknown variant"));
 
     plan["status"] = serde_json::json!("draft");
-    plan["workstreams"][0]["tasks"][0]["dependencies"] = serde_json::json!(["task-scaffold"]);
+    plan["workstreams"][0]["tasks"][0]["dependencies"] = serde_json::json!(["task-align"]);
     std::fs::write(&path, serde_json::to_vec_pretty(&plan).unwrap()).unwrap();
     let cycle = sideshow_command()
         .args(["plan", "check"])

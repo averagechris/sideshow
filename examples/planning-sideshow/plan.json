@@ -1,0 +1,179 @@
+{
+  "schema_version": 2,
+  "title": "Ticket #166 Phase 2 Planning Sideshow Dogfood",
+  "status": "in_review",
+  "objective": "Dogfood ticket #166 Phase 2 by keeping a real implementation plan in canonical structured data, projecting it into authored slides, and proving the example is repeatable without trusting review annotations as source data.",
+  "outcomes": [
+    {
+      "id": "outcome-verification-scaffold",
+      "description": "A strict schema-version-2 planning contract exists for the real ticket #166 Phase 2 scope and every canonical identifier is projected into the deck.",
+      "proof": [
+        "examples/planning-sideshow/plan.json uses schema_version 2 and task verification.intent plus verification.commands",
+        "cargo run -- plan check examples/planning-sideshow --strict covers every plan ID through stable data-plan-kind and data-plan-id anchors"
+      ]
+    },
+    {
+      "id": "outcome-visual-grammar",
+      "description": "Slides demonstrate the Phase 2 planning visual grammar with authored rails, layers, connectors, and native evidence disclosures rather than a synthetic wall of cards.",
+      "proof": [
+        "slides use .plan-rail, .plan-layers/.plan-layer, .plan-connectors/.plan-connector, and .plan-evidence",
+        "the narrative separates sequence, trust boundary, dependencies, and proof evidence"
+      ]
+    },
+    {
+      "id": "outcome-repository-example",
+      "description": "The repository contains a repeatable example with local edit, strict check, build, review, and export commands documented for future agents and humans.",
+      "proof": [
+        "examples/planning-sideshow/README.md documents the repeatable loop and output locations",
+        "root README.md points to the example and shows validation/build commands"
+      ]
+    }
+  ],
+  "constraints": [
+    {
+      "id": "constraint-scope-boundary",
+      "description": "Keep Sideshow focused on alignment, review, tracker-neutral digest building blocks, and expressive authoring; do not add tracker integrations, imported tracker state, execution synchronization, or committed dist output."
+    },
+    {
+      "id": "constraint-trust-boundary",
+      "description": "Review annotations are feedback only; canonical edits happen in plan.json and slides, and executable commands come only from trusted structured plan data or documented repository commands."
+    },
+    {
+      "id": "constraint-repeatable-local",
+      "description": "Every verification and build command must be runnable from the repository root with cargo run -- ... or nix develop -c cargo run -- ... variants."
+    }
+  ],
+  "non_goals": [
+    "Do not create review UI changes or alter the review trust model implementation.",
+    "Do not make Sideshow create tracker issues, ingest tracker state, or manage execution after handoff.",
+    "Do not commit generated dist HTML or temporary JSON/Markdown exports.",
+    "Do not use this example as a synthetic fixture detached from ticket #166 Phase 2."
+  ],
+  "decisions": [
+    {
+      "id": "decision-real-ticket-plan",
+      "title": "Use ticket #166 Phase 2 as the dogfood subject",
+      "status": "accepted",
+      "rationale": "A real repository planning deck exercises the contract, documentation, and reviewer handoff better than a made-up fixture."
+    },
+    {
+      "id": "decision-authored-projection",
+      "title": "Keep slides authored and anchored",
+      "status": "accepted",
+      "rationale": "The deck should persuade humans with expressive projections while strict checks ensure every canonical plan ID remains visible."
+    },
+    {
+      "id": "decision-no-generated-commit",
+      "title": "Leave generated output outside the change",
+      "status": "accepted",
+      "rationale": "Repeatability is proven by commands and inspected output, but the repository example stays source-only."
+    }
+  ],
+  "workstreams": [
+    {
+      "id": "ws-verification-scaffold",
+      "title": "Verification and scaffold",
+      "status": "in_review",
+      "owner": "implementation-agent",
+      "tasks": [
+        {
+          "id": "task-model-canonical-plan",
+          "title": "Model the Phase 2 work as strict canonical plan data",
+          "status": "in_review",
+          "owner": "implementation-agent",
+          "outcomes": ["outcome-verification-scaffold"],
+          "dependencies": [],
+          "files": ["examples/planning-sideshow/plan.json"],
+          "acceptance_checks": [
+            "schema_version is 2 and every task has verification.intent and verification.commands",
+            "outcomes, dependencies, files, acceptance checks, decisions, constraints, risks, and exact repository commands describe the real ticket #166 Phase 2 work"
+          ],
+          "verification": {
+            "intent": "Confirm the canonical plan is parseable, internally linked, and fully projected before the example is treated as reviewable.",
+            "commands": ["cargo run -- plan check examples/planning-sideshow --strict"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "ws-visual-grammar",
+      "title": "Visual grammar projection",
+      "status": "in_review",
+      "owner": "implementation-agent",
+      "tasks": [
+        {
+          "id": "task-author-expressive-slides",
+          "title": "Author expressive anchored slides",
+          "status": "in_review",
+          "owner": "implementation-agent",
+          "outcomes": ["outcome-visual-grammar"],
+          "dependencies": ["task-model-canonical-plan"],
+          "files": ["examples/planning-sideshow/slides/01-title.html", "examples/planning-sideshow/slides/02-tracks.html", "examples/planning-sideshow/slides/03-trust-boundary.html", "examples/planning-sideshow/slides/04-repeatable-loop.html"],
+          "acceptance_checks": [
+            "slides use stable data-plan-kind/data-plan-id anchors for every plan ID",
+            "slides include plan rail, layers, connectors, and native plan evidence disclosure without review UI changes"
+          ],
+          "verification": {
+            "intent": "Prove the authored projection remains complete after visual composition changes.",
+            "commands": ["cargo run -- plan check examples/planning-sideshow --strict", "cargo run -- build examples/planning-sideshow"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "ws-repository-example",
+      "title": "Repository example and integration",
+      "status": "in_review",
+      "owner": "implementation-agent",
+      "tasks": [
+        {
+          "id": "task-document-repeatable-loop",
+          "title": "Document the repeatable local workflow",
+          "status": "in_review",
+          "owner": "implementation-agent",
+          "outcomes": ["outcome-repository-example"],
+          "dependencies": ["task-author-expressive-slides"],
+          "files": ["README.md", "docs/PLANNING.md", "skills/sideshow-deck-author/SKILL.md", "skills/sideshow-deck-author/planning-components.md", "examples/planning-sideshow/README.md"],
+          "acceptance_checks": [
+            "documentation describes an alignment-first lifecycle that ends with a human- or agent-authored tracker digest rather than synchronized execution",
+            "documentation presents later demos and project summaries as separate authoring workflows assembled from available context without built-in ingestion",
+            "example README describes edit, strict check, build, serve/review, exports, output locations, trust boundaries, and organizational handoff"
+          ],
+          "verification": {
+            "intent": "Validate the source-only example, generated deck, and temporary exports before handoff.",
+            "commands": [
+              "cargo run -- plan check examples/planning-sideshow --strict",
+              "cargo run -- build examples/planning-sideshow",
+              "export_dir=\"$(mktemp -d)\"",
+              "cargo run -- plan export examples/planning-sideshow --format json --output \"$export_dir/plan.json\"",
+              "cargo run -- plan export examples/planning-sideshow --format markdown --output \"$export_dir/plan.md\""
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "risks": [
+    {
+      "id": "risk-anchor-drift",
+      "description": "Slides could become persuasive but incomplete if authored anchors drift away from canonical plan IDs.",
+      "likelihood": "medium",
+      "impact": "high",
+      "mitigation": "Run cargo run -- plan check examples/planning-sideshow --strict after every content edit and keep IDs stable."
+    },
+    {
+      "id": "risk-review-data-confusion",
+      "description": "Readers could mistake review annotations or local UI state for canonical plan updates.",
+      "likelihood": "medium",
+      "impact": "high",
+      "mitigation": "State the trust boundary in the deck and README: annotations are feedback only; plan.json and slides are the source of truth."
+    },
+    {
+      "id": "risk-generated-output-commit",
+      "description": "Generated dist or export files could accidentally enter the repository change and obscure the source-only example.",
+      "likelihood": "low",
+      "impact": "medium",
+      "mitigation": "Build for validation, inspect output exists, remove examples/planning-sideshow/dist before handoff, and keep exports in a fresh directory created with mktemp -d."
+    }
+  ]
+}

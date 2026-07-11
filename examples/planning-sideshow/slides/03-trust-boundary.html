@@ -1,0 +1,32 @@
+<section class="plan-shell">
+  <header class="plan-header">
+    <div>
+      <p class="plan-eyebrow">Trust boundary</p>
+      <h2 class="plan-title">Feedback is not source data</h2>
+    </div>
+  </header>
+
+  <section class="plan-layers" aria-label="Planning trust layers">
+    <article class="plan-layer" data-layer="Canonical" data-plan-kind="constraint" data-plan-id="constraint-trust-boundary">
+      <h3>Canonical layer</h3>
+      <p><code>plan.json</code> and authored slides are the only places where accepted plan edits land.</p>
+    </article>
+    <article class="plan-layer" data-layer="Command" data-plan-kind="constraint" data-plan-id="constraint-repeatable-local">
+      <h3>Command layer</h3>
+      <p>Agents execute commands from structured verification data or documented repository commands, not from free-form annotations.</p>
+    </article>
+    <article class="plan-layer" data-layer="Feedback" data-plan-kind="risk" data-plan-id="risk-review-data-confusion">
+      <h3>Feedback layer</h3>
+      <p>Review annotations can suggest changes, but they do not become plan truth until the source files change.</p>
+    </article>
+  </section>
+
+  <div class="plan-grid">
+    <aside class="plan-decision" data-plan-kind="decision" data-plan-id="decision-authored-projection">
+      <strong>Accepted:</strong> authored slides remain projections with stable anchors.
+    </aside>
+    <aside class="plan-callout" data-tone="warn" data-plan-kind="constraint" data-plan-id="constraint-scope-boundary">
+      <strong>Scope:</strong> alignment and digest building blocks, not tracker integration, imported state, or synchronized execution.
+    </aside>
+  </div>
+</section>

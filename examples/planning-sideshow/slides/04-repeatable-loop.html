@@ -1,0 +1,30 @@
+<section class="plan-shell">
+  <header class="plan-header">
+    <div>
+      <p class="plan-eyebrow">Repeatable handoff</p>
+      <h2 class="plan-title">Edit → check → build → review → export</h2>
+    </div>
+  </header>
+
+  <main class="plan-body">
+    <details class="plan-evidence" open data-plan-kind="decision" data-plan-id="decision-no-generated-commit">
+      <summary>Evidence commands stay reproducible and source-only</summary>
+      <pre><code>cargo run -- plan check examples/planning-sideshow --strict
+cargo run -- build examples/planning-sideshow
+export_dir="$(mktemp -d)"
+cargo run -- plan export examples/planning-sideshow --format json --output "$export_dir/plan.json"
+cargo run -- plan export examples/planning-sideshow --format markdown --output "$export_dir/plan.md"</code></pre>
+    </details>
+
+    <div class="plan-grid">
+      <article class="plan-card" data-plan-kind="risk" data-plan-id="risk-generated-output-commit">
+        <h3>Generated output risk</h3>
+        <p>Build output proves the deck works, then <code>examples/planning-sideshow/dist/</code> is removed before handoff.</p>
+      </article>
+      <article class="plan-card" data-plan-kind="constraint" data-plan-id="constraint-repeatable-local">
+        <h3>Local variants</h3>
+        <p>Use <code>cargo run -- ...</code> directly, or <code>nix develop -c cargo run -- ...</code> when entering the packaged toolchain.</p>
+      </article>
+    </div>
+  </main>
+</section>
