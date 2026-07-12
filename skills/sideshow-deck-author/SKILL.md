@@ -123,6 +123,8 @@ sideshow compose add --deck mydeck mydeck/slides/20-local.slide.toml --component
 
 `compose explain` returns the component, props, optional bind, registry entry, and trust contract as JSON. `compose add` refuses to overwrite an existing file; `compose update` preserves the old file on validation failure; `compose remove` deletes only a valid component slide.
 
+Property values are strings by default. Use typed prefixes for component schemas: `--prop published=bool:true`, `--prop count=int:3`, `--prop ratio=number:0.75`, and `--prop tags=list:a,b,c`. Enum props use normal strings and are checked against the component schema. Deck-relative file inputs use `--file slot=path/inside/deck.ext`; paths must exist, stay inside the deck, avoid traversal/symlinks, and be regular files.
+
 ### Plan-record-bound component slides
 
 For canonical plan records, bind a component slide to an existing `plan.json` record. The build renders stable anchors from the bind as `data-plan-kind="…"` and `data-plan-id="…"`; `plan check` can then verify visual coverage.

@@ -243,8 +243,11 @@ struct ComposeWriteArgs {
     source: PathBuf,
     #[arg(long)]
     component: String,
-    #[arg(long = "prop", value_parser = parse_key_val)]
-    props: Vec<(String, String)>,
+    #[arg(long = "prop", value_parser = parse_prop_val)]
+    props: Vec<(String, sideshow::registry::PropertyValue)>,
+    /// Deck-relative file input slot as KEY=path; checked for traversal, symlinks, type, and existence.
+    #[arg(long = "file", value_parser = parse_key_val)]
+    files: Vec<(String, String)>,
     #[arg(long = "bind-kind")]
     bind_kind: Option<String>,
     #[arg(long = "bind-id")]
@@ -1155,6 +1158,8 @@ fn compose_command(command: ComposeCommand) -> anyhow::Result<()> {
             let slide = sideshow::composition::ComponentSlide {
                 component: args.component,
                 props: args.props.into_iter().collect(),
+                presets: Vec::new(),
+                files: args.files.into_iter().collect(),
                 bind,
             };
             let project = validate_effective_component(args.deck.as_deref(), &args.source, &slide)?;
@@ -1177,6 +1182,8 @@ fn compose_command(command: ComposeCommand) -> anyhow::Result<()> {
             let slide = sideshow::composition::ComponentSlide {
                 component: args.component,
                 props: args.props.into_iter().collect(),
+                presets: Vec::new(),
+                files: args.files.into_iter().collect(),
                 bind,
             };
             let project = validate_effective_component(args.deck.as_deref(), &args.source, &slide)?;
@@ -1274,14 +1281,45 @@ fn composition_explain_effective(source: &Path) -> anyhow::Result<serde_json::Va
             if entry.provenance.source.starts_with("project:") && !is_project {
                 anyhow::bail!("invalid project component source");
             }
+            let (effective_props, prop_provenance) = explain_effective_props(&entry, &slide);
             return Ok(
-                serde_json::json!({"source": source, "component": slide.component, "registry": entry, "props": slide.props, "bind": slide.bind, "trust_contract": sideshow::composition::TRUST_CONTRACT}),
+                serde_json::json!({"source": source, "component": slide.component, "registry": entry, "props": slide.props, "effective_props": effective_props, "prop_provenance": prop_provenance, "files": slide.files, "bind": slide.bind, "trust_contract": sideshow::composition::TRUST_CONTRACT}),
             );
         }
     }
     Ok(serde_json::to_value(sideshow::composition::explain(
         source,
     )?)?)
+}
+
+fn explain_effective_props(
+    entry: &sideshow::registry::RegistryEntry,
+    slide: &sideshow::composition::ComponentSlide,
+) -> (
+    std::collections::BTreeMap<String, sideshow::registry::PropertyValue>,
+    std::collections::BTreeMap<String, String>,
+) {
+    let mut values = std::collections::BTreeMap::new();
+    let mut prov = std::collections::BTreeMap::new();
+    for prop in &entry.metadata.props {
+        if let Some(default) = &prop.default {
+            values.insert(prop.name.clone(), default.clone());
+            prov.insert(prop.name.clone(), "default".into());
+        }
+    }
+    for preset in &slide.presets {
+        if let Some(preset_values) = entry.metadata.presets.get(preset) {
+            for (k, v) in preset_values {
+                values.insert(k.clone(), v.clone());
+                prov.insert(k.clone(), format!("preset:{preset}"));
+            }
+        }
+    }
+    for (k, v) in &slide.props {
+        values.insert(k.clone(), v.clone());
+        prov.insert(k.clone(), "explicit".into());
+    }
+    (values, prov)
 }
 
 fn composition_remove_effective(source: &Path) -> anyhow::Result<serde_json::Value> {
@@ -1305,6 +1343,27 @@ fn parse_key_val(s: &str) -> Result<(String, String), String> {
         return Err("prop key cannot be empty".into());
     }
     Ok((key.to_owned(), value.to_owned()))
+}
+
+fn parse_prop_val(s: &str) -> Result<(String, sideshow::registry::PropertyValue), String> {
+    let (key, raw) = parse_key_val(s)?;
+    let value = if let Some(rest) = raw.strip_prefix("bool:") {
+        sideshow::registry::PropertyValue::Boolean(rest.parse().map_err(|_| "invalid bool")?)
+    } else if let Some(rest) = raw.strip_prefix("int:") {
+        sideshow::registry::PropertyValue::Integer(rest.parse().map_err(|_| "invalid integer")?)
+    } else if let Some(rest) = raw.strip_prefix("number:") {
+        sideshow::registry::PropertyValue::Number(rest.parse().map_err(|_| "invalid number")?)
+    } else if let Some(rest) = raw.strip_prefix("list:") {
+        sideshow::registry::PropertyValue::StringList(
+            rest.split(',')
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect(),
+        )
+    } else {
+        sideshow::registry::PropertyValue::String(raw)
+    };
+    Ok((key, value))
 }
 
 fn plan_command(command: PlanCommand) -> anyhow::Result<()> {

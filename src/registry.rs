@@ -52,6 +52,60 @@ pub struct RegistryMetadata {
     pub resource_digest: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub files: Vec<ScaffoldFileMetadata>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub props: Vec<PropertySchema>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
+    pub presets: BTreeMap<String, BTreeMap<String, PropertyValue>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum PropertyValue {
+    String(String),
+    Boolean(bool),
+    Integer(i64),
+    Number(f64),
+    StringList(Vec<String>),
+}
+
+impl Eq for PropertyValue {}
+
+impl PropertyValue {
+    pub fn as_render_string(&self) -> String {
+        match self {
+            Self::String(s) => s.clone(),
+            Self::Boolean(v) => v.to_string(),
+            Self::Integer(v) => v.to_string(),
+            Self::Number(v) => v.to_string(),
+            Self::StringList(v) => v.join(", "),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PropertySchema {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub ty: PropertyType,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default: Option<PropertyValue>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub values: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PropertyType {
+    String,
+    Boolean,
+    Integer,
+    Number,
+    Enum,
+    StringList,
+    File,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -77,6 +131,8 @@ impl RegistryMetadata {
             resource_path: Some(resource_path),
             resource_digest: Some(sha256_hex(bytes)),
             files: Vec::new(),
+            props: Vec::new(),
+            presets: BTreeMap::new(),
         }
     }
 
@@ -101,6 +157,8 @@ impl RegistryMetadata {
             resource_path,
             resource_digest: bytes.map(sha256_hex),
             files,
+            props: Vec::new(),
+            presets: BTreeMap::new(),
         }
     }
 }
@@ -192,6 +250,10 @@ struct ComponentManifest {
     intent: Vec<String>,
     accepted_input: Vec<String>,
     capabilities: Vec<String>,
+    #[serde(default)]
+    props: Vec<PropertySchema>,
+    #[serde(default)]
+    presets: BTreeMap<String, BTreeMap<String, PropertyValue>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -339,17 +401,20 @@ pub fn registry_document() -> anyhow::Result<RegistryDocument> {
                 digest: sha256_hex(template_bytes),
             });
         }
+        let mut metadata = RegistryMetadata::resource(
+            ordered(component.intent),
+            ordered(component.accepted_input),
+            ordered(component.capabilities),
+            Some(component.css),
+            Some(bytes),
+            files,
+        );
+        metadata.props = component.props;
+        metadata.presets = component.presets;
         entries.push(RegistryEntry {
             kind: "component".to_owned(),
             name: component.name,
-            metadata: RegistryMetadata::resource(
-                ordered(component.intent),
-                ordered(component.accepted_input),
-                ordered(component.capabilities),
-                Some(component.css),
-                Some(bytes),
-                files,
-            ),
+            metadata,
             provenance: Provenance::bundled(),
         });
     }

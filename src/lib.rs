@@ -59,6 +59,12 @@ pub mod project_packs {
         intent: Vec<String>,
         #[serde(default)]
         accepted_input: Vec<String>,
+        #[serde(default)]
+        schema: Vec<registry::PropertySchema>,
+        #[serde(default)]
+        presets: BTreeMap<String, BTreeMap<String, registry::PropertyValue>>,
+        #[serde(default)]
+        files: Vec<String>,
     }
 
     #[derive(Debug, Deserialize)]
@@ -74,6 +80,9 @@ pub mod project_packs {
         pub template: String,
         pub css: String,
         pub props: Vec<String>,
+        pub schema: Vec<registry::PropertySchema>,
+        pub presets: BTreeMap<String, BTreeMap<String, registry::PropertyValue>>,
+        pub files: Vec<String>,
         pub entry: registry::RegistryEntry,
     }
     #[derive(Debug, Clone)]
@@ -451,17 +460,20 @@ pub mod project_packs {
                         digest: digest(&cb),
                     },
                 ];
+                let mut metadata = registry::RegistryMetadata::resource(
+                    c.intent,
+                    c.accepted_input,
+                    c.capabilities,
+                    Some(c.css.clone()),
+                    Some(&cb),
+                    files,
+                );
+                metadata.props = c.schema.clone();
+                metadata.presets = c.presets.clone();
                 let entry = registry::RegistryEntry {
                     kind: "component".into(),
                     name: c.name.clone(),
-                    metadata: registry::RegistryMetadata::resource(
-                        c.intent,
-                        c.accepted_input,
-                        c.capabilities,
-                        Some(c.css.clone()),
-                        Some(&cb),
-                        files,
-                    ),
+                    metadata,
                     provenance: prov.clone(),
                 };
                 output.comps.push(ProjectComponent {
@@ -469,6 +481,9 @@ pub mod project_packs {
                     template,
                     css,
                     props: c.props,
+                    schema: c.schema,
+                    presets: c.presets,
+                    files: c.files,
                     entry,
                 });
             }
@@ -574,11 +589,16 @@ pub mod project_packs {
         if slide.bind.is_some() {
             bail!("{} does not accept plan binding", slide.component);
         }
-        let declared = component
-            .props
+        let schema_names = component
+            .schema
             .iter()
-            .map(String::as_str)
+            .map(|p| p.name.as_str())
             .collect::<BTreeSet<_>>();
+        let declared = if schema_names.is_empty() {
+            component.props.iter().map(String::as_str).collect()
+        } else {
+            schema_names
+        };
         for key in slide.props.keys() {
             if !declared.contains(key.as_str()) {
                 bail!("unknown prop {key} for component {}", slide.component);
@@ -589,7 +609,52 @@ pub mod project_packs {
                 bail!("missing prop {key}");
             }
         }
+        for prop in &component.schema {
+            match slide.props.get(&prop.name).or(prop.default.as_ref()) {
+                Some(value) => validate_prop_value(&component.name, prop, value)?,
+                None if prop.required => bail!("missing prop {}", prop.name),
+                None => {}
+            }
+        }
+        let file_slots = component
+            .files
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        for (slot, rel) in &slide.files {
+            if !file_slots.contains(slot.as_str()) {
+                bail!("unknown file slot {slot} for component {}", slide.component);
+            }
+            if rel.is_empty()
+                || Path::new(rel).is_absolute()
+                || rel.split('/').any(|p| p.is_empty() || p == "..")
+            {
+                bail!("component file input must be deck-relative without traversal: {rel}");
+            }
+            checked_descend(&deck_dir.canonicalize()?, rel, false)?;
+        }
         Ok(true)
+    }
+
+    fn validate_prop_value(
+        component: &str,
+        prop: &registry::PropertySchema,
+        value: &registry::PropertyValue,
+    ) -> anyhow::Result<()> {
+        use registry::{PropertyType as T, PropertyValue as V};
+        match (&prop.ty, value) {
+            (T::String, V::String(_))
+            | (T::Boolean, V::Boolean(_))
+            | (T::Integer, V::Integer(_))
+            | (T::Number, V::Number(_))
+            | (T::StringList, V::StringList(_)) => Ok(()),
+            (T::Enum, V::String(s)) if prop.values.iter().any(|v| v == s) => Ok(()),
+            (T::File, V::String(_)) => Ok(()),
+            _ => bail!(
+                "prop {} for component {component} does not match schema type",
+                prop.name
+            ),
+        }
     }
 
     fn ordered(values: Vec<String>) -> Vec<String> {
@@ -611,7 +676,11 @@ pub mod composition {
     pub struct ComponentSlide {
         pub component: String,
         #[serde(default)]
-        pub props: BTreeMap<String, String>,
+        pub props: BTreeMap<String, registry::PropertyValue>,
+        #[serde(default)]
+        pub presets: Vec<String>,
+        #[serde(default)]
+        pub files: BTreeMap<String, String>,
         #[serde(default)]
         pub bind: Option<PlanBinding>,
     }
@@ -628,7 +697,10 @@ pub mod composition {
         pub source: String,
         pub component: String,
         pub registry: registry::RegistryEntry,
-        pub props: BTreeMap<String, String>,
+        pub props: BTreeMap<String, registry::PropertyValue>,
+        pub effective_props: BTreeMap<String, registry::PropertyValue>,
+        pub prop_provenance: BTreeMap<String, String>,
+        pub files: BTreeMap<String, String>,
         pub bind: Option<PlanBinding>,
         pub trust_contract: &'static str,
     }
@@ -707,7 +779,14 @@ pub mod composition {
             source: path.to_string_lossy().into_owned(),
             component: slide.component,
             registry,
+            effective_props: slide.props.clone(),
+            prop_provenance: slide
+                .props
+                .keys()
+                .map(|k| (k.clone(), "explicit".into()))
+                .collect(),
             props: slide.props,
+            files: slide.files,
             bind: slide.bind,
             trust_contract: TRUST_CONTRACT,
         })
@@ -725,9 +804,18 @@ pub mod composition {
                 render_template_resource(
                     "literal-card",
                     BTreeMap::from([
-                        ("eyebrow", Escaped::Text(required(&slide, "eyebrow")?)),
-                        ("title", Escaped::Text(required(&slide, "title")?)),
-                        ("body", Escaped::Text(required(&slide, "body")?)),
+                        (
+                            "eyebrow",
+                            Escaped::Owned(required(&slide, "eyebrow")?.as_render_string()),
+                        ),
+                        (
+                            "title",
+                            Escaped::Owned(required(&slide, "title")?.as_render_string()),
+                        ),
+                        (
+                            "body",
+                            Escaped::Owned(required(&slide, "body")?.as_render_string()),
+                        ),
                     ]),
                 )
             }
@@ -740,13 +828,13 @@ pub mod composition {
                 let label = slide
                     .props
                     .get("label")
-                    .map_or(record.kind.as_str(), String::as_str);
+                    .map_or_else(|| record.kind.clone(), |v| v.as_render_string());
                 render_template_resource(
                     "plan-record-card",
                     BTreeMap::from([
                         ("kind_attr", Escaped::Attribute(&record.kind)),
                         ("id_attr", Escaped::Attribute(&record.id)),
-                        ("label", Escaped::Text(label)),
+                        ("label", Escaped::Owned(label)),
                         ("title", Escaped::Text(&record.title)),
                         ("body", Escaped::Text(&record.body)),
                     ]),
@@ -768,20 +856,32 @@ pub mod composition {
             .iter()
             .map(String::as_str)
             .collect::<BTreeSet<_>>();
-        for key in slide.props.keys() {
+        let mut effective = BTreeMap::new();
+        for prop in &component.schema {
+            if let Some(default) = &prop.default {
+                effective.insert(prop.name.clone(), default.clone());
+            }
+        }
+        for preset in &slide.presets {
+            let values = component.presets.get(preset).with_context(|| {
+                format!("unknown preset {preset} for component {}", slide.component)
+            })?;
+            effective.extend(values.clone());
+        }
+        effective.extend(slide.props.clone());
+        for key in effective.keys() {
             if !declared.contains(key.as_str()) {
                 bail!("unknown prop {key} for component {}", slide.component);
             }
         }
         for key in &component.props {
-            if !slide.props.contains_key(key) {
+            if !effective.contains_key(key) {
                 bail!("missing prop {key}");
             }
         }
-        let values = slide
-            .props
+        let values = effective
             .iter()
-            .map(|(k, v)| (k.as_str(), Escaped::Text(v.as_str())))
+            .map(|(k, v)| (k.as_str(), Escaped::Owned(v.as_render_string())))
             .collect();
         render_template_string(&component.name, &component.template, values).map(Some)
     }
@@ -837,11 +937,13 @@ pub mod composition {
         }
         Ok(())
     }
-    fn required<'a>(slide: &'a ComponentSlide, key: &str) -> anyhow::Result<&'a str> {
+    fn required<'a>(
+        slide: &'a ComponentSlide,
+        key: &str,
+    ) -> anyhow::Result<&'a registry::PropertyValue> {
         slide
             .props
             .get(key)
-            .map(String::as_str)
             .with_context(|| format!("missing prop {key}"))
     }
     fn esc(s: &str) -> String {
@@ -856,6 +958,7 @@ pub mod composition {
     enum Escaped<'a> {
         Text(&'a str),
         Attribute(&'a str),
+        Owned(String),
     }
 
     fn render_template_resource(
@@ -886,6 +989,7 @@ pub mod composition {
             let escaped = match value {
                 Escaped::Text(value) => esc(value),
                 Escaped::Attribute(value) => esc_attr(value),
+                Escaped::Owned(value) => esc(value),
             };
             rendered.push_str(&escaped);
             used.insert(key.to_owned());
@@ -927,6 +1031,7 @@ pub mod composition {
             rendered.push_str(&match value {
                 Escaped::Text(v) => esc(v),
                 Escaped::Attribute(v) => esc_attr(v),
+                Escaped::Owned(v) => esc(v),
             });
             used.insert(key.to_owned());
             rest = &after_open[end + 2..];
