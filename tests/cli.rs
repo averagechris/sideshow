@@ -405,7 +405,9 @@ fn registry_discovery_is_stable_bundled_and_clear() {
     assert_eq!(
         keys,
         vec![
+            "component/literal-card",
             "component/plan-primitives",
+            "component/plan-record-card",
             "scaffold/deck",
             "theme/ledger",
             "theme/poster",
@@ -418,17 +420,29 @@ fn registry_discovery_is_stable_bundled_and_clear() {
             .iter()
             .all(|entry| entry["provenance"]["source"] == "bundled")
     );
-    assert_eq!(entries[4]["metadata"]["mood"], "focused");
+    let signal = entries
+        .iter()
+        .find(|entry| entry["kind"] == "theme" && entry["name"] == "signal")
+        .unwrap();
+    assert_eq!(signal["metadata"]["mood"], "focused");
+    let plan_primitives = entries
+        .iter()
+        .find(|entry| entry["kind"] == "component" && entry["name"] == "plan-primitives")
+        .unwrap();
     assert_eq!(
-        entries[0]["metadata"]["resource_path"],
+        plan_primitives["metadata"]["resource_path"],
         "components/plan.css"
     );
     assert_eq!(
-        entries[0]["metadata"]["capabilities"],
+        plan_primitives["metadata"]["capabilities"],
         serde_json::json!(["css", "globally-included", "js-free"])
     );
+    let scaffold = entries
+        .iter()
+        .find(|entry| entry["kind"] == "scaffold" && entry["name"] == "deck")
+        .unwrap();
     assert!(
-        entries[1]["metadata"]["files"]
+        scaffold["metadata"]["files"]
             .as_array()
             .unwrap()
             .iter()

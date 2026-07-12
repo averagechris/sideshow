@@ -187,6 +187,8 @@ struct ScaffoldFileManifest {
 struct ComponentManifest {
     name: String,
     css: String,
+    #[serde(default)]
+    templates: Vec<String>,
     intent: Vec<String>,
     accepted_input: Vec<String>,
     capabilities: Vec<String>,
@@ -226,6 +228,12 @@ fn bundled_resource_bytes(path: &str) -> Option<&'static [u8]> {
         "themes/terminal.css" => Some(include_bytes!("themes/terminal.css")),
         "themes/poster.css" => Some(include_bytes!("themes/poster.css")),
         "components/plan.css" => Some(include_bytes!("components/plan.css")),
+        "bundled/components/literal-card.html" => {
+            Some(include_bytes!("bundled/components/literal-card.html"))
+        }
+        "bundled/components/plan-record-card.html" => {
+            Some(include_bytes!("bundled/components/plan-record-card.html"))
+        }
         "bundled/scaffolds/deck/deck.toml" => {
             Some(include_bytes!("bundled/scaffolds/deck/deck.toml"))
         }
@@ -313,6 +321,24 @@ pub fn registry_document() -> anyhow::Result<RegistryDocument> {
                 component.name
             )
         })?;
+        let mut files = vec![ScaffoldFileMetadata {
+            path: component.css.clone(),
+            resource: component.css.clone(),
+            digest: sha256_hex(bytes),
+        }];
+        for template in &component.templates {
+            let template_bytes = bundled_resource_bytes(template).with_context(|| {
+                format!(
+                    "bundled component '{}' references missing template",
+                    component.name
+                )
+            })?;
+            files.push(ScaffoldFileMetadata {
+                path: template.clone(),
+                resource: template.clone(),
+                digest: sha256_hex(template_bytes),
+            });
+        }
         entries.push(RegistryEntry {
             kind: "component".to_owned(),
             name: component.name,
@@ -322,7 +348,7 @@ pub fn registry_document() -> anyhow::Result<RegistryDocument> {
                 ordered(component.capabilities),
                 Some(component.css),
                 Some(bytes),
-                Vec::new(),
+                files,
             ),
             provenance: Provenance::bundled(),
         });
@@ -436,6 +462,20 @@ fn parse_default_pack() -> anyhow::Result<DefaultPackManifest> {
                 component.name
             )
         })?;
+        for template in &component.templates {
+            let template_bytes = bundled_resource_bytes(template).with_context(|| {
+                format!(
+                    "bundled component '{}' references missing template",
+                    component.name
+                )
+            })?;
+            if std::str::from_utf8(template_bytes)?.contains("<script") {
+                bail!(
+                    "bundled component '{}' template contains script",
+                    component.name
+                );
+            }
+        }
         if std::str::from_utf8(css)?
             .to_ascii_lowercase()
             .contains("javascript")
@@ -541,7 +581,9 @@ mod tests {
         assert_eq!(
             keys,
             vec![
+                "component/literal-card",
                 "component/plan-primitives",
+                "component/plan-record-card",
                 "scaffold/deck",
                 "theme/ledger",
                 "theme/poster",

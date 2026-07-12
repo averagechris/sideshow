@@ -61,6 +61,23 @@ files = [
 [[components]]
 name = "plan-primitives"
 css = "components/plan.css"
+templates = []
 intent = ["provide plan status, diagram, risk, and verification primitives", "render canonical plan decks"]
 accepted_input = ["plan.json data projected into compiler-owned templates", "static HTML plan component classes and data-plan-id anchors"]
 capabilities = ["css", "globally-included", "js-free"]
+
+[[components]]
+name = "literal-card"
+css = "components/plan.css"
+templates = ["bundled/components/literal-card.html"]
+intent = ["render a data-only literal title/body card"]
+accepted_input = [".slide.toml props: eyebrow, title, body"]
+capabilities = ["component-slide", "html-escaped", "js-free"]
+
+[[components]]
+name = "plan-record-card"
+css = "components/plan.css"
+templates = ["bundled/components/plan-record-card.html"]
+intent = ["render a canonical plan record by stable kind/id"]
+accepted_input = [".slide.toml bind: kind, id", "optional prop: label"]
+capabilities = ["component-slide", "data-plan-anchors", "html-escaped", "js-free", "plan-bound"]

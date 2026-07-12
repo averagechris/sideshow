@@ -20,6 +20,336 @@ pub mod review;
 #[doc(hidden)]
 pub mod secure_fs;
 
+pub mod composition {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::io::Write;
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct ComponentSlide {
+        pub component: String,
+        #[serde(default)]
+        pub props: BTreeMap<String, String>,
+        #[serde(default)]
+        pub bind: Option<PlanBinding>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct PlanBinding {
+        pub kind: String,
+        pub id: String,
+    }
+
+    #[derive(Debug, Serialize)]
+    pub struct Explanation {
+        pub source: String,
+        pub component: String,
+        pub registry: registry::RegistryEntry,
+        pub props: BTreeMap<String, String>,
+        pub bind: Option<PlanBinding>,
+        pub trust_contract: &'static str,
+    }
+
+    pub const TRUST_CONTRACT: &str = "component slide TOML is data-only; literal and plan fields are HTML-escaped by bundled renderers; audited component markup is compiler-owned, JS-free, and limited to static HTML/CSS";
+
+    pub fn is_component_slide_path(path: &Path) -> bool {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".slide.toml"))
+    }
+
+    pub fn validate_source_path(path: &Path) -> anyhow::Result<()> {
+        if !is_component_slide_path(path) {
+            bail!("component slide source must be named *.slide.toml");
+        }
+        Ok(())
+    }
+
+    pub fn load(path: &Path) -> anyhow::Result<ComponentSlide> {
+        validate_source_path(path)?;
+        toml::from_str(
+            &fs::read_to_string(path)
+                .with_context(|| format!("failed to read {}", path.display()))?,
+        )
+        .with_context(|| format!("failed to parse component slide {}", path.display()))
+    }
+
+    pub fn write(path: &Path, slide: &ComponentSlide) -> anyhow::Result<()> {
+        validate_source_path(path)?;
+        validate_component(slide)?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let _lock = lock_source(path)?;
+        atomic_write(path, toml::to_string_pretty(slide)?.as_bytes(), false)?;
+        Ok(())
+    }
+
+    pub fn add(path: &Path, slide: &ComponentSlide) -> anyhow::Result<()> {
+        validate_source_path(path)?;
+        validate_component(slide)?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let _lock = lock_source(path)?;
+        if path.exists() {
+            bail!("component slide already exists: {}", path.display());
+        }
+        atomic_write(path, toml::to_string_pretty(slide)?.as_bytes(), true)
+    }
+
+    pub fn update(path: &Path, slide: &ComponentSlide) -> anyhow::Result<()> {
+        validate_source_path(path)?;
+        validate_component(slide)?;
+        let _lock = lock_source(path)?;
+        if !path.is_file() {
+            bail!("component slide does not exist: {}", path.display());
+        }
+        load(path)?;
+        atomic_write(path, toml::to_string_pretty(slide)?.as_bytes(), false)
+    }
+
+    pub fn remove(path: &Path) -> anyhow::Result<serde_json::Value> {
+        let slide = load(path)?;
+        validate_component(&slide)?;
+        fs::remove_file(path).with_context(|| format!("failed to remove {}", path.display()))?;
+        Ok(serde_json::json!({"removed": path}))
+    }
+
+    pub fn explain(path: &Path) -> anyhow::Result<Explanation> {
+        let slide = load(path)?;
+        validate_component(&slide)?;
+        let registry = registry::explain("component", &slide.component)?;
+        Ok(Explanation {
+            source: path.to_string_lossy().into_owned(),
+            component: slide.component,
+            registry,
+            props: slide.props,
+            bind: slide.bind,
+            trust_contract: TRUST_CONTRACT,
+        })
+    }
+
+    pub(crate) fn render(deck_dir: &Path, path: &Path) -> anyhow::Result<String> {
+        let slide = load(path)?;
+        validate_component(&slide)?;
+        match slide.component.as_str() {
+            "literal-card" => {
+                reject_bind(&slide)?;
+                render_template_resource(
+                    "literal-card",
+                    BTreeMap::from([
+                        ("eyebrow", Escaped::Text(required(&slide, "eyebrow")?)),
+                        ("title", Escaped::Text(required(&slide, "title")?)),
+                        ("body", Escaped::Text(required(&slide, "body")?)),
+                    ]),
+                )
+            }
+            "plan-record-card" => {
+                let bind = slide
+                    .bind
+                    .as_ref()
+                    .context("plan-record-card requires [bind]")?;
+                let record = crate::plan::bound_record(deck_dir, &bind.kind, &bind.id)?;
+                let label = slide
+                    .props
+                    .get("label")
+                    .map_or(record.kind.as_str(), String::as_str);
+                render_template_resource(
+                    "plan-record-card",
+                    BTreeMap::from([
+                        ("kind_attr", Escaped::Attribute(&record.kind)),
+                        ("id_attr", Escaped::Attribute(&record.id)),
+                        ("label", Escaped::Text(label)),
+                        ("title", Escaped::Text(&record.title)),
+                        ("body", Escaped::Text(&record.body)),
+                    ]),
+                )
+            }
+            _ => bail!("unknown component {}", slide.component),
+        }
+    }
+
+    fn validate_component(slide: &ComponentSlide) -> anyhow::Result<()> {
+        let allowed: &[&str] = match slide.component.as_str() {
+            "literal-card" => &["eyebrow", "title", "body"],
+            "plan-record-card" => &["label"],
+            _ => bail!("unknown component {}", slide.component),
+        };
+        for key in slide.props.keys() {
+            if !allowed.contains(&key.as_str()) {
+                bail!("unknown prop {key} for component {}", slide.component);
+            }
+        }
+        match slide.component.as_str() {
+            "literal-card" => {
+                reject_bind(slide)?;
+                for key in ["eyebrow", "title", "body"] {
+                    required(slide, key)?;
+                }
+            }
+            "plan-record-card" => {
+                let bind = slide
+                    .bind
+                    .as_ref()
+                    .context("plan-record-card requires [bind]")?;
+                validate_binding(bind)?;
+            }
+            _ => unreachable!(),
+        }
+        Ok(())
+    }
+    fn validate_binding(bind: &PlanBinding) -> anyhow::Result<()> {
+        match bind.kind.as_str() {
+            "outcome" | "constraint" | "decision" | "workstream" | "task" | "risk" => {}
+            _ => bail!("unknown plan record kind {}", bind.kind),
+        }
+        for (name, value) in [("kind", &bind.kind), ("id", &bind.id)] {
+            if value.is_empty()
+                || !value
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            {
+                bail!("invalid plan binding {name} {value:?}");
+            }
+        }
+        Ok(())
+    }
+    fn reject_bind(slide: &ComponentSlide) -> anyhow::Result<()> {
+        if slide.bind.is_some() {
+            bail!("{} does not accept plan binding", slide.component);
+        }
+        Ok(())
+    }
+    fn required<'a>(slide: &'a ComponentSlide, key: &str) -> anyhow::Result<&'a str> {
+        slide
+            .props
+            .get(key)
+            .map(String::as_str)
+            .with_context(|| format!("missing prop {key}"))
+    }
+    fn esc(s: &str) -> String {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    }
+    fn esc_attr(s: &str) -> String {
+        esc(s).replace('"', "&quot;")
+    }
+
+    enum Escaped<'a> {
+        Text(&'a str),
+        Attribute(&'a str),
+    }
+
+    fn render_template_resource(
+        component: &str,
+        values: BTreeMap<&str, Escaped<'_>>,
+    ) -> anyhow::Result<String> {
+        let template = match component {
+            "literal-card" => include_str!("bundled/components/literal-card.html"),
+            "plan-record-card" => include_str!("bundled/components/plan-record-card.html"),
+            _ => bail!("unknown component template {component}"),
+        };
+        let mut rendered = String::with_capacity(template.len());
+        let mut rest = template;
+        let mut used = BTreeSet::new();
+        while let Some(start) = rest.find("{{") {
+            rendered.push_str(&rest[..start]);
+            let after_open = &rest[start + 2..];
+            let Some(end) = after_open.find("}}") else {
+                bail!("component template {component} has an unterminated placeholder");
+            };
+            let key = after_open[..end].trim();
+            if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                bail!("component template {component} has invalid placeholder {key:?}");
+            }
+            let value = values.get(key).with_context(|| {
+                format!("component template {component} references unknown placeholder {key}")
+            })?;
+            let escaped = match value {
+                Escaped::Text(value) => esc(value),
+                Escaped::Attribute(value) => esc_attr(value),
+            };
+            rendered.push_str(&escaped);
+            used.insert(key.to_owned());
+            rest = &after_open[end + 2..];
+        }
+        rendered.push_str(rest);
+        for key in values.keys() {
+            if !used.contains(*key) {
+                bail!("component template {component} did not consume placeholder {key}");
+            }
+        }
+        if rendered.to_ascii_lowercase().contains("<script") {
+            bail!("component template {component} failed audited render contract");
+        }
+        Ok(rendered)
+    }
+
+    fn lock_source(path: &Path) -> anyhow::Result<fs::File> {
+        use fs4::fs_std::FileExt;
+        let lock_path = path.with_file_name(format!(
+            ".{}.lock",
+            path.file_name().and_then(|s| s.to_str()).unwrap_or("slide")
+        ));
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock_path)
+            .with_context(|| {
+                format!(
+                    "failed to open component slide lock {}",
+                    lock_path.display()
+                )
+            })?;
+        lock.lock_exclusive()
+            .context("failed to lock component slide lock")?;
+        Ok(lock)
+    }
+
+    fn atomic_write(path: &Path, bytes: &[u8], create_only: bool) -> anyhow::Result<()> {
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("slide");
+        let mut random = [0u8; 16];
+        getrandom::fill(&mut random).context("failed to allocate temp file name")?;
+        let tmp = parent.join(format!(".{name}.{:032x}.tmp", u128::from_be_bytes(random)));
+        let result = (|| -> anyhow::Result<()> {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)
+                .with_context(|| format!("failed to create temp slide source {}", tmp.display()))?;
+            if !create_only && let Ok(metadata) = fs::metadata(path) {
+                file.set_permissions(metadata.permissions())?;
+            }
+            file.write_all(bytes)?;
+            file.sync_all()?;
+            drop(file);
+            if create_only {
+                fs::hard_link(&tmp, path).with_context(|| {
+                    format!(
+                        "component slide already exists or could not be created: {}",
+                        path.display()
+                    )
+                })?;
+                fs::remove_file(&tmp)?;
+            } else {
+                fs::rename(&tmp, path)?;
+            }
+            fs::File::open(parent)?.sync_all()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+        result
+    }
+}
+
 pub use fonts::{FontFaceConfig, FontStyle};
 
 fn render_template<T: Template>(
@@ -396,6 +726,93 @@ pub mod plan {
                 .with_context(|| format!("failed to read {}", dir.join("plan.json").display()))?,
         )
         .context("failed to parse plan.json")
+    }
+
+    #[derive(Debug, Clone, Serialize)]
+    pub struct BoundPlanRecord {
+        pub kind: String,
+        pub id: String,
+        pub title: String,
+        pub body: String,
+    }
+
+    pub fn bound_record(dir: &Path, kind: &str, id: &str) -> anyhow::Result<BoundPlanRecord> {
+        let plan = load(dir)?;
+        let findings = semantic_findings(&plan);
+        if findings
+            .iter()
+            .any(|f| f.severity == FindingSeverity::Error)
+        {
+            bail!(
+                "plan.json failed semantic validation; run sideshow plan check {} --strict",
+                dir.display()
+            );
+        }
+        match kind {
+            "outcome" => plan
+                .outcomes
+                .iter()
+                .find(|r| r.id == id)
+                .map(|r| BoundPlanRecord {
+                    kind: kind.into(),
+                    id: r.id.clone(),
+                    title: r.id.clone(),
+                    body: r.description.clone(),
+                }),
+            "constraint" => plan
+                .constraints
+                .iter()
+                .find(|r| r.id == id)
+                .map(|r| BoundPlanRecord {
+                    kind: kind.into(),
+                    id: r.id.clone(),
+                    title: r.id.clone(),
+                    body: r.description.clone(),
+                }),
+            "decision" => plan
+                .decisions
+                .iter()
+                .find(|r| r.id == id)
+                .map(|r| BoundPlanRecord {
+                    kind: kind.into(),
+                    id: r.id.clone(),
+                    title: r.title.clone(),
+                    body: r.rationale.clone(),
+                }),
+            "workstream" => plan
+                .workstreams
+                .iter()
+                .find(|r| r.id == id)
+                .map(|r| BoundPlanRecord {
+                    kind: kind.into(),
+                    id: r.id.clone(),
+                    title: r.title.clone(),
+                    body: format!("status: {}", r.status),
+                }),
+            "task" => plan
+                .workstreams
+                .iter()
+                .flat_map(|w| &w.tasks)
+                .find(|r| r.id == id)
+                .map(|r| BoundPlanRecord {
+                    kind: kind.into(),
+                    id: r.id.clone(),
+                    title: r.title.clone(),
+                    body: r.verification.intent.clone(),
+                }),
+            "risk" => plan
+                .risks
+                .iter()
+                .find(|r| r.id == id)
+                .map(|r| BoundPlanRecord {
+                    kind: kind.into(),
+                    id: r.id.clone(),
+                    title: r.id.clone(),
+                    body: r.description.clone(),
+                }),
+            _ => bail!("unknown plan record kind {kind}"),
+        }
+        .with_context(|| format!("unknown plan record {kind}/{id}"))
     }
     pub fn canonical_json(plan: &Plan) -> anyhow::Result<String> {
         Ok(format!("{}\n", serde_json::to_string_pretty(plan)?))
@@ -1627,7 +2044,7 @@ pub fn slide_order(dir: &Path, deck: &DeckToml) -> anyhow::Result<Vec<PathBuf>> 
                 matches!(
                     path.extension().and_then(|extension| extension.to_str()),
                     Some("html" | "md")
-                )
+                ) || composition::is_component_slide_path(path)
             })
             .collect::<Vec<_>>();
         paths.sort();
@@ -1651,6 +2068,20 @@ pub fn slide_order(dir: &Path, deck: &DeckToml) -> anyhow::Result<Vec<PathBuf>> 
         *path = canonical;
     }
     Ok(paths)
+}
+
+pub fn slide_id_stem(path: &Path) -> anyhow::Result<String> {
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .with_context(|| format!("slide file name is not valid UTF-8: {}", path.display()))?;
+    if let Some(stem) = name.strip_suffix(".slide.toml") {
+        return Ok(stem.to_owned());
+    }
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .map(str::to_owned)
+        .with_context(|| format!("slide stem is not valid UTF-8: {}", path.display()))
 }
 
 pub fn validate_fragment(path: &Path, html: &str) -> anyhow::Result<()> {
@@ -2008,8 +2439,8 @@ pub fn check_deck(dir: &Path) -> Vec<CheckFinding> {
             });
             continue;
         }
-        if let Some(stem) = p.file_stem().and_then(|s| s.to_str())
-            && let Some(first) = stems.insert(stem.to_string(), p.clone())
+        if let Ok(stem) = slide_id_stem(&p)
+            && let Some(first) = stems.insert(stem.clone(), p.clone())
         {
             findings.push(CheckFinding {
                 path: rel.clone(),
@@ -2033,27 +2464,42 @@ pub fn check_deck(dir: &Path) -> Vec<CheckFinding> {
                 continue;
             }
         };
-        match forbidden_tags(&raw) {
-            Ok(mut tags) => {
-                tags.sort();
-                tags.dedup();
-                for tag in tags {
+        if !composition::is_component_slide_path(&p) {
+            match forbidden_tags(&raw) {
+                Ok(mut tags) => {
+                    tags.sort();
+                    tags.dedup();
+                    for tag in tags {
+                        findings.push(CheckFinding {
+                            path: rel.clone(),
+                            severity: FindingSeverity::Error,
+                            kind: "fragment_contract".into(),
+                            message: format!("forbidden <{tag}> tag"),
+                        });
+                    }
+                }
+                Err(e) => findings.push(CheckFinding {
+                    path: rel.clone(),
+                    severity: FindingSeverity::Error,
+                    kind: "fragment_parser".into(),
+                    message: format!("could not parse slide fragment: {e}"),
+                }),
+            }
+        }
+        let rendered = if composition::is_component_slide_path(&p) {
+            match composition::render(dir, &p) {
+                Ok(html) => html,
+                Err(e) => {
                     findings.push(CheckFinding {
                         path: rel.clone(),
                         severity: FindingSeverity::Error,
-                        kind: "fragment_contract".into(),
-                        message: format!("forbidden <{tag}> tag"),
+                        kind: "component_slide".into(),
+                        message: format!("{e:#}"),
                     });
+                    continue;
                 }
             }
-            Err(e) => findings.push(CheckFinding {
-                path: rel.clone(),
-                severity: FindingSeverity::Error,
-                kind: "fragment_parser".into(),
-                message: format!("could not parse slide fragment: {e}"),
-            }),
-        }
-        let rendered = if p.extension().and_then(|s| s.to_str()) == Some("md") {
+        } else if p.extension().and_then(|s| s.to_str()) == Some("md") {
             let mut plugins = Plugins::default();
             let adapter = highlight::Highlighter;
             plugins.render.codefence_syntax_highlighter = Some(&adapter);
@@ -2701,9 +3147,15 @@ pub fn build_deck_to(dir: &Path, out_dir: &Path) -> anyhow::Result<PathBuf> {
             .strip_prefix(&canonical_dir)
             .with_context(|| format!("slide source escaped deck root: {}", p.display()))?
             .to_string_lossy();
-        let stem = p.file_stem().unwrap().to_string_lossy();
+        let stem = slide_id_stem(p)?;
         let raw = fs::read_to_string(p)?;
-        let html = if p.extension().and_then(|s| s.to_str()) == Some("md") {
+        let html = if p
+            .file_name()
+            .and_then(|s| s.to_str())
+            .is_some_and(|name| name.ends_with(".slide.toml"))
+        {
+            composition::render(dir, p)?
+        } else if p.extension().and_then(|s| s.to_str()) == Some("md") {
             let mut plugins = Plugins::default();
             let adapter = highlight::Highlighter;
             plugins.render.codefence_syntax_highlighter = Some(&adapter);
@@ -2715,7 +3167,7 @@ pub fn build_deck_to(dir: &Path, out_dir: &Path) -> anyhow::Result<PathBuf> {
         rewrite_state.authored_ids.extend(html_ids(&html)?);
         rendered_slides.push((
             rel.to_string(),
-            stem.to_string(),
+            stem,
             p.extension().and_then(|s| s.to_str()) == Some("md"),
             html,
         ));

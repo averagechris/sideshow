@@ -69,6 +69,11 @@ enum Command {
         #[command(subcommand)]
         command: RegistryCommand,
     },
+    /// Add, update, explain, or remove data-only component slides.
+    Compose {
+        #[command(subcommand)]
+        command: ComposeCommand,
+    },
     /// Build and serve dist/ over localhost.
     Serve {
         dir: PathBuf,
@@ -220,6 +225,27 @@ enum PlanCommand {
         #[command(subcommand)]
         command: PlanMutateCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum ComposeCommand {
+    Add(ComposeWriteArgs),
+    Update(ComposeWriteArgs),
+    Explain { source: PathBuf },
+    Remove { source: PathBuf },
+}
+
+#[derive(Debug, clap::Args)]
+struct ComposeWriteArgs {
+    source: PathBuf,
+    #[arg(long)]
+    component: String,
+    #[arg(long = "prop", value_parser = parse_key_val)]
+    props: Vec<(String, String)>,
+    #[arg(long = "bind-kind")]
+    bind_kind: Option<String>,
+    #[arg(long = "bind-id")]
+    bind_id: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -523,6 +549,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Registry { command } => registry_command(command),
+        Command::Compose { command } => compose_command(command),
         Command::Serve {
             dir,
             port,
@@ -571,6 +598,66 @@ fn registry_command(command: RegistryCommand) -> anyhow::Result<()> {
         ),
     }
     Ok(())
+}
+
+fn compose_command(command: ComposeCommand) -> anyhow::Result<()> {
+    match command {
+        ComposeCommand::Add(args) => {
+            let bind = match (args.bind_kind, args.bind_id) {
+                (Some(kind), Some(id)) => Some(sideshow::composition::PlanBinding { kind, id }),
+                (None, None) => None,
+                _ => anyhow::bail!("--bind-kind and --bind-id must be provided together"),
+            };
+            let slide = sideshow::composition::ComponentSlide {
+                component: args.component,
+                props: args.props.into_iter().collect(),
+                bind,
+            };
+            sideshow::composition::add(&args.source, &slide)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&sideshow::composition::explain(&args.source)?)?
+            );
+        }
+        ComposeCommand::Update(args) => {
+            let bind = match (args.bind_kind, args.bind_id) {
+                (Some(kind), Some(id)) => Some(sideshow::composition::PlanBinding { kind, id }),
+                (None, None) => None,
+                _ => anyhow::bail!("--bind-kind and --bind-id must be provided together"),
+            };
+            let slide = sideshow::composition::ComponentSlide {
+                component: args.component,
+                props: args.props.into_iter().collect(),
+                bind,
+            };
+            sideshow::composition::update(&args.source, &slide)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&sideshow::composition::explain(&args.source)?)?
+            );
+        }
+        ComposeCommand::Explain { source } => println!(
+            "{}",
+            serde_json::to_string_pretty(&sideshow::composition::explain(&source)?)?
+        ),
+        ComposeCommand::Remove { source } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&sideshow::composition::remove(&source)?)?
+            );
+        }
+    }
+    Ok(())
+}
+
+fn parse_key_val(s: &str) -> Result<(String, String), String> {
+    let Some((key, value)) = s.split_once('=') else {
+        return Err("expected KEY=VALUE".into());
+    };
+    if key.is_empty() {
+        return Err("prop key cannot be empty".into());
+    }
+    Ok((key.to_owned(), value.to_owned()))
 }
 
 fn plan_command(command: PlanCommand) -> anyhow::Result<()> {
@@ -1934,6 +2021,7 @@ fn deck_input_files(deck_root: &Path) -> anyhow::Result<Vec<(String, Vec<u8>)>> 
     // deck.toml can name slide files outside the conventional slides/ directory. Include the
     // exact selected source set as well as the conservative trees above.
     let deck = sideshow::parse_deck_toml(std::str::from_utf8(&deck_toml)?)?;
+    let mut plan_bound = false;
     for path in sideshow::slide_order(&deck_root, &deck)? {
         let name = path
             .strip_prefix(&deck_root)
@@ -1941,10 +2029,25 @@ fn deck_input_files(deck_root: &Path) -> anyhow::Result<Vec<(String, Vec<u8>)>> 
             .to_str()
             .with_context(|| format!("slide path is not valid UTF-8: {}", path.display()))?
             .replace('\\', "/");
+        let bytes = fs::read(&path)
+            .with_context(|| format!("failed to read slide source {}", path.display()))?;
+        if sideshow::composition::is_component_slide_path(&path) {
+            let slide = toml::from_str::<sideshow::composition::ComponentSlide>(
+                std::str::from_utf8(&bytes).with_context(|| {
+                    format!("component slide is not valid UTF-8: {}", path.display())
+                })?,
+            )
+            .with_context(|| format!("failed to parse component slide {}", path.display()))?;
+            plan_bound |= slide.bind.is_some();
+        }
+        inputs.push((name, bytes));
+    }
+    if plan_bound {
+        let plan_path = deck_root.join("plan.json");
         inputs.push((
-            name,
-            fs::read(&path)
-                .with_context(|| format!("failed to read slide source {}", path.display()))?,
+            "plan.json".to_owned(),
+            fs::read(&plan_path)
+                .with_context(|| format!("failed to read build input {}", plan_path.display()))?,
         ));
     }
     Ok(inputs)
@@ -2025,14 +2128,26 @@ fn review_build_manifest(
             .to_str()
             .context("slide source path must be valid UTF-8")?
             .replace('\\', "/");
-        let stem = path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .context("slide file name must be valid UTF-8")?;
+        let stem = sideshow::slide_id_stem(&path)?;
         let mut digest = Sha256::new();
         digest_field(&mut digest, b"deck.toml", &deck_toml);
         digest_field(&mut digest, b"theme.css", &theme_css);
         digest_field(&mut digest, relative.as_bytes(), &source);
+        if sideshow::composition::is_component_slide_path(&path) {
+            let slide = toml::from_str::<sideshow::composition::ComponentSlide>(
+                std::str::from_utf8(&source).with_context(|| {
+                    format!("component slide is not valid UTF-8: {}", path.display())
+                })?,
+            )
+            .with_context(|| format!("failed to parse component slide {}", path.display()))?;
+            if slide.bind.is_some() {
+                digest_field(
+                    &mut digest,
+                    b"plan.json",
+                    &fs::read(deck_root.join("plan.json"))?,
+                );
+            }
+        }
         for (asset_path, asset_bytes) in &assets {
             digest_field(&mut digest, asset_path.as_bytes(), asset_bytes);
         }
@@ -2134,6 +2249,7 @@ fn build_input_path_is_relevant(path: &Path, deck_dir: &Path, dist: &Path) -> bo
     let rel = path.strip_prefix(deck_dir).unwrap_or(path);
     rel == Path::new("deck.toml")
         || rel == Path::new("theme.css")
+        || rel == Path::new("plan.json")
         || has_top_level_component(rel, "slides")
         || has_top_level_component(rel, "assets")
         || configured_slide_path_is_relevant(path, deck_dir)
@@ -3295,6 +3411,68 @@ mod serve_tests {
         assert_eq!(digest, deck_input_digest(second.path()).unwrap());
         fs::write(second.path().join("content/custom.html"), b"changed").unwrap();
         assert_ne!(digest, deck_input_digest(second.path()).unwrap());
+    }
+
+    #[test]
+    fn component_plan_binding_digest_uses_typed_parse_and_manifest_source_freshness() {
+        let deck = tempfile::tempdir().unwrap();
+        fs::create_dir(deck.path().join("slides")).unwrap();
+        fs::create_dir(deck.path().join("assets")).unwrap();
+        fs::write(deck.path().join("deck.toml"), "[deck]\ntitle='Stable'\n").unwrap();
+        fs::write(deck.path().join("theme.css"), "body {}").unwrap();
+        fs::write(
+            deck.path().join("plan.json"),
+            r#"{
+  "schema_version": 2,
+  "title": "Stable",
+  "status": "draft",
+  "objective": "objective",
+  "outcomes": [{"id":"o1","description":"first","proof":[]}],
+  "constraints": [],
+  "non_goals": [],
+  "decisions": [],
+  "workstreams": [],
+  "risks": []
+}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            deck.path().join("slides/01.slide.toml"),
+            "component = 'literal-card'\n# [bind] in a comment must not include plan.json\nprops.eyebrow = 'e'\nprops.title = 't'\nprops.body = 'b'\n",
+        )
+        .unwrap();
+        let literal_digest = deck_input_digest(deck.path()).unwrap();
+        fs::write(
+            deck.path().join("plan.json"),
+            fs::read_to_string(deck.path().join("plan.json"))
+                .unwrap()
+                .replace("first", "second"),
+        )
+        .unwrap();
+        assert_eq!(literal_digest, deck_input_digest(deck.path()).unwrap());
+
+        fs::write(
+            deck.path().join("slides/01.slide.toml"),
+            "component = 'plan-record-card'\nprops.label = 'Outcome'\nbind.kind = 'outcome'\nbind.id = 'o1'\n",
+        )
+        .unwrap();
+        let bound_digest = deck_input_digest(deck.path()).unwrap();
+        let output = deck.path().join("dist/out.html");
+        fs::create_dir(output.parent().unwrap()).unwrap();
+        fs::write(&output, "built one").unwrap();
+        let manifest = review_build_manifest(deck.path(), &output).unwrap();
+        let source_digest = manifest.slides[0].source_digest.clone();
+        fs::write(
+            deck.path().join("plan.json"),
+            fs::read_to_string(deck.path().join("plan.json"))
+                .unwrap()
+                .replace("second", "third"),
+        )
+        .unwrap();
+        assert_ne!(bound_digest, deck_input_digest(deck.path()).unwrap());
+        let changed_manifest = review_build_manifest(deck.path(), &output).unwrap();
+        assert_ne!(source_digest, changed_manifest.slides[0].source_digest);
     }
 
     #[test]
