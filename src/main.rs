@@ -64,6 +64,11 @@ enum Command {
         #[arg(long)]
         format: Option<String>,
     },
+    /// Discover bundled registries and resources as stable JSON.
+    Registry {
+        #[command(subcommand)]
+        command: RegistryCommand,
+    },
     /// Build and serve dist/ over localhost.
     Serve {
         dir: PathBuf,
@@ -209,6 +214,16 @@ enum PlanCommand {
         #[arg(long)]
         open: bool,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum RegistryCommand {
+    /// List activated registry entries as stable JSON.
+    List,
+    /// Explain one activated registry entry as stable JSON.
+    Explain { kind: String, name: String },
+    /// List activated registry sources as stable JSON.
+    Sources,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -370,6 +385,7 @@ fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
+        Command::Registry { command } => registry_command(command),
         Command::Serve {
             dir,
             port,
@@ -400,6 +416,24 @@ fn main() -> anyhow::Result<()> {
             },
         ),
     }
+}
+
+fn registry_command(command: RegistryCommand) -> anyhow::Result<()> {
+    match command {
+        RegistryCommand::List => println!(
+            "{}",
+            serde_json::to_string_pretty(&sideshow::registry::registry_document()?)?
+        ),
+        RegistryCommand::Explain { kind, name } => println!(
+            "{}",
+            serde_json::to_string_pretty(&sideshow::registry::explain(&kind, &name)?)?
+        ),
+        RegistryCommand::Sources => println!(
+            "{}",
+            serde_json::to_string_pretty(&sideshow::registry::sources_document())?
+        ),
+    }
+    Ok(())
 }
 
 fn plan_command(command: PlanCommand) -> anyhow::Result<()> {

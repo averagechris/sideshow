@@ -15,6 +15,7 @@ use std::{
 
 mod fonts;
 mod highlight;
+pub mod registry;
 pub mod review;
 #[doc(hidden)]
 pub mod secure_fs;
@@ -1017,10 +1018,6 @@ pub const RUNTIME_MARKER: &str = "sideshow-runtime-v1";
 const STAGE_CSS: &str = include_str!("runtime/stage.css");
 const PLAN_CSS: &str = include_str!("components/plan.css");
 const RUNTIME_JS: &str = include_str!("runtime/runtime.js");
-const SIGNAL_CSS: &str = include_str!("themes/signal.css");
-const LEDGER_CSS: &str = include_str!("themes/ledger.css");
-const TERMINAL_CSS: &str = include_str!("themes/terminal.css");
-const POSTER_CSS: &str = include_str!("themes/poster.css");
 static CSS_URL_ASSET_RE: LazyLock<Regex> = LazyLock::new(|| {
     // Accepted grammar is intentionally narrow: case-insensitive CSS url(...)
     // with an assets/... path that is either unquoted with no CSS whitespace, or
@@ -1180,68 +1177,39 @@ fn default_config_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("~/.config/sideshow/config.toml"))
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ThemeMetadata {
-    pub name: &'static str,
-    pub description: &'static str,
-    pub mood: &'static str,
-    pub formality: &'static str,
-    pub density_fit: &'static str,
-    pub best_for: &'static str,
-    pub avoid_for: &'static str,
+    pub name: String,
+    pub description: String,
+    pub mood: String,
+    pub formality: String,
+    pub density_fit: String,
+    pub best_for: String,
+    pub avoid_for: String,
 }
 
-pub const THEMES: &[ThemeMetadata] = &[
-    ThemeMetadata {
-        name: "signal",
-        description: "Dark, crisp executive technology theme with a cool cyan accent.",
-        mood: "focused",
-        formality: "neutral",
-        density_fit: "balanced",
-        best_for: "strategy updates, product reviews, and modern technical narratives",
-        avoid_for: "very dense reading decks or warm editorial talks",
-    },
-    ThemeMetadata {
-        name: "ledger",
-        description: "Warm paper theme with serif-led hierarchy and fine editorial rules.",
-        mood: "measured",
-        formality: "formal",
-        density_fit: "dense",
-        best_for: "board updates, research summaries, financial reviews, and reading-heavy briefs",
-        avoid_for: "high-energy keynotes or code-heavy live demos",
-    },
-    ThemeMetadata {
-        name: "terminal",
-        description: "Dark engineering theme with monospace accents and phosphor-green emphasis.",
-        mood: "technical",
-        formality: "neutral",
-        density_fit: "balanced",
-        best_for: "architecture walkthroughs, incident reviews, infrastructure plans, and developer talks",
-        avoid_for: "formal board materials or image-led inspirational decks",
-    },
-    ThemeMetadata {
-        name: "poster",
-        description: "High-contrast keynote theme with oversized type and a safety-orange accent.",
-        mood: "assertive",
-        formality: "casual",
-        density_fit: "sparse",
-        best_for: "speaker-led keynotes, launches, rally talks, and memorable section breaks",
-        avoid_for: "dense reports, long prose, or subtle analytical comparisons",
-    },
-];
+static THEMES: LazyLock<Vec<ThemeMetadata>> = LazyLock::new(|| {
+    registry::bundled_themes()
+        .expect("bundled theme registry must be valid")
+        .into_iter()
+        .map(|theme| ThemeMetadata {
+            name: theme.name.to_owned(),
+            description: theme.metadata.description,
+            mood: theme.metadata.mood,
+            formality: theme.metadata.formality,
+            density_fit: theme.metadata.density_fit,
+            best_for: theme.metadata.best_for,
+            avoid_for: theme.metadata.avoid_for,
+        })
+        .collect()
+});
 
 pub fn theme_metadata() -> &'static [ThemeMetadata] {
-    THEMES
+    &THEMES
 }
 
 fn builtin_theme_css(theme: &str) -> Option<&'static str> {
-    match theme {
-        "signal" => Some(SIGNAL_CSS),
-        "ledger" => Some(LEDGER_CSS),
-        "terminal" => Some(TERMINAL_CSS),
-        "poster" => Some(POSTER_CSS),
-        _ => None,
-    }
+    registry::bundled_theme_css(theme)
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -1315,36 +1283,23 @@ pub fn parse_deck_toml(s: &str) -> anyhow::Result<DeckToml> {
 }
 
 pub fn new_deck(dir: &Path, theme: &str) -> anyhow::Result<()> {
-    let theme_css = builtin_theme_css(theme).ok_or_else(|| {
+    builtin_theme_css(theme).ok_or_else(|| {
         anyhow::anyhow!(
             "unknown built-in theme '{theme}' (available: {})",
-            THEMES.iter().map(|t| t.name).collect::<Vec<_>>().join(", ")
+            THEMES
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         )
     })?;
+    let title = title_case(theme);
     fs::create_dir_all(dir.join("slides"))?;
     fs::create_dir_all(dir.join("assets"))?;
     fs::create_dir_all(dir)?;
-    fs::write(
-        dir.join("deck.toml"),
-        format!(
-            "[deck]\ntitle = \"{} Demo\"\ntheme = \"{}\"\n\n[build]\ninline_assets = true\n\n# Declare non-system TrueType faces explicitly; keep sources under assets/.\n# [[fonts]]\n# source = \"assets/example-regular.ttf\"\n# family = \"Example Sans\"\n# style = \"normal\"\n# weight = 400\n",
-            title_case(theme),
-            theme
-        ),
-    )?;
-    fs::write(dir.join("theme.css"), theme_css)?;
-    fs::write(
-        dir.join("slides/01-title.html"),
-        format!(
-            "<div class=\"slide-center\">\n  <p class=\"kicker\">sideshow</p>\n  <h1 class=\"text-7xl font-semibold tracking-tight\">{} Demo</h1>\n  <p class=\"mt-8 text-3xl text-muted\" data-step>One self-contained HTML deck.</p>\n</div>\n<template data-notes>Welcome the audience and frame the deck.</template>\n",
-            title_case(theme)
-        ),
-    )?;
-    fs::write(
-        dir.join("slides/02-content.md"),
-        "# Build loop\n\n- Write HTML or markdown slide fragments\n- Run `sideshow build .`\n- Share one offline HTML file\n\n<div class=\"stat\" data-step>1920×1080</div>\n",
-    )?;
-    fs::write(dir.join("assets/.gitkeep"), "")?;
+    for file in registry::scaffold_files("deck", theme, &title)? {
+        fs::write(dir.join(file.path), file.bytes)?;
+    }
     Ok(())
 }
 
@@ -3480,10 +3435,10 @@ mod tests {
     #[test]
     fn builtin_themes_define_plan_contract_tokens() {
         for (name, css) in [
-            ("signal", SIGNAL_CSS),
-            ("ledger", LEDGER_CSS),
-            ("terminal", TERMINAL_CSS),
-            ("poster", POSTER_CSS),
+            ("signal", builtin_theme_css("signal").unwrap()),
+            ("ledger", builtin_theme_css("ledger").unwrap()),
+            ("terminal", builtin_theme_css("terminal").unwrap()),
+            ("poster", builtin_theme_css("poster").unwrap()),
         ] {
             for token in ["--plan-good", "--plan-warn", "--plan-risk", "--plan-info"] {
                 assert!(css.contains(token), "{name} missing {token}");
@@ -3504,6 +3459,25 @@ mod tests {
                     .contains(".kicker")
             );
         }
+    }
+
+    #[test]
+    fn bundled_scaffold_resources_preserve_exact_legacy_output() {
+        let t = tempfile::tempdir().unwrap();
+        new_deck(t.path(), "terminal").unwrap();
+        assert_eq!(
+            fs::read_to_string(t.path().join("deck.toml")).unwrap(),
+            "[deck]\ntitle = \"Terminal Demo\"\ntheme = \"terminal\"\n\n[build]\ninline_assets = true\n\n# Declare non-system TrueType faces explicitly; keep sources under assets/.\n# [[fonts]]\n# source = \"assets/example-regular.ttf\"\n# family = \"Example Sans\"\n# style = \"normal\"\n# weight = 400\n"
+        );
+        assert_eq!(
+            fs::read_to_string(t.path().join("slides/01-title.html")).unwrap(),
+            "<div class=\"slide-center\">\n  <p class=\"kicker\">sideshow</p>\n  <h1 class=\"text-7xl font-semibold tracking-tight\">Terminal Demo</h1>\n  <p class=\"mt-8 text-3xl text-muted\" data-step>One self-contained HTML deck.</p>\n</div>\n<template data-notes>Welcome the audience and frame the deck.</template>\n"
+        );
+        assert_eq!(
+            fs::read_to_string(t.path().join("slides/02-content.md")).unwrap(),
+            "# Build loop\n\n- Write HTML or markdown slide fragments\n- Run `sideshow build .`\n- Share one offline HTML file\n\n<div class=\"stat\" data-step>1920×1080</div>\n"
+        );
+        assert_eq!(fs::read(t.path().join("assets/.gitkeep")).unwrap(), b"");
     }
 
     #[test]
@@ -3528,7 +3502,11 @@ mod tests {
         }
         let t = tempfile::tempdir().unwrap();
         minimal_deck(&t);
-        fs::write(t.path().join("theme.css"), SIGNAL_CSS).unwrap();
+        fs::write(
+            t.path().join("theme.css"),
+            builtin_theme_css("signal").unwrap(),
+        )
+        .unwrap();
         fs::write(t.path().join("slides/01.html"), "<h1>System font</h1>").unwrap();
         let default_output = fs::read(build_deck(t.path()).unwrap()).unwrap();
 

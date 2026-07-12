@@ -1,0 +1,66 @@
+schema_version = 1
+pack = "sideshow-defaults"
+
+[[themes]]
+name = "signal"
+css = "themes/signal.css"
+[themes.metadata]
+description = "Dark, crisp executive technology theme with a cool cyan accent."
+mood = "focused"
+formality = "neutral"
+density_fit = "balanced"
+best_for = "strategy updates, product reviews, and modern technical narratives"
+avoid_for = "very dense reading decks or warm editorial talks"
+
+[[themes]]
+name = "ledger"
+css = "themes/ledger.css"
+[themes.metadata]
+description = "Warm paper theme with serif-led hierarchy and fine editorial rules."
+mood = "measured"
+formality = "formal"
+density_fit = "dense"
+best_for = "board updates, research summaries, financial reviews, and reading-heavy briefs"
+avoid_for = "high-energy keynotes or code-heavy live demos"
+
+[[themes]]
+name = "terminal"
+css = "themes/terminal.css"
+[themes.metadata]
+description = "Dark engineering theme with monospace accents and phosphor-green emphasis."
+mood = "technical"
+formality = "neutral"
+density_fit = "balanced"
+best_for = "architecture walkthroughs, incident reviews, infrastructure plans, and developer talks"
+avoid_for = "formal board materials or image-led inspirational decks"
+
+[[themes]]
+name = "poster"
+css = "themes/poster.css"
+[themes.metadata]
+description = "High-contrast keynote theme with oversized type and a safety-orange accent."
+mood = "assertive"
+formality = "casual"
+density_fit = "sparse"
+best_for = "speaker-led keynotes, launches, rally talks, and memorable section breaks"
+avoid_for = "dense reports, long prose, or subtle analytical comparisons"
+
+[[scaffolds]]
+name = "deck"
+intent = ["create an ordinary offline slide deck source tree"]
+accepted_input = ["theme name"]
+capabilities = ["scaffold-files", "theme-css-copy"]
+files = [
+  { path = "deck.toml", resource = "bundled/scaffolds/deck/deck.toml" },
+  { path = "theme.css", resource = "theme-css" },
+  { path = "slides/01-title.html", resource = "bundled/scaffolds/deck/slides/01-title.html" },
+  { path = "slides/02-content.md", resource = "bundled/scaffolds/deck/slides/02-content.md" },
+  { path = "assets/.gitkeep", resource = "bundled/scaffolds/deck/assets/.gitkeep" },
+]
+
+[[components]]
+name = "plan-primitives"
+css = "components/plan.css"
+intent = ["provide plan status, diagram, risk, and verification primitives", "render canonical plan decks"]
+accepted_input = ["plan.json data projected into compiler-owned templates", "static HTML plan component classes and data-plan-id anchors"]
+capabilities = ["css", "globally-included", "js-free"]

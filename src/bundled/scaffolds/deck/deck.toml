@@ -1,0 +1,13 @@
+[deck]
+title = "{{title}} Demo"
+theme = "{{theme}}"
+
+[build]
+inline_assets = true
+
+# Declare non-system TrueType faces explicitly; keep sources under assets/.
+# [[fonts]]
+# source = "assets/example-regular.ttf"
+# family = "Example Sans"
+# style = "normal"
+# weight = 400

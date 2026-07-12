@@ -12,6 +12,122 @@ fn sideshow_command() -> Command {
 }
 
 #[test]
+fn registry_discovery_is_stable_bundled_and_clear() {
+    let list = sideshow_command()
+        .args(["registry", "list"])
+        .output()
+        .unwrap();
+    assert!(list.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!(value["schema_version"], 1);
+    let entries = value["entries"].as_array().unwrap();
+    let keys = entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "{}/{}",
+                entry["kind"].as_str().unwrap(),
+                entry["name"].as_str().unwrap()
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        keys,
+        vec![
+            "component/plan-primitives",
+            "scaffold/deck",
+            "theme/ledger",
+            "theme/poster",
+            "theme/signal",
+            "theme/terminal"
+        ]
+    );
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry["provenance"]["source"] == "bundled")
+    );
+    assert_eq!(entries[4]["metadata"]["mood"], "focused");
+    assert_eq!(
+        entries[0]["metadata"]["resource_path"],
+        "components/plan.css"
+    );
+    assert_eq!(
+        entries[0]["metadata"]["capabilities"],
+        serde_json::json!(["css", "globally-included", "js-free"])
+    );
+    assert!(
+        entries[1]["metadata"]["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|file| file["path"] == "deck.toml"
+                && file["resource"] == "bundled/scaffolds/deck/deck.toml")
+    );
+
+    let explain = sideshow_command()
+        .args(["registry", "explain", "theme", "signal"])
+        .output()
+        .unwrap();
+    assert!(explain.status.success());
+    let explained: serde_json::Value = serde_json::from_slice(&explain.stdout).unwrap();
+    assert_eq!(explained["kind"], "theme");
+    assert_eq!(explained["name"], "signal");
+    assert_eq!(explained["provenance"]["pack"], "sideshow-defaults");
+    assert_eq!(explained["metadata"]["resource_path"], "themes/signal.css");
+    assert!(
+        explained["metadata"]["resource_digest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+
+    let component = sideshow_command()
+        .args(["registry", "explain", "component", "plan-primitives"])
+        .output()
+        .unwrap();
+    assert!(component.status.success());
+    let component: serde_json::Value = serde_json::from_slice(&component.stdout).unwrap();
+    assert_eq!(
+        component["metadata"]["intent"][1],
+        "render canonical plan decks"
+    );
+    assert_eq!(
+        component["metadata"]["resource_path"],
+        "components/plan.css"
+    );
+    assert!(
+        !component["metadata"]["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("js"))
+    );
+
+    let sources = sideshow_command()
+        .args(["registry", "sources"])
+        .output()
+        .unwrap();
+    assert!(sources.status.success());
+    let sources: serde_json::Value = serde_json::from_slice(&sources.stdout).unwrap();
+    assert_eq!(sources["sources"][0]["activated"], true);
+    assert!(
+        sources["sources"][0]["note"]
+            .as_str()
+            .unwrap()
+            .contains("user-global and project pack layering are not active")
+    );
+
+    let unknown = sideshow_command()
+        .args(["registry", "explain", "theme", "missing"])
+        .output()
+        .unwrap();
+    assert!(!unknown.status.success());
+    assert!(
+        String::from_utf8_lossy(&unknown.stderr).contains("unknown registry entry 'theme/missing'")
+    );
+}
+
+#[test]
 fn plan_new_check_and_export_are_agent_consumable() {
     let temp = tempfile::tempdir().unwrap();
     let deck = temp.path().join("plan");
