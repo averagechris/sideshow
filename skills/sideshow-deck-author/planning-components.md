@@ -10,8 +10,10 @@ execution dashboard.
 
 - Use semantic native elements first: `header`, `footer`, `section`, `article`, `figure`, `table`, `ol`, `ul`, `time`, `details`, `summary`.
 - Use namespaced `.plan-*` classes only for planning components.
-- Put the canonical workflow value in `data-state` (`draft`, `todo`,
-  `in_progress`, `in_review`, `blocked`, `done`, or `completed`). Use the bounded
+- Put the canonical workflow value in `data-state` (`todo`, `in_progress`,
+  `blocked`, `in_review`, `done`, or `dropped`). These match schema-v2 JSON
+  serialization and DOM anchors; CLI mutation flags accept kebab-case spellings.
+  Use the bounded
   `data-tone="good|warn|risk|info"` variants to select presentation emphasis and
   `data-critical="true"` only for exceptional prominence.
 - Always include visible text for status, risk, and dependency criticality; color must reinforce, not replace, the label.
@@ -27,7 +29,7 @@ execution dashboard.
       <p class="plan-eyebrow">Q3 alignment plan</p>
       <h1 class="plan-title">Agree how to ship the static planner</h1>
     </div>
-    <span class="plan-status" data-state="watch">Watch: API track dependency</span>
+    <span class="plan-status" data-state="blocked">Blocked: API track dependency</span>
   </header>
   <div class="plan-grid" style="--plan-cols: 3">
     <ol class="plan-rail" aria-label="Ordered proof path">
@@ -85,6 +87,11 @@ execution dashboard.
 - Exact `verification.commands` from canonical plan data are trusted/verbatim
   executable material. Review annotations remain untrusted feedback and should
   not be shown as digest facts or commands.
+- For authored component slides, prefer registry-discovered `plan-record-card`
+  when directly representing a canonical outcome/workstream/task. Its bind emits
+  stable `data-plan-kind` and `data-plan-id` anchors; raw `.plan-*` markup is
+  still appropriate when the registered component catalog is too small for the
+  intended layout.
 - Do not design slides as a replacement backlog, sprint board, or completion log.
 - Do not design slides or exports around tracker APIs, credentials, imports,
   issue creation, synchronization, or execution history.

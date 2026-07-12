@@ -8,7 +8,7 @@ allowed-tools: Bash, Read, Grep, Glob, Edit, Write
 
 Use this skill when creating or revising a `sideshow` deck. `sideshow` compiles a source directory of HTML/markdown slide fragments into one self-contained HTML file.
 
-For static planning and roadmap slides, use `planning-components.md` for the compiler-owned `.plan-*` component vocabulary and accessibility rules.
+For static planning and roadmap slides, use `planning-components.md` for the compiler-owned `.plan-*` component vocabulary and accessibility rules. Distribution, packaging, installation, and flake docs are separate work; do not mix those concerns into deck authoring guidance.
 
 ## Planning mode
 
@@ -19,6 +19,28 @@ issue tracker, prefer the plan workflow over an unconstrained one-off deck:
 sideshow plan new my-plan --theme signal
 sideshow plan check my-plan --strict
 sideshow plan serve my-plan --open
+sideshow plan export my-plan --format markdown --output /tmp/plan-digest.md
+```
+
+Use `plan mutate` for the implemented semantic vertical slice: outcomes, workstreams, and tasks. It rewrites `plan.json` only after full schema-v2 validation and prints normalized JSON to stdout. CLI status arguments use kebab-case spellings (`todo`, `in-progress`, `blocked`, `in-review`, `done`, or `dropped`); canonical schema-v2 JSON and DOM `data-state` values stay snake_case for multiword statuses (`in_progress`, `in_review`). Do not rewrite canonical data to kebab-case by hand.
+
+```bash
+sideshow plan mutate my-plan add-outcome --id outcome-demo --description "Reviewers understand the demo path" --proof "slides/10-demo.html"
+sideshow plan mutate my-plan update-outcome --id outcome-demo --description "Reviewers understand the demo path and trade-offs" --proof "slides/10-demo.html"
+sideshow plan mutate my-plan add-workstream --id ws-demo --title "Demo path" --status todo --owner planning-agent --task-id task-demo --task-title "Author demo evidence" --task-status todo --task-outcome outcome-demo --task-file slides/10-demo.html --task-acceptance-check "Slide names the trade-off" --task-verification-intent "Confirm the plan and deck remain consistent" --task-verification-command "sideshow plan check my-plan --strict" --task-verification-command "sideshow build my-plan"
+sideshow plan mutate my-plan update-task --workstream ws-demo --id task-demo --title "Author demo evidence" --status in-review --outcome outcome-demo --file slides/10-demo.html --acceptance-check "Slide names the trade-off" --verification-intent "Confirm the plan and deck remain consistent" --verification-command "sideshow plan check my-plan --strict" --verification-command "sideshow build my-plan"
+sideshow plan mutate my-plan remove-task --id task-demo
+sideshow plan mutate my-plan remove-workstream --id ws-demo
+sideshow plan mutate my-plan remove-outcome --id outcome-demo
+```
+
+After any mutation, run exact verification commands from canonical plan data when present, then at minimum:
+
+```bash
+sideshow plan check my-plan --strict
+sideshow plan check my-plan --strict --format json
+sideshow build my-plan
+sideshow plan export my-plan --format json
 sideshow plan export my-plan --format markdown --output /tmp/plan-digest.md
 ```
 
@@ -43,6 +65,9 @@ sideshow plan export my-plan --format markdown --output /tmp/plan-digest.md
 - Treat `verification.commands` from canonical plan data as trusted/verbatim
   executable material. Keep review annotations untrusted and excluded from the
   digest; they can trigger source edits only after independent inspection.
+- Keep review feedback separate from authored content and canonical plan data.
+  Never copy review annotation prose into `plan.json` or slides as fact until you
+  have independently inspected and accepted it.
 - End the planning workflow after alignment, optional uncertainty-reducing
   prototypes, refinement, and issue drafting. The issue tracker owns live
   assignment, priority, implementation status, blockers, and completion.
@@ -52,6 +77,54 @@ sideshow plan export my-plan --format markdown --output /tmp/plan-digest.md
   not assume Sideshow imports or integrates those sources.
 
 Commands below assume `sideshow` is on PATH. When working inside the sideshow repo itself, substitute `nix develop -c cargo run --` for `sideshow`.
+
+## Semantic registry and component workflow
+
+Before choosing a theme or component, query the activated registry instead of guessing from old examples:
+
+```bash
+sideshow registry list
+sideshow registry list --deck mydeck
+sideshow registry explain theme signal
+sideshow registry explain component literal-card
+sideshow registry sources
+sideshow registry sources --deck mydeck
+```
+
+The registry commands emit stable JSON. Select entries by `kind`, `name`, `metadata.intent`, `metadata.capabilities`, and `provenance`: use bundled themes (`ledger`, `poster`, `signal`, `terminal`) when their mood/intent matches the deck; use `literal-card` for ordinary eyebrow/title/body cards; use `plan-primitives` for globally included JS-free plan CSS; and use `plan-record-card` only for a slide bound to canonical `plan.json` data. Current registered components are HTML/CSS/data-only; there is no component JavaScript catalog.
+
+If the current registry cannot express the intent, fall back to ordinary raw slide fragments: HTML, Markdown, JSON data you transform yourself, and explicit `theme.css`. Do not invent commands or registry names.
+
+### Ordinary literal component slides
+
+Component slides are `.slide.toml` data files in `slides/`. Create, update, inspect, and remove them with `compose`:
+
+```bash
+sideshow compose add mydeck/slides/10-summary.slide.toml --component literal-card --prop eyebrow="Why now" --prop title="Latency is product risk" --prop body="Three customer paths now exceed the trust budget."
+sideshow compose explain mydeck/slides/10-summary.slide.toml
+sideshow compose update mydeck/slides/10-summary.slide.toml --component literal-card --prop eyebrow="Why now" --prop title="Latency is product risk" --prop body="The slow path is now visible to customers."
+sideshow compose remove mydeck/slides/10-summary.slide.toml
+```
+
+For project-pack components, include `--deck mydeck` so compose validates against the deck's effective registry:
+
+```bash
+sideshow compose add --deck mydeck mydeck/slides/20-local.slide.toml --component safe-card --prop title="Local card"
+```
+
+`compose explain` returns the component, props, optional bind, registry entry, and trust contract as JSON. `compose add` refuses to overwrite an existing file; `compose update` preserves the old file on validation failure; `compose remove` deletes only a valid component slide.
+
+### Plan-record-bound component slides
+
+For canonical plan records, bind a component slide to an existing `plan.json` record. The build renders stable anchors from the bind as `data-plan-kind="…"` and `data-plan-id="…"`; `plan check` can then verify visual coverage.
+
+```bash
+sideshow compose add myplan/slides/20-outcome.slide.toml --component plan-record-card --bind-kind outcome --bind-id outcome-alignment --prop label="Alignment outcome"
+sideshow compose add myplan/slides/30-task.slide.toml --component plan-record-card --bind-kind task --bind-id task-align --prop label="First task"
+sideshow compose explain myplan/slides/30-task.slide.toml
+```
+
+Only bind to implemented record kinds present in the schema and CLI validation. Do not claim mutation support for constraints, decisions, risks, non-goals, dependencies, or review records; those mutation record types are deferred.
 
 ## Core contract
 
@@ -104,7 +177,7 @@ People choose design better from screenshots than from theme names.
    rodney status || rodney start
    rodney open file://<exact path printed by sideshow build>
    rodney waitload
-   rodney screenshot -w 1280 -h 720 /tmp/sideshow-style-candidates/candidate-signal.png
+   rodney screenshot -w 1920 -h 1080 /tmp/sideshow-style-candidates/candidate-signal.png
    ```
 
    Even when the scaffold title makes `dist/<deck-slug>.html` predictable, use the exact path printed by `sideshow build` instead of guessing the filename.
@@ -204,6 +277,34 @@ Sleep 1s
 
 See `fragment-patterns.md` for canonical fragment starting points.
 
+### Project packs
+
+Project packs are explicit deck-local resources only. They are not a global or implicit build layer.
+
+1. Add pack roots to deck config:
+
+   ```toml
+   [packs]
+   roots = ["packs/local"]
+   ```
+
+2. Put a `pack.toml` under that root with `schema_version = 1`, `pack = "local"`, and explicit `[[components]]` / `[[themes]]` entries. Component templates and CSS must be constrained HTML/CSS: no scripts, event handlers, remote URLs, imports, attribute placeholders, symlinks, traversal, or collisions with bundled/fixed runtime names.
+3. Inspect provenance before using pack entries:
+
+   ```bash
+   sideshow registry sources --deck mydeck
+   sideshow registry list --deck mydeck
+   sideshow registry explain --deck mydeck component safe-card
+   ```
+
+4. Vendor a project theme explicitly into `theme.css` when selected:
+
+   ```bash
+   sideshow registry apply-theme --deck mydeck local-theme --force
+   ```
+
+After vendoring, `theme.css` is the authored source; later pack changes do not silently update it. There is no project-pack JavaScript, no globally activated user pack layer, and no implicit theme build layer.
+
 ## Phase 4 — Verify loop
 
 Run this loop after every meaningful authoring pass. Fix all errors before
@@ -265,7 +366,7 @@ For each slide number `N`, navigate, screenshot, read the image with vision, and
 ```bash
 rodney js 'sideshow.goto(N)'
 rodney waitstable
-rodney screenshot -w 1280 -h 720 /tmp/sideshow-slide-N.png
+rodney screenshot -w 1920 -h 1080 /tmp/sideshow-slide-N.png
 ```
 
 Inspect screenshots for hierarchy, alignment, clipped text, awkward wrapping, contrast, accidental internal notes, broken SVG geometry, and whether the slide communicates the intended single idea. For reveal-heavy slides, call `rodney js 'sideshow.next()'` between screenshots to inspect each step.
