@@ -223,7 +223,7 @@ enum PlanCommand {
     Mutate {
         dir: PathBuf,
         #[command(subcommand)]
-        command: PlanMutateCommand,
+        command: Box<PlanMutateCommand>,
     },
 }
 
@@ -237,6 +237,8 @@ enum ComposeCommand {
 
 #[derive(Debug, clap::Args)]
 struct ComposeWriteArgs {
+    #[arg(long)]
+    deck: Option<PathBuf>,
     source: PathBuf,
     #[arg(long)]
     component: String,
@@ -382,11 +384,30 @@ impl From<PlanWorkStatusArg> for sideshow::plan::WorkStatus {
 #[derive(Debug, Subcommand)]
 enum RegistryCommand {
     /// List activated registry entries as stable JSON.
-    List,
+    List {
+        #[arg(long)]
+        deck: Option<PathBuf>,
+    },
     /// Explain one activated registry entry as stable JSON.
-    Explain { kind: String, name: String },
+    Explain {
+        kind: String,
+        name: String,
+        #[arg(long)]
+        deck: Option<PathBuf>,
+    },
     /// List activated registry sources as stable JSON.
-    Sources,
+    Sources {
+        #[arg(long)]
+        deck: Option<PathBuf>,
+    },
+    /// Vendor an activated project theme into deck/theme.css as explicit CSS.
+    ApplyTheme {
+        #[arg(long)]
+        deck: PathBuf,
+        name: String,
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -584,20 +605,133 @@ fn main() -> anyhow::Result<()> {
 
 fn registry_command(command: RegistryCommand) -> anyhow::Result<()> {
     match command {
-        RegistryCommand::List => println!(
+        RegistryCommand::List { deck: None } => println!(
             "{}",
             serde_json::to_string_pretty(&sideshow::registry::registry_document()?)?
         ),
-        RegistryCommand::Explain { kind, name } => println!(
+        RegistryCommand::List { deck: Some(deck) } => println!(
+            "{}",
+            serde_json::to_string_pretty(&registry_document_for_deck(&deck)?)?
+        ),
+        RegistryCommand::Explain {
+            kind,
+            name,
+            deck: None,
+        } => println!(
             "{}",
             serde_json::to_string_pretty(&sideshow::registry::explain(&kind, &name)?)?
         ),
-        RegistryCommand::Sources => println!(
+        RegistryCommand::Explain {
+            kind,
+            name,
+            deck: Some(deck),
+        } => println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &registry_document_for_deck(&deck)?
+                    .entries
+                    .into_iter()
+                    .find(|e| e.kind == kind && e.name == name)
+                    .ok_or_else(|| anyhow::anyhow!("unknown registry entry '{kind}/{name}'"))?
+            )?
+        ),
+        RegistryCommand::Sources { deck: None } => println!(
             "{}",
             serde_json::to_string_pretty(&sideshow::registry::sources_document())?
         ),
+        RegistryCommand::Sources { deck: Some(deck) } => {
+            let deck_toml =
+                sideshow::parse_deck_toml(&fs::read_to_string(deck.join("deck.toml"))?)?;
+            let (_, _, mut sources) = sideshow::project_packs::load(&deck, &deck_toml)?;
+            sources.insert(
+                0,
+                sideshow::registry::RegistrySource {
+                    provenance: sideshow::registry::Provenance {
+                        source: "bundled".into(),
+                        pack: sideshow::registry::BUNDLED_DEFAULT_PACK.into(),
+                        pack_schema_version: sideshow::registry::DEFAULT_PACK_SCHEMA_VERSION,
+                    },
+                    activated: true,
+                    note: "bundled defaults".into(),
+                },
+            );
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&sideshow::registry::RegistrySourcesDocument {
+                    schema_version: sideshow::registry::REGISTRY_SCHEMA_VERSION,
+                    sources
+                })?
+            )
+        }
+        RegistryCommand::ApplyTheme { deck, name, force } => apply_theme(&deck, &name, force)?,
     }
     Ok(())
+}
+
+fn apply_theme(deck: &Path, name: &str, force: bool) -> anyhow::Result<()> {
+    let deck_toml = sideshow::parse_deck_toml(&fs::read_to_string(deck.join("deck.toml"))?)?;
+    let (_, themes, _) = sideshow::project_packs::load(deck, &deck_toml)?;
+    let theme = themes
+        .into_iter()
+        .find(|t| t.name == name)
+        .ok_or_else(|| anyhow::anyhow!("unknown project theme '{name}'"))?;
+    let target = deck.join("theme.css");
+    if target.exists() && !force {
+        anyhow::bail!("theme.css already exists; pass --force to replace it");
+    }
+    atomic_replace(&target, theme.css.as_bytes(), !force)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(
+            &serde_json::json!({"theme": name, "target": "theme.css", "digest": theme.entry.metadata.resource_digest, "provenance": theme.entry.provenance})
+        )?
+    );
+    Ok(())
+}
+
+fn atomic_replace(path: &Path, bytes: &[u8], create_only: bool) -> anyhow::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("out");
+    let mut random = [0u8; 16];
+    getrandom::fill(&mut random).context("failed to allocate temp file name")?;
+    let tmp = parent.join(format!(".{name}.{:032x}.tmp", u128::from_be_bytes(random)));
+    let result = (|| -> anyhow::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        if !create_only && let Ok(metadata) = fs::metadata(path) {
+            file.set_permissions(metadata.permissions())?;
+        }
+        use std::io::Write;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        if create_only {
+            fs::hard_link(&tmp, path)?;
+            fs::remove_file(&tmp)?;
+        } else {
+            fs::rename(&tmp, path)?;
+        }
+        fs::File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
+fn registry_document_for_deck(deck: &Path) -> anyhow::Result<sideshow::registry::RegistryDocument> {
+    let deck_toml = sideshow::parse_deck_toml(&fs::read_to_string(deck.join("deck.toml"))?)?;
+    let (components, themes, _) = sideshow::project_packs::load(deck, &deck_toml)?;
+    let mut entries = sideshow::registry::registry_document()?.entries;
+    entries.extend(components.into_iter().map(|c| c.entry));
+    entries.extend(themes.into_iter().map(|t| t.entry));
+    Ok(sideshow::registry::RegistryDocument {
+        schema_version: sideshow::registry::REGISTRY_SCHEMA_VERSION,
+        entries: sideshow::registry::validate_entries(&entries)?,
+    })
 }
 
 fn compose_command(command: ComposeCommand) -> anyhow::Result<()> {
@@ -613,10 +747,15 @@ fn compose_command(command: ComposeCommand) -> anyhow::Result<()> {
                 props: args.props.into_iter().collect(),
                 bind,
             };
-            sideshow::composition::add(&args.source, &slide)?;
+            let project = validate_effective_component(args.deck.as_deref(), &args.source, &slide)?;
+            if project {
+                write_project_slide(&args.source, &slide, true)?;
+            } else {
+                sideshow::composition::add(&args.source, &slide)?;
+            }
             println!(
                 "{}",
-                serde_json::to_string_pretty(&sideshow::composition::explain(&args.source)?)?
+                serde_json::to_string_pretty(&composition_explain_effective(&args.source)?)?
             );
         }
         ComposeCommand::Update(args) => {
@@ -630,24 +769,122 @@ fn compose_command(command: ComposeCommand) -> anyhow::Result<()> {
                 props: args.props.into_iter().collect(),
                 bind,
             };
-            sideshow::composition::update(&args.source, &slide)?;
+            let project = validate_effective_component(args.deck.as_deref(), &args.source, &slide)?;
+            if project {
+                write_project_slide(&args.source, &slide, false)?;
+            } else {
+                sideshow::composition::update(&args.source, &slide)?;
+            }
             println!(
                 "{}",
-                serde_json::to_string_pretty(&sideshow::composition::explain(&args.source)?)?
+                serde_json::to_string_pretty(&composition_explain_effective(&args.source)?)?
             );
         }
         ComposeCommand::Explain { source } => println!(
             "{}",
-            serde_json::to_string_pretty(&sideshow::composition::explain(&source)?)?
+            serde_json::to_string_pretty(&composition_explain_effective(&source)?)?
         ),
         ComposeCommand::Remove { source } => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&sideshow::composition::remove(&source)?)?
-            );
+            let removed = composition_remove_effective(&source)?;
+            println!("{}", serde_json::to_string_pretty(&removed)?);
         }
     }
     Ok(())
+}
+
+fn infer_deck(source: &Path) -> Option<PathBuf> {
+    source
+        .ancestors()
+        .find(|p| p.join("deck.toml").is_file())
+        .map(Path::to_path_buf)
+}
+
+fn validate_effective_component(
+    deck: Option<&Path>,
+    source: &Path,
+    slide: &sideshow::composition::ComponentSlide,
+) -> anyhow::Result<bool> {
+    let inferred = infer_deck(source);
+    if let Some(deck) = deck.or(inferred.as_deref()) {
+        let deck_toml = sideshow::parse_deck_toml(&fs::read_to_string(deck.join("deck.toml"))?)?;
+        if sideshow::project_packs::validate_component_slide(deck, &deck_toml, slide)? {
+            return Ok(true);
+        }
+        let doc = registry_document_for_deck(deck)?;
+        if let Some(entry) = doc
+            .entries
+            .iter()
+            .find(|e| e.kind == "component" && e.name == slide.component)
+        {
+            if entry.provenance.source.starts_with("project:") {
+                return Ok(true);
+            }
+            return Ok(false);
+        }
+    }
+    let _ = sideshow::registry::explain("component", &slide.component)?;
+    Ok(false)
+}
+
+fn write_project_slide(
+    source: &Path,
+    slide: &sideshow::composition::ComponentSlide,
+    create: bool,
+) -> anyhow::Result<()> {
+    sideshow::composition::validate_source_path(source)?;
+    if create && source.exists() {
+        anyhow::bail!("component slide already exists: {}", source.display());
+    }
+    if !create && !source.is_file() {
+        anyhow::bail!("component slide does not exist: {}", source.display());
+    }
+    if let Some(parent) = source.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    sideshow::composition::atomic_write_source(
+        source,
+        toml::to_string_pretty(slide)?.as_bytes(),
+        create,
+    )?;
+    Ok(())
+}
+
+fn composition_explain_effective(source: &Path) -> anyhow::Result<serde_json::Value> {
+    let slide = sideshow::composition::load(source)?;
+    if let Some(deck) = infer_deck(source) {
+        let deck_toml = sideshow::parse_deck_toml(&fs::read_to_string(deck.join("deck.toml"))?)?;
+        let is_project =
+            sideshow::project_packs::validate_component_slide(&deck, &deck_toml, &slide)?;
+        let doc = registry_document_for_deck(&deck)?;
+        if let Some(entry) = doc
+            .entries
+            .into_iter()
+            .find(|e| e.kind == "component" && e.name == slide.component)
+        {
+            if entry.provenance.source.starts_with("project:") && !is_project {
+                anyhow::bail!("invalid project component source");
+            }
+            return Ok(
+                serde_json::json!({"source": source, "component": slide.component, "registry": entry, "props": slide.props, "bind": slide.bind, "trust_contract": sideshow::composition::TRUST_CONTRACT}),
+            );
+        }
+    }
+    Ok(serde_json::to_value(sideshow::composition::explain(
+        source,
+    )?)?)
+}
+
+fn composition_remove_effective(source: &Path) -> anyhow::Result<serde_json::Value> {
+    let slide = sideshow::composition::load(source)?;
+    if let Some(deck) = infer_deck(source) {
+        let deck_toml = sideshow::parse_deck_toml(&fs::read_to_string(deck.join("deck.toml"))?)?;
+        if sideshow::project_packs::validate_component_slide(&deck, &deck_toml, &slide)? {
+            fs::remove_file(source)
+                .with_context(|| format!("failed to remove {}", source.display()))?;
+            return Ok(serde_json::json!({"removed": source}));
+        }
+    }
+    sideshow::composition::remove(source)
 }
 
 fn parse_key_val(s: &str) -> Result<(String, String), String> {
@@ -716,7 +953,7 @@ fn plan_command(command: PlanCommand) -> anyhow::Result<()> {
         }
         PlanCommand::Serve { dir, port, open } => serve(&dir, port, true, open),
         PlanCommand::Mutate { dir, command } => {
-            let op = match command {
+            let op = match *command {
                 PlanMutateCommand::AddOutcome(a) => {
                     sideshow::plan::PlanMutation::AddOutcome(sideshow::plan::Outcome {
                         id: a.id,
@@ -2021,6 +2258,10 @@ fn deck_input_files(deck_root: &Path) -> anyhow::Result<Vec<(String, Vec<u8>)>> 
     // deck.toml can name slide files outside the conventional slides/ directory. Include the
     // exact selected source set as well as the conservative trees above.
     let deck = sideshow::parse_deck_toml(std::str::from_utf8(&deck_toml)?)?;
+    let pack_inputs = sideshow::project_packs::accepted_inputs(&deck_root, &deck)?;
+    for input in &pack_inputs {
+        inputs.push((input.path.clone(), input.bytes.clone()));
+    }
     let mut plan_bound = false;
     for path in sideshow::slide_order(&deck_root, &deck)? {
         let name = path
@@ -2114,6 +2355,7 @@ fn review_build_manifest(
         Err(error) => return Err(error.into()),
     };
     let deck = sideshow::parse_deck_toml(std::str::from_utf8(&deck_toml)?)?;
+    let pack_inputs = sideshow::project_packs::accepted_inputs(&deck_root, &deck)?;
     let slide_paths = sideshow::slide_order(&deck_root, &deck)?;
     let mut assets = Vec::new();
     collect_deck_input_tree(&deck_root, Path::new("assets"), false, &mut assets)?;
@@ -2132,6 +2374,9 @@ fn review_build_manifest(
         let mut digest = Sha256::new();
         digest_field(&mut digest, b"deck.toml", &deck_toml);
         digest_field(&mut digest, b"theme.css", &theme_css);
+        for input in &pack_inputs {
+            digest_field(&mut digest, input.path.as_bytes(), &input.bytes);
+        }
         digest_field(&mut digest, relative.as_bytes(), &source);
         if sideshow::composition::is_component_slide_path(&path) {
             let slide = toml::from_str::<sideshow::composition::ComponentSlide>(
@@ -2252,7 +2497,23 @@ fn build_input_path_is_relevant(path: &Path, deck_dir: &Path, dist: &Path) -> bo
         || rel == Path::new("plan.json")
         || has_top_level_component(rel, "slides")
         || has_top_level_component(rel, "assets")
+        || accepted_pack_path_is_relevant(path, deck_dir)
         || configured_slide_path_is_relevant(path, deck_dir)
+}
+
+fn accepted_pack_path_is_relevant(path: &Path, deck_dir: &Path) -> bool {
+    fs::read_to_string(deck_dir.join("deck.toml"))
+        .ok()
+        .and_then(|source| sideshow::parse_deck_toml(&source).ok())
+        .is_some_and(|deck| {
+            let rel = path.strip_prefix(deck_dir).unwrap_or(path);
+            deck.packs.roots.iter().any(|root| {
+                !root.is_empty()
+                    && !Path::new(root).is_absolute()
+                    && !root.split('/').any(|part| part == ".." || part.is_empty())
+                    && rel.starts_with(Path::new(root))
+            })
+        })
 }
 
 fn configured_slide_path_is_relevant(path: &Path, deck_dir: &Path) -> bool {
@@ -3818,6 +4079,104 @@ mod serve_tests {
                 "{bad}"
             );
         }
+    }
+
+    fn write_project_pack_fixture(deck: &Path) {
+        fs::create_dir_all(deck.join("slides")).unwrap();
+        fs::create_dir_all(deck.join("packs/local/c")).unwrap();
+        fs::write(
+            deck.join("deck.toml"),
+            "[deck]\ntitle='Pack'\n[packs]\nroots=['packs/local']\n",
+        )
+        .unwrap();
+        fs::write(deck.join("theme.css"), "body{}").unwrap();
+        fs::write(deck.join("packs/local/pack.toml"), "schema_version=1\npack='local'\n[[components]]\nname='safe-card'\ntemplate='c/card.html'\ncss='c/card.css'\nprops=['title']\ncapabilities=['js-free']\n").unwrap();
+        fs::write(deck.join("packs/local/c/card.html"), "<h1>{{title}}</h1>").unwrap();
+        fs::write(
+            deck.join("packs/local/c/card.css"),
+            ".safe-card{color:blue}",
+        )
+        .unwrap();
+        fs::write(
+            deck.join("slides/01.slide.toml"),
+            "component='safe-card'\n[props]\ntitle='A'\n",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn project_pack_resources_affect_digest_review_and_watcher_relevance() {
+        let t = tempfile::tempdir().unwrap();
+        write_project_pack_fixture(t.path());
+        let dist = t.path().join("dist");
+        let before_digest = deck_input_digest(t.path()).unwrap();
+        let built = stable_build_deck(t.path(), true).unwrap();
+        let before_manifest = built.manifest.clone().unwrap();
+        assert!(build_input_path_is_relevant(
+            &t.path().join("packs/local/pack.toml"),
+            t.path(),
+            &dist
+        ));
+        assert!(build_input_path_is_relevant(
+            &t.path().join("packs/local/c/card.html"),
+            t.path(),
+            &dist
+        ));
+        assert!(build_input_path_is_relevant(
+            &t.path().join("packs/local/c/card.css"),
+            t.path(),
+            &dist
+        ));
+        assert!(build_input_path_is_relevant(
+            &t.path().join("packs/local/c/unused.css"),
+            t.path(),
+            &dist
+        ));
+
+        fs::write(t.path().join("packs/local/pack.toml"), "not = [valid").unwrap();
+        assert!(build_input_path_is_relevant(
+            &t.path().join("packs/local/pack.toml"),
+            t.path(),
+            &dist
+        ));
+        fs::remove_file(t.path().join("packs/local/c/card.css")).unwrap();
+        assert!(build_input_path_is_relevant(
+            &t.path().join("packs/local/c/card.css"),
+            t.path(),
+            &dist
+        ));
+        write_project_pack_fixture(t.path());
+
+        fs::write(
+            t.path().join("packs/local/c/card.html"),
+            "<h1>New {{title}}</h1>",
+        )
+        .unwrap();
+        let changed_template_digest = deck_input_digest(t.path()).unwrap();
+        let changed_template = stable_build_deck(t.path(), true)
+            .unwrap()
+            .manifest
+            .clone()
+            .unwrap();
+        assert_ne!(before_digest, changed_template_digest);
+        assert_ne!(
+            before_manifest.slides[0].source_digest,
+            changed_template.slides[0].source_digest
+        );
+
+        fs::write(
+            t.path().join("packs/local/c/card.css"),
+            ".safe-card{color:red}",
+        )
+        .unwrap();
+        let changed_css = stable_build_deck(t.path(), true).unwrap();
+        let out = sideshow::build_deck(t.path()).unwrap();
+        let html = fs::read_to_string(out).unwrap();
+        assert!(html.contains("color:red"));
+        assert_ne!(
+            changed_template.slides[0].source_digest,
+            changed_css.manifest.clone().unwrap().slides[0].source_digest
+        );
     }
 
     #[test]

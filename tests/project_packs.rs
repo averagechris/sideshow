@@ -1,0 +1,319 @@
+use std::{fs, path::Path, process::Command};
+
+fn bin() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_sideshow"))
+}
+
+fn write_pack(deck: &Path) {
+    fs::create_dir_all(deck.join("slides")).unwrap();
+    fs::create_dir_all(deck.join("packs/local/components")).unwrap();
+    fs::create_dir_all(deck.join("packs/local/themes")).unwrap();
+    fs::write(
+        deck.join("deck.toml"),
+        "[deck]\ntitle='Pack Test'\n[packs]\nroots=['packs/local']\n",
+    )
+    .unwrap();
+    fs::write(deck.join("theme.css"), "body{color:black}").unwrap();
+    fs::write(
+        deck.join("packs/local/pack.toml"),
+        "schema_version=1\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\n[[themes]]\nname='local-theme'\ncss='themes/local.css'\n",
+    )
+    .unwrap();
+    fs::write(
+        deck.join("packs/local/components/card.html"),
+        "<article><h1>{{title}}</h1></article>",
+    )
+    .unwrap();
+    fs::write(
+        deck.join("packs/local/components/card.css"),
+        ".safe-card{color:purple}",
+    )
+    .unwrap();
+    fs::write(
+        deck.join("packs/local/themes/local.css"),
+        "body{color:green}",
+    )
+    .unwrap();
+}
+
+#[test]
+fn project_component_build_discovery_compose_and_theme_apply_work() {
+    let t = tempfile::tempdir().unwrap();
+    write_pack(t.path());
+    let source = t.path().join("slides/01.slide.toml");
+    let out = bin()
+        .args([
+            "compose",
+            "add",
+            "--deck",
+            t.path().to_str().unwrap(),
+            source.to_str().unwrap(),
+            "--component",
+            "safe-card",
+            "--prop",
+            "title=<b>x</b>",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("project:0"));
+
+    let list = bin()
+        .args(["registry", "list", "--deck", t.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(list.status.success());
+    assert!(String::from_utf8_lossy(&list.stdout).contains("safe-card"));
+    assert!(String::from_utf8_lossy(&list.stdout).contains("sha256:"));
+
+    let build = bin()
+        .args(["build", t.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let html = fs::read_to_string(t.path().join("dist/pack-test.html")).unwrap();
+    assert!(html.contains("&lt;b&gt;x&lt;/b&gt;"));
+    assert!(html.contains("color:purple"));
+
+    let no_force = bin()
+        .args([
+            "registry",
+            "apply-theme",
+            "--deck",
+            t.path().to_str().unwrap(),
+            "local-theme",
+        ])
+        .output()
+        .unwrap();
+    assert!(!no_force.status.success());
+    let applied = bin()
+        .args([
+            "registry",
+            "apply-theme",
+            "--deck",
+            t.path().to_str().unwrap(),
+            "local-theme",
+            "--force",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        applied.status.success(),
+        "{}",
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(t.path().join("theme.css")).unwrap(),
+        "body{color:green}"
+    );
+    fs::write(
+        t.path().join("packs/local/themes/local.css"),
+        "body{color:red}",
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(t.path().join("theme.css")).unwrap(),
+        "body{color:green}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn project_pack_rejects_root_intermediate_and_file_symlinks() {
+    use std::os::unix::fs::symlink;
+    for case in ["root", "intermediate", "file"] {
+        let t = tempfile::tempdir().unwrap();
+        write_pack(t.path());
+        match case {
+            "root" => {
+                fs::remove_dir_all(t.path().join("packs/local")).unwrap();
+                symlink("/tmp", t.path().join("packs/local")).unwrap();
+            }
+            "intermediate" => {
+                fs::remove_dir_all(t.path().join("packs/local/components")).unwrap();
+                symlink("/tmp", t.path().join("packs/local/components")).unwrap();
+            }
+            "file" => {
+                fs::remove_file(t.path().join("packs/local/components/card.html")).unwrap();
+                symlink(
+                    "/etc/passwd",
+                    t.path().join("packs/local/components/card.html"),
+                )
+                .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let out = bin()
+            .args(["registry", "list", "--deck", t.path().to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{case} unexpectedly succeeded");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("symlink"));
+    }
+}
+
+#[test]
+fn project_pack_rejects_collisions_runtime_names_and_unsafe_markup() {
+    let t = tempfile::tempdir().unwrap();
+    write_pack(t.path());
+    fs::write(
+        t.path().join("packs/local/components/card.html"),
+        "<img src=\"https://x\" onload=\"x\">{{title}}",
+    )
+    .unwrap();
+    let out = bin()
+        .args(["registry", "list", "--deck", t.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("forbidden"));
+
+    write_pack(t.path());
+    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=1\npack='local'\n[[components]]\nname='review-feedback'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\n").unwrap();
+    let out = bin()
+        .args(["registry", "list", "--deck", t.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("fixed runtime"));
+
+    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=1\npack='local'\n[[components]]\nname='literal-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\n").unwrap();
+    let out = bin()
+        .args(["registry", "list", "--deck", t.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("collision"));
+}
+
+#[test]
+fn compose_rejects_invalid_project_props_without_writing() {
+    let t = tempfile::tempdir().unwrap();
+    write_pack(t.path());
+    let source = t.path().join("slides/bad.slide.toml");
+    let missing = bin()
+        .args([
+            "compose",
+            "add",
+            "--deck",
+            t.path().to_str().unwrap(),
+            source.to_str().unwrap(),
+            "--component",
+            "safe-card",
+        ])
+        .output()
+        .unwrap();
+    assert!(!missing.status.success());
+    assert!(!source.exists());
+    fs::write(&source, "component='safe-card'\n[props]\ntitle='old'\n").unwrap();
+    let before = fs::read_to_string(&source).unwrap();
+    let unknown = bin()
+        .args([
+            "compose",
+            "update",
+            "--deck",
+            t.path().to_str().unwrap(),
+            source.to_str().unwrap(),
+            "--component",
+            "safe-card",
+            "--prop",
+            "title=ok",
+            "--prop",
+            "nope=x",
+        ])
+        .output()
+        .unwrap();
+    assert!(!unknown.status.success());
+    assert_eq!(fs::read_to_string(&source).unwrap(), before);
+    let bound = bin()
+        .args([
+            "compose",
+            "update",
+            "--deck",
+            t.path().to_str().unwrap(),
+            source.to_str().unwrap(),
+            "--component",
+            "safe-card",
+            "--prop",
+            "title=ok",
+            "--bind-kind",
+            "outcome",
+            "--bind-id",
+            "x",
+        ])
+        .output()
+        .unwrap();
+    assert!(!bound.status.success());
+    assert_eq!(fs::read_to_string(&source).unwrap(), before);
+}
+
+#[test]
+fn compose_remove_handles_project_sources_and_preserves_invalid() {
+    let t = tempfile::tempdir().unwrap();
+    write_pack(t.path());
+    let source = t.path().join("slides/remove.slide.toml");
+    fs::write(&source, "component='safe-card'\n[props]\ntitle='ok'\n").unwrap();
+    let removed = bin()
+        .args(["compose", "remove", source.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        removed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&removed.stderr)
+    );
+    assert!(!source.exists());
+
+    fs::write(&source, "component='safe-card'\n[props]\nnope='bad'\n").unwrap();
+    let invalid = bin()
+        .args(["compose", "remove", source.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!invalid.status.success());
+    assert!(
+        source.exists(),
+        "invalid project source must not be deleted"
+    );
+}
+
+#[test]
+fn project_template_rejects_attribute_placeholders_and_css_urls() {
+    let t = tempfile::tempdir().unwrap();
+    write_pack(t.path());
+    for template in [
+        "<div title=\"{{title}}\">x</div>",
+        "<div title={{title}}>x</div>",
+        "<div\n data-x = \"{{title}}\">x</div>",
+    ] {
+        fs::write(t.path().join("packs/local/components/card.html"), template).unwrap();
+        let out = bin()
+            .args(["registry", "list", "--deck", t.path().to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "template passed: {template}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("placeholder inside HTML tag"));
+    }
+    fs::write(
+        t.path().join("packs/local/components/card.html"),
+        "<p>{{title}}</p>",
+    )
+    .unwrap();
+    fs::write(
+        t.path().join("packs/local/components/card.css"),
+        ".x{background: U R L (https://x)}",
+    )
+    .unwrap();
+    let out = bin()
+        .args(["registry", "list", "--deck", t.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}

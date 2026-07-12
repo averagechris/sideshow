@@ -20,6 +20,484 @@ pub mod review;
 #[doc(hidden)]
 pub mod secure_fs;
 
+pub mod project_packs {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    pub const PACK_SCHEMA_VERSION: u32 = 1;
+    pub const PACK_MANIFEST: &str = "pack.toml";
+
+    #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
+    #[serde(deny_unknown_fields)]
+    pub struct PackConfig {
+        #[serde(default)]
+        pub roots: Vec<String>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Manifest {
+        schema_version: u32,
+        pack: String,
+        #[serde(default)]
+        components: Vec<Component>,
+        #[serde(default)]
+        themes: Vec<Theme>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Component {
+        name: String,
+        template: String,
+        css: String,
+        #[serde(default)]
+        props: Vec<String>,
+        #[serde(default)]
+        capabilities: Vec<String>,
+        #[serde(default)]
+        intent: Vec<String>,
+        #[serde(default)]
+        accepted_input: Vec<String>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Theme {
+        name: String,
+        css: String,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct ProjectComponent {
+        pub name: String,
+        pub template: String,
+        pub css: String,
+        pub props: Vec<String>,
+        pub entry: registry::RegistryEntry,
+    }
+    #[derive(Debug, Clone)]
+    pub struct ProjectTheme {
+        pub name: String,
+        pub css: String,
+        pub entry: registry::RegistryEntry,
+    }
+
+    pub struct AcceptedInput {
+        pub path: String,
+        pub bytes: Vec<u8>,
+    }
+
+    pub fn roots(deck_dir: &Path, deck: &DeckToml) -> anyhow::Result<Vec<PathBuf>> {
+        let base = deck_dir.canonicalize()?;
+        let mut out = Vec::new();
+        for root in &deck.packs.roots {
+            if root.is_empty()
+                || Path::new(root).is_absolute()
+                || root.split('/').any(|p| p == "..")
+            {
+                bail!("project pack root must be a relative path inside deck root: {root}");
+            }
+            let c = checked_descend(&base, root, true)?;
+            out.push(c);
+        }
+        Ok(out)
+    }
+
+    fn checked_descend(base: &Path, rel: &str, want_dir: bool) -> anyhow::Result<PathBuf> {
+        let mut cur = base.to_path_buf();
+        for part in rel.split('/') {
+            if part.is_empty() || part == "." || part == ".." {
+                bail!("project pack path must be relative without traversal: {rel}");
+            }
+            cur.push(part);
+            let md = fs::symlink_metadata(&cur)
+                .with_context(|| format!("failed to inspect project pack path {rel}"))?;
+            if md.file_type().is_symlink() {
+                bail!("project pack path must not contain symlinks: {rel}");
+            }
+            let last = cur.file_name().is_some_and(|_| cur == base.join(rel));
+            if !last || want_dir {
+                if !md.is_dir() {
+                    bail!("project pack path component is not a directory: {rel}");
+                }
+            } else if !md.is_file() {
+                bail!("project pack resource is not a regular file: {rel}");
+            }
+        }
+        Ok(cur)
+    }
+
+    fn confined_read(root: &Path, rel: &str) -> anyhow::Result<Vec<u8>> {
+        if rel.is_empty()
+            || Path::new(rel).is_absolute()
+            || rel.split('/').any(|p| p == ".." || p.is_empty())
+        {
+            bail!("project pack resource path must be relative without traversal: {rel}");
+        }
+        let c = checked_descend(root, rel, false)?;
+        fs::read(&c).with_context(|| format!("failed to read project pack resource {rel}"))
+    }
+
+    fn reject_unsafe_tree(root: &Path) -> anyhow::Result<()> {
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let mut entries = fs::read_dir(&dir)?.collect::<Result<Vec<_>, _>>()?;
+            entries.sort_by_key(|e| e.file_name());
+            for entry in entries {
+                let path = entry.path();
+                let md = fs::symlink_metadata(&path)?;
+                let rel = path.strip_prefix(root).unwrap_or(&path).display();
+                if md.file_type().is_symlink() {
+                    bail!("project pack tree contains forbidden symlink: {rel}");
+                }
+                if md.is_dir() {
+                    stack.push(path);
+                } else if !md.is_file() {
+                    bail!("project pack tree contains non-regular file: {rel}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_markup(name: &str, s: &str) -> anyhow::Result<()> {
+        let l = s.to_ascii_lowercase();
+        for bad in [
+            "<script",
+            "<style",
+            "<link",
+            "<iframe",
+            "<object",
+            "<embed",
+            "<form",
+            "<input",
+            "<button",
+            "<textarea",
+            "<select",
+            "javascript:",
+            "data:",
+            "http://",
+            "https://",
+            "//",
+        ] {
+            if l.contains(bad) {
+                bail!("project component {name} contains forbidden markup/reference {bad}");
+            }
+        }
+        let attr_re = Regex::new(r#"(?i)\s+on[a-z0-9_-]+\s*="#).unwrap();
+        if attr_re.is_match(s) {
+            bail!("project component {name} contains forbidden event handler attribute");
+        }
+        reject_placeholders_in_tags(name, s)?;
+        Ok(())
+    }
+
+    fn reject_placeholders_in_tags(name: &str, s: &str) -> anyhow::Result<()> {
+        let mut in_tag = false;
+        let mut chars = s.char_indices().peekable();
+        while let Some((i, c)) = chars.next() {
+            if c == '<' {
+                in_tag = true;
+            }
+            if c == '>' {
+                in_tag = false;
+            }
+            if c == '{' && matches!(chars.peek(), Some((_, '{'))) && in_tag {
+                bail!(
+                    "project component {name} uses placeholder inside HTML tag/attribute context at byte {i}"
+                );
+            }
+        }
+        Ok(())
+    }
+    fn validate_css(name: &str, s: &str) -> anyhow::Result<()> {
+        let l = s.to_ascii_lowercase();
+        let compact: String = l.chars().filter(|c| !c.is_whitespace()).collect();
+        for bad in [
+            "@import",
+            "url(",
+            "javascript:",
+            "data:",
+            "http://",
+            "https://",
+            "//",
+        ] {
+            if compact.contains(bad) {
+                bail!(
+                    "project pack css for {name} contains forbidden remote/import/url reference {bad}"
+                );
+            }
+        }
+        Ok(())
+    }
+    fn digest(bytes: &[u8]) -> String {
+        format!("sha256:{:x}", Sha256::digest(bytes))
+    }
+
+    pub fn load(
+        deck_dir: &Path,
+        deck: &DeckToml,
+    ) -> anyhow::Result<(
+        Vec<ProjectComponent>,
+        Vec<ProjectTheme>,
+        Vec<registry::RegistrySource>,
+    )> {
+        let bundled = registry::registry_document()?;
+        let mut names = bundled
+            .entries
+            .iter()
+            .map(|e| (e.kind.clone(), e.name.clone()))
+            .collect::<BTreeSet<_>>();
+        let mut comps = Vec::new();
+        let mut themes = Vec::new();
+        let mut sources = Vec::new();
+        for (ordinal, root) in roots(deck_dir, deck)?.into_iter().enumerate() {
+            reject_unsafe_tree(&root)?;
+            let manifest_bytes = confined_read(&root, PACK_MANIFEST)?;
+            let manifest: Manifest = toml::from_str(std::str::from_utf8(&manifest_bytes)?)
+                .with_context(|| {
+                    format!(
+                        "invalid project pack manifest {}",
+                        root.join(PACK_MANIFEST).display()
+                    )
+                })?;
+            if manifest.schema_version != PACK_SCHEMA_VERSION {
+                bail!(
+                    "project pack '{}' has unsupported schema_version {}",
+                    manifest.pack,
+                    manifest.schema_version
+                );
+            }
+            let prov = registry::Provenance {
+                source: format!("project:{}", ordinal),
+                pack: manifest.pack.clone(),
+                pack_schema_version: manifest.schema_version,
+            };
+            let deck_base = deck_dir.canonicalize()?;
+            let note = root
+                .strip_prefix(&deck_base)
+                .unwrap_or(&root)
+                .to_string_lossy()
+                .replace('\\', "/");
+            sources.push(registry::RegistrySource {
+                provenance: prov.clone(),
+                activated: true,
+                note,
+            });
+            for c in manifest.components {
+                registry::reject_reserved("component", &c.name)?;
+                if c.capabilities.is_empty() || !c.capabilities.iter().any(|x| x == "js-free") {
+                    bail!(
+                        "project component '{}' must declare js-free capability",
+                        c.name
+                    );
+                }
+                if ordered(c.capabilities.clone()) != c.capabilities
+                    || ordered(c.props.clone()) != c.props
+                    || ordered(c.intent.clone()) != c.intent
+                    || ordered(c.accepted_input.clone()) != c.accepted_input
+                {
+                    bail!(
+                        "project component '{}' manifest lists must be sorted unique",
+                        c.name
+                    );
+                }
+                if c.capabilities.iter().any(|x| x == "js") {
+                    bail!(
+                        "project component '{}' declares forbidden js capability",
+                        c.name
+                    );
+                }
+                for capability in &c.capabilities {
+                    if !matches!(
+                        capability.as_str(),
+                        "js-free" | "component-slide" | "html-escaped"
+                    ) || capability.to_ascii_lowercase().contains("js")
+                        && capability != "js-free"
+                    {
+                        bail!(
+                            "project component '{}' declares unsupported capability {}",
+                            c.name,
+                            capability
+                        );
+                    }
+                }
+                if [
+                    "stage",
+                    "navigation",
+                    "audit",
+                    "runtime",
+                    "review",
+                    "feedback",
+                    "output",
+                    "assembly",
+                ]
+                .iter()
+                .any(|reserved| c.name.contains(reserved))
+                {
+                    bail!(
+                        "project component '{}' claims fixed runtime/output privilege",
+                        c.name
+                    );
+                }
+                if !names.insert(("component".into(), c.name.clone())) {
+                    bail!(
+                        "duplicate or bundled collision registry entry 'component/{}'",
+                        c.name
+                    );
+                }
+                let tb = confined_read(&root, &c.template)?;
+                let cb = confined_read(&root, &c.css)?;
+                let template = String::from_utf8(tb.clone())?;
+                let css = String::from_utf8(cb.clone())?;
+                validate_markup(&c.name, &template)?;
+                validate_css(&c.name, &css)?;
+                let files = vec![
+                    registry::ScaffoldFileMetadata {
+                        path: c.template.clone(),
+                        resource: c.template.clone(),
+                        digest: digest(&tb),
+                    },
+                    registry::ScaffoldFileMetadata {
+                        path: c.css.clone(),
+                        resource: c.css.clone(),
+                        digest: digest(&cb),
+                    },
+                ];
+                let entry = registry::RegistryEntry {
+                    kind: "component".into(),
+                    name: c.name.clone(),
+                    metadata: registry::RegistryMetadata::resource(
+                        c.intent,
+                        c.accepted_input,
+                        c.capabilities,
+                        Some(c.css.clone()),
+                        Some(&cb),
+                        files,
+                    ),
+                    provenance: prov.clone(),
+                };
+                comps.push(ProjectComponent {
+                    name: c.name,
+                    template,
+                    css,
+                    props: c.props,
+                    entry,
+                });
+            }
+            for t in manifest.themes {
+                registry::reject_reserved("theme", &t.name)?;
+                if !names.insert(("theme".into(), t.name.clone())) {
+                    bail!(
+                        "duplicate or bundled collision registry entry 'theme/{}'",
+                        t.name
+                    );
+                }
+                let cb = confined_read(&root, &t.css)?;
+                let css = String::from_utf8(cb.clone())?;
+                validate_css(&t.name, &css)?;
+                let entry = registry::RegistryEntry {
+                    kind: "theme".into(),
+                    name: t.name.clone(),
+                    metadata: registry::RegistryMetadata::resource(
+                        vec!["project-theme".into()],
+                        vec![],
+                        vec!["css".into()],
+                        Some(t.css.clone()),
+                        Some(&cb),
+                        vec![registry::ScaffoldFileMetadata {
+                            path: t.css.clone(),
+                            resource: t.css,
+                            digest: digest(&cb),
+                        }],
+                    ),
+                    provenance: prov.clone(),
+                };
+                themes.push(ProjectTheme {
+                    name: t.name,
+                    css,
+                    entry,
+                });
+            }
+        }
+        Ok((comps, themes, sources))
+    }
+
+    pub fn accepted_inputs(deck_dir: &Path, deck: &DeckToml) -> anyhow::Result<Vec<AcceptedInput>> {
+        let _ = load(deck_dir, deck)?;
+        let roots = roots(deck_dir, deck)?;
+        let deck_base = deck_dir.canonicalize()?;
+        let mut out = Vec::new();
+        for root in roots {
+            let manifest = confined_read(&root, PACK_MANIFEST)?;
+            let parsed: Manifest = toml::from_str(std::str::from_utf8(&manifest)?)?;
+            let rel_root = root
+                .strip_prefix(&deck_base)?
+                .to_string_lossy()
+                .replace('\\', "/");
+            out.push(AcceptedInput {
+                path: format!("{rel_root}/{PACK_MANIFEST}"),
+                bytes: manifest,
+            });
+            for c in parsed.components {
+                for rel in [c.template, c.css] {
+                    out.push(AcceptedInput {
+                        path: format!("{rel_root}/{rel}"),
+                        bytes: confined_read(&root, &rel)?,
+                    });
+                }
+            }
+            for t in parsed.themes {
+                out.push(AcceptedInput {
+                    path: format!("{rel_root}/{}", t.css),
+                    bytes: confined_read(&root, &t.css)?,
+                });
+            }
+        }
+        out.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(out)
+    }
+
+    pub fn validate_component_slide(
+        deck_dir: &Path,
+        deck: &DeckToml,
+        slide: &composition::ComponentSlide,
+    ) -> anyhow::Result<bool> {
+        let (components, _, _) = load(deck_dir, deck)?;
+        let Some(component) = components.iter().find(|c| c.name == slide.component) else {
+            return Ok(false);
+        };
+        if slide.bind.is_some() {
+            bail!("{} does not accept plan binding", slide.component);
+        }
+        let declared = component
+            .props
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        for key in slide.props.keys() {
+            if !declared.contains(key.as_str()) {
+                bail!("unknown prop {key} for component {}", slide.component);
+            }
+        }
+        for key in &component.props {
+            if !slide.props.contains_key(key) {
+                bail!("missing prop {key}");
+            }
+        }
+        Ok(true)
+    }
+
+    fn ordered(values: Vec<String>) -> Vec<String> {
+        values
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+}
+
 pub mod composition {
     use super::*;
     use std::collections::BTreeMap;
@@ -134,6 +612,9 @@ pub mod composition {
 
     pub(crate) fn render(deck_dir: &Path, path: &Path) -> anyhow::Result<String> {
         let slide = load(path)?;
+        if let Some(rendered) = render_project(deck_dir, &slide)? {
+            return Ok(rendered);
+        }
         validate_component(&slide)?;
         match slide.component.as_str() {
             "literal-card" => {
@@ -170,6 +651,36 @@ pub mod composition {
             }
             _ => bail!("unknown component {}", slide.component),
         }
+    }
+
+    fn render_project(deck_dir: &Path, slide: &ComponentSlide) -> anyhow::Result<Option<String>> {
+        let deck = crate::parse_deck_toml(&fs::read_to_string(deck_dir.join("deck.toml"))?)?;
+        let (components, _, _) = crate::project_packs::load(deck_dir, &deck)?;
+        let Some(component) = components.into_iter().find(|c| c.name == slide.component) else {
+            return Ok(None);
+        };
+        reject_bind(slide)?;
+        let declared = component
+            .props
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        for key in slide.props.keys() {
+            if !declared.contains(key.as_str()) {
+                bail!("unknown prop {key} for component {}", slide.component);
+            }
+        }
+        for key in &component.props {
+            if !slide.props.contains_key(key) {
+                bail!("missing prop {key}");
+            }
+        }
+        let values = slide
+            .props
+            .iter()
+            .map(|(k, v)| (k.as_str(), Escaped::Text(v.as_str())))
+            .collect();
+        render_template_string(&component.name, &component.template, values).map(Some)
     }
 
     fn validate_component(slide: &ComponentSlide) -> anyhow::Result<()> {
@@ -289,6 +800,44 @@ pub mod composition {
         Ok(rendered)
     }
 
+    fn render_template_string(
+        component: &str,
+        template: &str,
+        values: BTreeMap<&str, Escaped<'_>>,
+    ) -> anyhow::Result<String> {
+        let mut rendered = String::with_capacity(template.len());
+        let mut rest = template;
+        let mut used = BTreeSet::new();
+        while let Some(start) = rest.find("{{") {
+            rendered.push_str(&rest[..start]);
+            let after_open = &rest[start + 2..];
+            let Some(end) = after_open.find("}}") else {
+                bail!("component template {component} has an unterminated placeholder");
+            };
+            let key = after_open[..end].trim();
+            if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                bail!("component template {component} has invalid placeholder {key:?}");
+            }
+            let value = values.get(key).with_context(|| {
+                format!("component template {component} references unknown placeholder {key}")
+            })?;
+            rendered.push_str(&match value {
+                Escaped::Text(v) => esc(v),
+                Escaped::Attribute(v) => esc_attr(v),
+            });
+            used.insert(key.to_owned());
+            rest = &after_open[end + 2..];
+        }
+        rendered.push_str(rest);
+        for key in values.keys() {
+            if !used.contains(*key) {
+                bail!("component template {component} did not consume placeholder {key}");
+            }
+        }
+        crate::validate_fragment(Path::new(component), &rendered)?;
+        Ok(rendered)
+    }
+
     fn lock_source(path: &Path) -> anyhow::Result<fs::File> {
         use fs4::fs_std::FileExt;
         let lock_path = path.with_file_name(format!(
@@ -299,6 +848,7 @@ pub mod composition {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&lock_path)
             .with_context(|| {
                 format!(
@@ -309,6 +859,10 @@ pub mod composition {
         lock.lock_exclusive()
             .context("failed to lock component slide lock")?;
         Ok(lock)
+    }
+
+    pub fn atomic_write_source(path: &Path, bytes: &[u8], create_only: bool) -> anyhow::Result<()> {
+        atomic_write(path, bytes, create_only)
     }
 
     fn atomic_write(path: &Path, bytes: &[u8], create_only: bool) -> anyhow::Result<()> {
@@ -854,6 +1408,7 @@ pub mod plan {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&lock_path)
             .with_context(|| format!("failed to open mutation lock {}", lock_path.display()))?;
         lock.lock_exclusive()
@@ -1940,6 +2495,8 @@ pub struct DeckToml {
     pub images: ImagesConfig,
     #[serde(default)]
     pub fonts: Vec<FontFaceConfig>,
+    #[serde(default)]
+    pub packs: project_packs::PackConfig,
 }
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct DeckMeta {
@@ -3252,13 +3809,21 @@ fn compile_css(dir: &Path) -> anyhow::Result<String> {
     let tmp = tempfile::Builder::new().prefix("sideshow-").tempdir()?;
     let input = tmp.path().join("entry.css");
     let output = tmp.path().join("out.css");
+    let deck = parse_deck_toml(&fs::read_to_string(dir.join("deck.toml"))?)?;
+    let (components, _, _) = project_packs::load(dir, &deck)?;
+    let project_component_css = components
+        .into_iter()
+        .map(|c| c.css)
+        .collect::<Vec<_>>()
+        .join("\n");
     fs::write(
         &input,
         format!(
-            "@import \"tailwindcss\" source(none);\n@source {};\n{}\n{}\n{}\n",
+            "@import \"tailwindcss\" source(none);\n@source {};\n{}\n{}\n{}\n{}\n",
             slides_source,
             STAGE_CSS,
             PLAN_CSS,
+            project_component_css,
             fs::read_to_string(dir.join("theme.css"))?
         ),
     )?;
@@ -4184,6 +4749,84 @@ mod tests {
         assert!(PLAN_CSS.contains(".plan-diagram [data-node]"));
         assert!(!PLAN_CSS.to_ascii_lowercase().contains("javascript"));
         assert!(!RUNTIME_JS.contains("plan-"));
+    }
+
+    #[test]
+    fn project_pack_roots_are_explicit_confined_and_collision_checked() {
+        let t = tempfile::tempdir().unwrap();
+        fs::write(
+            t.path().join("deck.toml"),
+            "[deck]\ntitle='T'\n[packs]\nroots=['packs/local']\n",
+        )
+        .unwrap();
+        fs::create_dir_all(t.path().join("packs/local/components")).unwrap();
+        fs::write(t.path().join("packs/local/pack.toml"), "schema_version=1\npack='local'\n[[components]]\nname='literal-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\n").unwrap();
+        fs::write(
+            t.path().join("packs/local/components/card.html"),
+            "<h1>{{title}}</h1>",
+        )
+        .unwrap();
+        fs::write(t.path().join("packs/local/components/card.css"), ".x{}").unwrap();
+        let deck =
+            parse_deck_toml(&fs::read_to_string(t.path().join("deck.toml")).unwrap()).unwrap();
+        assert!(
+            project_packs::load(t.path(), &deck)
+                .unwrap_err()
+                .to_string()
+                .contains("collision")
+        );
+
+        let bad = parse_deck_toml("[deck]\ntitle='T'\n[packs]\nroots=['../packs']\n").unwrap();
+        assert!(
+            project_packs::roots(t.path(), &bad)
+                .unwrap_err()
+                .to_string()
+                .contains("relative")
+        );
+    }
+
+    #[test]
+    fn project_component_escapes_props_and_rejects_js_and_remote_css() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir_all(t.path().join("slides")).unwrap();
+        fs::create_dir_all(t.path().join("packs/local/c")).unwrap();
+        fs::write(
+            t.path().join("deck.toml"),
+            "[deck]\ntitle='T'\n[packs]\nroots=['packs/local']\n",
+        )
+        .unwrap();
+        fs::write(t.path().join("packs/local/pack.toml"), "schema_version=1\npack='local'\n[[components]]\nname='safe-card'\ntemplate='c/card.html'\ncss='c/card.css'\nprops=['title']\ncapabilities=['js-free']\n").unwrap();
+        fs::write(
+            t.path().join("packs/local/c/card.html"),
+            "<h1>{{title}}</h1>",
+        )
+        .unwrap();
+        fs::write(
+            t.path().join("packs/local/c/card.css"),
+            ".safe-card{color:red}",
+        )
+        .unwrap();
+        fs::write(
+            t.path().join("slides/01.slide.toml"),
+            "component='safe-card'\n[props]\ntitle='<img onerror=alert(1)>'\n",
+        )
+        .unwrap();
+        let html = composition::render(t.path(), &t.path().join("slides/01.slide.toml")).unwrap();
+        assert!(html.contains("&lt;img onerror=alert(1)&gt;"));
+
+        fs::write(
+            t.path().join("packs/local/c/card.css"),
+            "@import url(https://x)",
+        )
+        .unwrap();
+        let deck =
+            parse_deck_toml(&fs::read_to_string(t.path().join("deck.toml")).unwrap()).unwrap();
+        assert!(
+            project_packs::load(t.path(), &deck)
+                .unwrap_err()
+                .to_string()
+                .contains("forbidden")
+        );
     }
 
     #[test]

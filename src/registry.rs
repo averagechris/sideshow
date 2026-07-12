@@ -80,7 +80,7 @@ impl RegistryMetadata {
         }
     }
 
-    fn resource(
+    pub fn resource(
         intent: Vec<String>,
         accepted_input: Vec<String>,
         capabilities: Vec<String>,
