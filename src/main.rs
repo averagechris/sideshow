@@ -2,6 +2,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use flate2::{Compression, write::GzEncoder};
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sideshow::find_tool;
 use std::process::Command as ProcessCommand;
@@ -534,6 +535,19 @@ enum RegistryCommand {
         #[arg(long)]
         force: bool,
     },
+    /// Vendor a discovery-only user component into deck-local packs.
+    Vendor {
+        #[arg(long)]
+        deck: PathBuf,
+        #[command(subcommand)]
+        command: RegistryVendorCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RegistryVendorCommand {
+    Component { name: String },
+    Theme { name: String },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -802,8 +816,240 @@ fn registry_command(command: RegistryCommand) -> anyhow::Result<()> {
             )
         }
         RegistryCommand::ApplyTheme { deck, name, force } => apply_theme(&deck, &name, force)?,
+        RegistryCommand::Vendor { deck, command } => match command {
+            RegistryVendorCommand::Component { name } => vendor_component(&deck, &name)?,
+            RegistryVendorCommand::Theme { name } => {
+                anyhow::bail!(
+                    "registry vendor supports components only; themes cannot be vendored with this command: {name}"
+                )
+            }
+        },
     }
     Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VendorManifest {
+    schema_version: u32,
+    pack: String,
+    #[serde(default)]
+    components: Vec<VendorComponent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    themes: Vec<toml::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VendorComponent {
+    name: String,
+    template: String,
+    css: String,
+    #[serde(default)]
+    props: Vec<String>,
+    #[serde(default)]
+    capabilities: Vec<String>,
+    #[serde(default)]
+    intent: Vec<String>,
+    #[serde(default)]
+    accepted_input: Vec<String>,
+}
+
+fn vendor_component(deck: &Path, name: &str) -> anyhow::Result<()> {
+    let deck_file = deck.join("deck.toml");
+    let original_deck = fs::read_to_string(&deck_file)
+        .with_context(|| format!("failed to read {}", deck_file.display()))?;
+    let parsed_deck = sideshow::parse_deck_toml(&original_deck)?;
+    if sideshow::registry::registry_document()?
+        .entries
+        .iter()
+        .any(|e| e.kind == "component" && e.name == name)
+    {
+        anyhow::bail!("cannot vendor bundled component '{name}'");
+    }
+    if sideshow::project_packs::load(deck, &parsed_deck)?
+        .0
+        .iter()
+        .any(|c| c.name == name)
+    {
+        anyhow::bail!("cannot vendor already-active project component '{name}'");
+    }
+
+    let roots = sideshow::user_registry_roots()?;
+    let (selected_root, selected_manifest, selected_component, selected_entry) = roots
+        .iter()
+        .enumerate()
+        .filter_map(|(ordinal, root)| {
+            load_vendor_manifest(root)
+                .map(|m| {
+                    m.components
+                        .iter()
+                        .find(|c| c.name == name)
+                        .cloned()
+                        .map(|c| (ordinal, root.clone(), m, c))
+                })
+                .transpose()
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("unknown discovery-only user component '{name}'"))
+        .and_then(|(ordinal, root, manifest, component)| {
+            let component_entry = sideshow::user_registry_discovery()?
+                .0
+                .into_iter()
+                .find(|c| c.name == name)
+                .ok_or_else(|| anyhow::anyhow!("user component '{name}' failed validation"))?;
+            if component_entry.entry.provenance.source != format!("user:{ordinal}") {
+                anyhow::bail!("user component '{name}' did not resolve to the selected source");
+            }
+            Ok((root, manifest, component, component_entry.entry))
+        })?;
+    let dest_rel = format!(
+        "packs/vendor/{}",
+        sanitize_vendor_root(&selected_manifest.pack, name)
+    );
+    let dest = deck.join(&dest_rel);
+    if dest.exists() {
+        anyhow::bail!("vendor destination already exists: {dest_rel}");
+    }
+    if parsed_deck.packs.roots.iter().any(|r| r == &dest_rel) {
+        anyhow::bail!("deck already lists vendor root: {dest_rel}");
+    }
+
+    if selected_manifest.schema_version != sideshow::project_packs::PACK_SCHEMA_VERSION {
+        anyhow::bail!(
+            "user pack '{}' has unsupported schema_version {}",
+            selected_manifest.pack,
+            selected_manifest.schema_version
+        );
+    }
+    let manifest_bytes = vendor_manifest_bytes(&selected_manifest.pack, &selected_component)?;
+    let template_bytes =
+        sideshow::project_packs::confined_read(&selected_root, &selected_component.template)?;
+    let css_bytes =
+        sideshow::project_packs::confined_read(&selected_root, &selected_component.css)?;
+    let tmp_parent = deck.join("packs/vendor");
+    let mut random = [0u8; 16];
+    getrandom::fill(&mut random)?;
+    let tmp = tmp_parent.join(format!(".{}.tmp", u128::from_be_bytes(random)));
+    let result = (|| -> anyhow::Result<()> {
+        fs::create_dir_all(&tmp_parent)?;
+        fs::create_dir(&tmp)?;
+        write_confined(
+            &tmp,
+            sideshow::project_packs::PACK_MANIFEST,
+            &manifest_bytes,
+        )?;
+        write_confined(&tmp, &selected_component.template, &template_bytes)?;
+        write_confined(&tmp, &selected_component.css, &css_bytes)?;
+        let test_toml = format!(
+            "[deck]\ntitle='T'\n[packs]\nroots=['{}']\n",
+            tmp.strip_prefix(deck)?.to_string_lossy().replace('\\', "/")
+        );
+        let test_deck = sideshow::parse_deck_toml(&test_toml)?;
+        sideshow::project_packs::load(deck, &test_deck)?;
+        let new_deck = append_pack_root(&original_deck, &dest_rel)?;
+        fs::rename(&tmp, &dest)?;
+        atomic_replace(&deck_file, new_deck.as_bytes(), false)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&tmp);
+        let _ = fs::remove_dir_all(&dest);
+    }
+    result?;
+    let effective = registry_document_for_deck(deck)?
+        .entries
+        .into_iter()
+        .find(|e| e.kind == "component" && e.name == name)
+        .unwrap();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "kind":"component", "name": name,
+            "original_provenance": selected_entry.provenance,
+            "original_files": selected_entry.metadata.files,
+            "destination": {"root": dest_rel, "files": [sideshow::project_packs::PACK_MANIFEST, selected_component.template.as_str(), selected_component.css.as_str()]},
+            "effective_provenance": effective.provenance,
+            "effective_files": effective.metadata.files
+        }))?
+    );
+    Ok(())
+}
+
+fn load_vendor_manifest(root: &Path) -> anyhow::Result<VendorManifest> {
+    let bytes =
+        sideshow::project_packs::confined_read(root, sideshow::project_packs::PACK_MANIFEST)?;
+    toml::from_str(std::str::from_utf8(&bytes)?).with_context(|| {
+        format!(
+            "invalid user pack manifest {}",
+            root.join(sideshow::project_packs::PACK_MANIFEST).display()
+        )
+    })
+}
+
+fn sanitize_vendor_root(pack: &str, component: &str) -> String {
+    format!("{}-{}", pack, component)
+        .chars()
+        .map(|c| {
+            if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+fn vendor_manifest_bytes(pack: &str, c: &VendorComponent) -> anyhow::Result<Vec<u8>> {
+    Ok(toml::to_string_pretty(&VendorManifest {
+        schema_version: sideshow::project_packs::PACK_SCHEMA_VERSION,
+        pack: pack.to_owned(),
+        components: vec![c.clone()],
+        themes: Vec::new(),
+    })?
+    .into_bytes())
+}
+
+fn write_confined(root: &Path, rel: &str, bytes: &[u8]) -> anyhow::Result<()> {
+    if rel.is_empty()
+        || Path::new(rel).is_absolute()
+        || rel.split('/').any(|p| p.is_empty() || p == "..")
+    {
+        anyhow::bail!("invalid vendor resource path: {rel}");
+    }
+    let path = root.join(rel);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?
+        .write_all(bytes)?;
+    Ok(())
+}
+
+fn append_pack_root(original: &str, root: &str) -> anyhow::Result<String> {
+    let mut doc: toml::Value = original.parse()?;
+    let table = doc
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("deck.toml root must be a table"))?;
+    let packs = table
+        .entry("packs".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    let packs = packs
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("[packs] must be a table"))?;
+    let roots = packs
+        .entry("roots".to_string())
+        .or_insert_with(|| toml::Value::Array(Vec::new()));
+    let roots = roots
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("[packs].roots must be an array"))?;
+    roots.push(toml::Value::String(root.to_owned()));
+    Ok(toml::to_string_pretty(&doc)?)
 }
 
 fn registry_document_with_user() -> anyhow::Result<sideshow::registry::RegistryDocument> {

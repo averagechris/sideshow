@@ -16,6 +16,29 @@ fn write_user_pack(root: &Path, theme_name: &str, css: &str) {
     fs::write(root.join(format!("themes/{theme_name}.css")), css).unwrap();
 }
 
+fn write_user_component_pack(root: &Path, name: &str, template: &str, css: &str) {
+    fs::create_dir_all(root.join("components")).unwrap();
+    fs::write(
+        root.join("pack.toml"),
+        format!(
+            "schema_version=1\npack='user-pack'\n[[components]]\nname='{name}'\ntemplate='components/{name}.html'\ncss='components/{name}.css'\nprops=['title']\ncapabilities=['component-slide','html-escaped','js-free']\nintent=['demo']\naccepted_input=[]\n"
+        ),
+    )
+    .unwrap();
+    fs::write(root.join(format!("components/{name}.html")), template).unwrap();
+    fs::write(root.join(format!("components/{name}.css")), css).unwrap();
+}
+
+fn new_deck(path: &Path) {
+    assert!(
+        bin()
+            .args(["new", path.to_str().unwrap(), "--theme", "signal"])
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
 #[test]
 fn user_roots_are_relative_discovery_only_and_default_theme_is_copied() {
     let t = tempfile::tempdir().unwrap();
@@ -212,4 +235,174 @@ fn deck_registry_excludes_discovery_only_user_entries() {
         .unwrap();
     assert!(effective.status.success());
     assert!(!String::from_utf8_lossy(&effective.stdout).contains("user-theme"));
+}
+
+#[test]
+fn vendor_component_survives_user_config_and_source_removal() {
+    let t = tempfile::tempdir().unwrap();
+    let config_dir = t.path().join("cfg");
+    let pack = config_dir.join("packs/one");
+    fs::create_dir_all(&config_dir).unwrap();
+    write_user_component_pack(
+        &pack,
+        "user-card",
+        "<article class='user-card'>{{title}}</article>",
+        ".user-card{color:purple}",
+    );
+    let config = config_dir.join("config.toml");
+    fs::write(&config, "[registry]\nroots=['packs/one']\n").unwrap();
+    let deck = t.path().join("deck");
+    new_deck(&deck);
+
+    let out = bin()
+        .env("SIDESHOW_CONFIG", &config)
+        .args([
+            "registry",
+            "vendor",
+            "--deck",
+            deck.to_str().unwrap(),
+            "component",
+            "user-card",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["kind"], "component");
+    assert_eq!(json["name"], "user-card");
+    assert_eq!(json["original_provenance"]["source"], "user:0");
+    assert_eq!(json["effective_provenance"]["source"], "project:0");
+    assert!(
+        json["destination"]["root"]
+            .as_str()
+            .unwrap()
+            .starts_with("packs/vendor/")
+    );
+    assert!(
+        fs::read_to_string(deck.join("deck.toml"))
+            .unwrap()
+            .contains("packs/vendor/user-pack-user-card")
+    );
+
+    fs::remove_file(&config).unwrap();
+    fs::remove_dir_all(&pack).unwrap();
+    let list = bin()
+        .args(["registry", "list", "--deck", deck.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        list.status.success(),
+        "{}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+    assert!(String::from_utf8_lossy(&list.stdout).contains("user-card"));
+    let slide = deck.join("slides/90.slide.toml");
+    let compose = bin()
+        .args([
+            "compose",
+            "add",
+            slide.to_str().unwrap(),
+            "--deck",
+            deck.to_str().unwrap(),
+            "--component",
+            "user-card",
+            "--prop",
+            "title=Hello",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        compose.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compose.stderr)
+    );
+    assert!(
+        bin()
+            .args(["check", deck.to_str().unwrap()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        bin()
+            .args(["build", deck.to_str().unwrap()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let html = fs::read_dir(deck.join("dist"))
+        .unwrap()
+        .map(|e| fs::read_to_string(e.unwrap().path()).unwrap())
+        .collect::<String>();
+    assert!(html.contains("Hello"));
+    assert!(html.contains("user-card"));
+}
+
+#[test]
+fn vendor_component_collision_rejects_without_mutation() {
+    let t = tempfile::tempdir().unwrap();
+    let config_dir = t.path().join("cfg");
+    let pack = config_dir.join("packs/one");
+    fs::create_dir_all(&config_dir).unwrap();
+    write_user_component_pack(&pack, "user-card", "<p>{{title}}</p>", ".x{color:red}");
+    let config = config_dir.join("config.toml");
+    fs::write(&config, "[registry]\nroots=['packs/one']\n").unwrap();
+    let deck = t.path().join("deck");
+    new_deck(&deck);
+    fs::create_dir_all(deck.join("packs/vendor/user-pack-user-card")).unwrap();
+    let before = fs::read_to_string(deck.join("deck.toml")).unwrap();
+    let out = bin()
+        .env("SIDESHOW_CONFIG", &config)
+        .args([
+            "registry",
+            "vendor",
+            "--deck",
+            deck.to_str().unwrap(),
+            "component",
+            "user-card",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert_eq!(before, fs::read_to_string(deck.join("deck.toml")).unwrap());
+    assert!(
+        !deck
+            .join("packs/vendor/user-pack-user-card/pack.toml")
+            .exists()
+    );
+}
+
+#[test]
+fn vendor_component_malformed_source_rejects_without_mutation() {
+    let t = tempfile::tempdir().unwrap();
+    let config_dir = t.path().join("cfg");
+    let pack = config_dir.join("packs/one");
+    fs::create_dir_all(&pack).unwrap();
+    fs::write(pack.join("pack.toml"), "schema_version=1\npack='user-pack'\n[[components]]\nname='bad-card'\ntemplate='components/missing.html'\ncss='components/bad-card.css'\ncapabilities=['component-slide','html-escaped','js-free']\n").unwrap();
+    fs::create_dir_all(pack.join("components")).unwrap();
+    fs::write(pack.join("components/bad-card.css"), ".x{color:red}").unwrap();
+    let config = config_dir.join("config.toml");
+    fs::write(&config, "[registry]\nroots=['packs/one']\n").unwrap();
+    let deck = t.path().join("deck");
+    new_deck(&deck);
+    let before = fs::read_to_string(deck.join("deck.toml")).unwrap();
+    let out = bin()
+        .env("SIDESHOW_CONFIG", &config)
+        .args([
+            "registry",
+            "vendor",
+            "--deck",
+            deck.to_str().unwrap(),
+            "component",
+            "bad-card",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert_eq!(before, fs::read_to_string(deck.join("deck.toml")).unwrap());
+    assert!(!deck.join("packs/vendor").exists());
 }
