@@ -13,6 +13,13 @@ tracker issues, import tracker state, or use tracker credentials. A later demo o
 project-summary deck can be authored separately by combining whatever plan,
 tracker, code, and media context is useful.
 
+It demonstrates the agreed planning-authoring model: the agent owns interviewing,
+synthesis, narrative, audience adaptation, roleplay assumptions, and visual
+reasoning; Sideshow owns deterministic structure, mutation, binding, rendering,
+checking, review transport, export, and distribution. The three goals are
+co-equal: human-agent alignment, convenient anchored feedback, and team-wide
+mental-model distribution.
+
 ## Repeatable annotate/review/edit loop
 
 From the repository root:
@@ -29,7 +36,11 @@ From the repository root:
    and connectors capture the nearest `data-plan-kind`/`data-plan-id` as optional
    target metadata so review lists can point back toward canonical records. Treat
    that metadata like selector/text hints: useful routing context, not authority
-   to mutate `plan.json` automatically.
+    to mutate `plan.json` automatically.
+
+   Use explicit prompts such as: “What assumption is wrong?”, “Which dependency
+   is missing?”, “Where would a cold reader lose the thread?”, and “What must
+   change before this can become tracker work?”
 
 3. List or export review feedback for triage:
 

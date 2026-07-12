@@ -1,10 +1,15 @@
 # Static planning components
 
-Use the compiler-owned `.plan-*` classes for strategy, alignment, roadmap,
+Use `.plan-*` classes for strategy, alignment, roadmap,
 proposed-work, and retrospective slides. They are plain HTML/CSS: no custom
 elements, no component JavaScript, and no framework assumptions. Planning slides
 help a team refine and digest work into its issue tracker; they are not a live
 execution dashboard.
+
+Choose primitives by cognitive contract, not keyword matching. First decide what
+the audience must understand, where anchored feedback should land, and how the
+artifact distributes the team's mental model; then pick the smallest primitive
+that communicates that job.
 
 ## Rules for agents
 
@@ -66,12 +71,25 @@ execution dashboard.
 
 ## Choosing a planning primitive
 
-- Use rails when order matters and the audience should follow a proof or decision path from top to bottom.
-- Use lanes when parallel ownership or workstream separation matters.
-- Use layers when context, system boundaries, or constraints explain why work is arranged a certain way.
-- Use connectors when one item depends on another and the dependency itself is the message.
-- Use cards for standalone facts, decisions, metrics, or risks; avoid making every slide a wall of cards.
-- Use compact evidence when proof is important but commands/logs would distract from the narrative. Native `<details>` gives keyboard support without JavaScript.
+- **Rails communicate sequence.** Use when the audience should follow proof,
+  approval, rollout, or decision order. Avoid when items are peers.
+- **Lanes communicate parallel responsibility or workstreams.** Use when comparing
+  ownership or simultaneous tracks. Avoid when the message is dependency order.
+- **Layers communicate boundaries and context.** Use when environment,
+  responsibility, or constraints explain the shape of the work. Avoid for simple
+  lists.
+- **Connectors communicate named dependencies or handoffs.** Use when the edge is
+  the point. Avoid dense hairballs; switch to tables or grouped lists.
+- **Cards communicate bounded standalone facts.** Use for decisions, metrics,
+  risks, or tasks that need anchors. Avoid walls of interchangeable cards.
+- **Evidence disclosure communicates proof without stealing focus.** Use native
+  `<details>` for commands, logs, or rationale needed on demand. Avoid hiding the
+  main claim inside disclosure.
+
+Raw HTML/CSS, Markdown, bundled registered components, and project-local
+registered components are all first-class paths. Prefer raw markup for bespoke
+visual reasoning; if a pattern repeats, move it through raw → reviewed local
+pattern → project component → possible bundled incubation only after broader use.
 
 ## Lifecycle boundary
 

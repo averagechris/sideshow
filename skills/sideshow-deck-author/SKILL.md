@@ -8,12 +8,27 @@ allowed-tools: Bash, Read, Grep, Glob, Edit, Write
 
 Use this skill when creating or revising a `sideshow` deck. `sideshow` compiles a source directory of HTML/markdown slide fragments into one self-contained HTML file.
 
-For static planning and roadmap slides, use `planning-components.md` for the compiler-owned `.plan-*` component vocabulary and accessibility rules. Distribution, packaging, installation, and flake docs are separate work; do not mix those concerns into deck authoring guidance.
+For static planning and roadmap slides, use `planning-components.md` for the `.plan-*` visual primitive vocabulary and accessibility rules. Distribution, packaging, installation, and flake docs are separate work; do not mix those concerns into deck authoring guidance.
 
 ## Planning mode
 
 For a proposal that must align humans, agents, and a team before work enters an
 issue tracker, prefer the plan workflow over an unconstrained one-off deck:
+
+Your job is the human part: interview, synthesize, adapt to the audience, state
+roleplay assumptions when information is missing, design the narrative and review
+path, reason visually, and ask for feedback. Sideshow's job is deterministic:
+structure, mutation, registry discovery, binding, rendering, checking, review
+transport, export, and distribution. It does not judge narrative quality for you.
+Keep three goals co-equal: human-agent alignment, convenient anchored feedback,
+and team-wide mental-model distribution.
+
+Start by establishing an alignment contract: audience, decision needed,
+non-goals, constraints, evidence, assumptions you are making, feedback questions,
+and what must be true for the team to act. Before choosing a visual style or
+component, design the narrative arc and the review experience: what should a
+cold reader understand, where should they comment, and which explicit prompts
+should they answer?
 
 ```bash
 sideshow plan new my-plan --theme signal
@@ -102,7 +117,7 @@ sideshow registry sources --deck mydeck
 
 The registry commands emit stable JSON. Select entries by `kind`, `name`, `metadata.intent`, `metadata.capabilities`, and `provenance`: use bundled themes (`ledger`, `poster`, `signal`, `terminal`) when their mood/intent matches the deck; use `literal-card` for ordinary eyebrow/title/body cards; use `plan-primitives` for globally included JS-free plan CSS; and use `plan-record-card` only for a slide bound to canonical `plan.json` data. For semantic work-story slides prefer the bundled manifest-backed components over bespoke HTML when they fit: `compare-options`, `show-dependencies`, `workstream-lanes`, `risk-register`, `decision-record`, `verification-evidence`, and `file-impact-outcomes`. These expose typed schemas, intent metadata, accepted inputs, and presets; inspect them with `sideshow registry explain component NAME` before authoring. Current registered components are HTML/CSS/data-only; there is no component JavaScript catalog.
 
-If the current registry cannot express the intent, fall back to ordinary raw slide fragments: HTML, Markdown, JSON data you transform yourself, and explicit `theme.css`. Do not invent commands or registry names.
+Treat raw HTML/CSS, Markdown, bundled components, and project-local registered components as first-class choices. Choose by the cognitive contract of the visual primitive, not by keyword matching. If a raw pattern repeats, evolve it deliberately: raw slide → reviewed local pattern → project-local registered component → possible bundled incubation after repeated cross-project usefulness. If the current registry cannot express the intent, fall back to ordinary raw slide fragments: HTML, Markdown, JSON data you transform yourself, and explicit `theme.css`. Do not invent commands or registry names.
 
 ### Ordinary literal component slides
 
@@ -158,12 +173,13 @@ Ask the user all discovery questions in one batched prompt before authoring:
    - **Reading-first dense:** self-contained context, tables/grids/annotations, still no cramped text.
 5. **Existing material:** notes, docs, outlines, images, charts, data, brand assets, prior decks to import.
 6. **Brand constraints:** logo, color/token requirements, typography, tone, examples to emulate or avoid.
+7. **Alignment contract:** what decision should this enable, what assumptions may the agent roleplay if answers are missing, what evidence is required, and what explicit feedback prompts should reviewers answer?
 
 If the user already supplied some answers, acknowledge them and ask only for the missing items in the same batch.
 
 ## Phase 2 — Theme selection by showing, not telling
 
-People choose design better from screenshots than from theme names.
+Design the narrative and review path before selecting visuals. People choose design better from screenshots than from theme names, but screenshots should serve the story and feedback contract rather than lead it.
 
 1. **List built-in themes with metadata** and shortlist 1–3 that fit the mood/formality/density from Phase 1:
 
@@ -237,6 +253,7 @@ Default slide order is lexicographic over `slides/*.{html,md}`. Name files with 
 - Respect density mode. Speaker-led decks should breathe; reading-first decks can use grids/tables but must remain legible.
 - Never shrink text below the theme's intended roles to “make it fit.” Split overflowing content into more slides.
 - Avoid filler: no lorem ipsum, no generic business bullets, no “AI-generated” gradient-purple aesthetics, no decoration that does not clarify the message. Use real data and concrete labels.
+- Before final delivery, run a cold-reader pass: can someone outside the authoring loop name the decision, assumptions, proposed path, risks, and requested feedback without narration?
 
 ### Images
 

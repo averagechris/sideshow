@@ -40,6 +40,13 @@ machine boundary for agents/tools; authored slides are its expressive
 human-facing projection. Review annotations are feedback only and never silently
 edit either source.
 
+The planning-authoring model keeps three goals co-equal: human-agent alignment,
+convenient anchored feedback, and team-wide mental-model distribution. Agents own
+interviewing, synthesis, narrative, audience adaptation, roleplay assumptions,
+and visual reasoning. Sideshow owns deterministic structure, mutation, registry
+discovery, binding, rendering, checking, review transport, export, and
+distribution; it does not judge narrative quality.
+
 The workflow intentionally stops at a reviewed digest. JSON export preserves the
 strict machine contract; Markdown export is a derived manual drafting digest with
 per-task packets for issue-writing source material. Those packets are not

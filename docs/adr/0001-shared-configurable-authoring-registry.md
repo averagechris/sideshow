@@ -1,15 +1,14 @@
 # ADR 0001: Shared configurable authoring registry
 
-- Status: Accepted direction; implementation pending
+- Status: Accepted
 - Date: 2026-07-11
 
 ## Context
 
-Sideshow currently treats its original themes, scaffold markup, component CSS,
-and several generated HTML surfaces as special compiler cases. Ordinary deck
-authors and planning-mode authors can always edit raw HTML, Markdown, JSON, and
-CSS, but agents do not yet have a discoverable vocabulary that maps presentation
-intent to typed CLI operations.
+Sideshow has a shared registry for bundled themes and components plus explicit
+project-local packs. Ordinary deck authors and planning-mode authors can always
+edit raw HTML, Markdown, JSON, and CSS; registry discovery and composition add a
+typed path when that better fits the intent.
 
 Planning does have one genuinely distinct artifact: strict `plan.json` data with
 plan-specific validation, stable record IDs, dependency semantics, and JSON and
@@ -35,8 +34,8 @@ The registry will describe:
 - the HTML, CSS, and, where explicitly allowed, presentation JavaScript that
   implements those registered resources.
 
-The current built-in themes, scaffold HTML, and component CSS will move into a
-bundled default pack expressed through the same registry contract. They remain
+The built-in themes, scaffold HTML, and component CSS are treated as bundled
+defaults expressed through the same registry contract. They remain
 available offline and preserve current names and behavior, but stop being
 one-off sources of truth in Rust. Project-local packs may extend or replace
 presentation resources through deterministic, confined configuration. User-level
@@ -70,12 +69,16 @@ scaffolds/
 The bundled defaults and project-local configuration use the same resource and
 registration shape even though their trust and override policies differ.
 
-CLI discovery must expose a clear mapping from intent to capability. Humans and
+CLI discovery exposes a clear mapping from intent to capability. Humans and
 agents should be able to list and explain registered themes and components in a
 machine-readable form, choose a component based on intent, and create or update
 declarative slide composition without first writing substantial raw HTML.
 Literal properties support ordinary decks; typed bindings support structured
-artifacts. Raw HTML, Markdown, JSON, and CSS remain explicit escape hatches.
+artifacts. Raw HTML/CSS, Markdown, bundled components, and project-local
+registered components are first-class choices, selected by cognitive contract
+rather than keyword matching. Repeated raw patterns may become reviewed local
+patterns, then project components, and only later candidates for bundled
+incubation.
 
 Planning is the first typed-data extension of this shared system. It adds:
 
@@ -147,8 +150,8 @@ asset, remote-reference, SVG, and output-budget checks.
 - Existing authored fragments remain valid and remain the lowest-level escape
   hatch.
 - Registry, declarative composition, typed plan mutation, and safe project-local
-  extension are separate implementation increments; this decision does not make
-  those interfaces current functionality.
+  extension can evolve independently without changing the ownership split between
+  agent judgment and deterministic CLI behavior.
 - The fixed review overlay stays auditable and cannot be shadowed by configured
   resources.
 

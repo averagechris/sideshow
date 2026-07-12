@@ -3,6 +3,13 @@
 Agentic HTML slide deck compiler and toolkit. The LLM writes content and
 picks design; sideshow does everything that should be deterministic.
 
+For planning decks, the authoring split is explicit: the agent owns
+interviewing, synthesis, narrative, audience adaptation, roleplay assumptions,
+and visual reasoning; the skill teaches that frame of mind. The Sideshow CLI owns
+deterministic structure, mutation, registry discovery, binding, rendering,
+checking, review transport, export, and distribution. It does not score narrative
+quality or decide whether a story is persuasive.
+
 Inspired by (clean-room, no vendored code) zarazhangrui/frontend-slides:
 fixed-stage scaling, single-file output, show-don't-tell previews,
 progressive-disclosure theme selection.
@@ -328,8 +335,12 @@ not current user-facing functionality.
   typed inputs, and their HTML/CSS resources. Presentation JavaScript is explicit
   and policy-constrained rather than implicitly trusted.
 - Registry discovery and declarative slide-composition commands give humans and
-  agents a stable mapping from intent to supported Sideshow operations. Raw HTML
-  and Markdown remain supported escape hatches.
+  agents a stable mapping from intent to supported Sideshow operations. Raw
+  HTML/CSS, Markdown, bundled components, and project-local registered components
+  are all first-class authoring choices.
+- A repeated pattern can move from raw HTML/CSS, to a reviewed project-local
+  pattern, to a project component, and eventually to bundled incubation when it
+  proves broadly useful. The CLI enables this path but does not force it.
 - Planning reuses the same registry, themes, components, composition model, and
   build. Its additions are canonical `plan.json` semantics, typed mutations and
   bindings, stable plan anchors, strict checks, and exports.

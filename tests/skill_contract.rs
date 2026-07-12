@@ -90,3 +90,32 @@ fn deck_author_skill_names_available_bundled_registry_entries() {
         assert_eq!(entry["provenance"]["source"], "bundled");
     }
 }
+
+#[test]
+fn planning_authoring_model_stays_documented() {
+    let skill = include_str!("../skills/sideshow-deck-author/SKILL.md");
+    let planning_components = include_str!("../skills/sideshow-deck-author/planning-components.md");
+    let planning_doc = include_str!("../docs/PLANNING.md");
+    let readme = include_str!("../README.md");
+
+    let combined = [skill, planning_components, planning_doc, readme].join("\n");
+    for phrase in [
+        "agent owns",
+        "interviewing, synthesis, narrative, audience adaptation",
+        "Sideshow CLI owns deterministic structure",
+        "does not judge narrative quality",
+        "human-agent alignment",
+        "convenient anchored feedback",
+        "team-wide mental-model distribution",
+        "cognitive contract",
+        "not keyword matching",
+        "raw HTML/CSS, Markdown, bundled components, and project-local registered components",
+        "raw slide → reviewed local pattern → project-local registered component → possible bundled incubation",
+        "cold-reader pass",
+    ] {
+        assert!(
+            combined.contains(phrase),
+            "planning model lost phrase: {phrase}"
+        );
+    }
+}

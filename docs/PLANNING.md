@@ -6,6 +6,20 @@ projection. It is intentionally narrower than a general project-management app.
 
 ## Goals
 
+These three goals are co-equal; do not optimize one by weakening the others:
+
+- **Human-agent alignment:** preserve a shared understanding of purpose,
+  constraints, assumptions, narrative, risks, and readiness before work enters an
+  execution system.
+- **Convenient anchored feedback:** make comments easy to place on rendered plan
+  concepts and easy to route back to trusted source via stable IDs and source
+  references.
+- **Team-wide mental-model distribution:** produce a portable static artifact and
+  digest that let people who were not in the authoring loop quickly understand the
+  proposed shape of the work.
+
+Supporting goals:
+
 - Capture the alignment artifact that already emerges from human-agent work:
   outcomes, constraints, decisions, proposed workstreams, dependencies, touched
   files, acceptance criteria, verification intent, risks, and planning maturity.
@@ -61,6 +75,25 @@ The lifecycle should be visible in the data model. A plan is not merely a slide
 deck; it is a working agreement with traceable intent and proposed execution
 shape. Status fields describe planning maturity or the state proposed at handoff,
 not an obligation to mirror live tracker state.
+
+## Planning-authoring ownership model
+
+The agent owns the judgment-heavy authoring work: interviewing, synthesis,
+narrative, audience adaptation, roleplay assumptions, and visual reasoning. The
+Sideshow skill guides that frame of mind; it should prompt the agent to ask for an
+alignment contract, test assumptions, design the narrative/review path before
+choosing visuals, run a cold-reader pass, and ask explicit feedback questions.
+
+Sideshow CLI owns deterministic structure and transport: schema, mutation,
+registry discovery, component binding, rendering, checking, review artifact
+handling, export, and distribution. It must not judge whether a story is
+persuasive, whether the audience will care, or whether the narrative quality is
+high. Those calls remain with the human/agent authoring loop.
+
+An alignment contract should name audience, decision needed, non-goals,
+assumptions to roleplay when answers are missing, required evidence, review
+questions, and what kind of feedback should be anchored in the deck versus handled
+as out-of-band discussion.
 
 ## Canonical data vs visual projection
 
@@ -238,11 +271,24 @@ records expected by reviewers.
 ## Static component and theme architecture
 
 Plan projection is an extension of ordinary Sideshow authoring, not a second
-renderer. The accepted future registry direction is documented in
+renderer. The shared registry direction is documented in
 [ADR 0001](adr/0001-shared-configurable-authoring-registry.md). Plan projections
 should be assembled from the same registered themes and deterministic static
 components as ordinary decks, while raw authored HTML and Markdown remain
 available as escape hatches.
+
+Authoring paths are first-class choices, not a maturity ladder with only one
+approved endpoint:
+
+- raw HTML/CSS for bespoke layout, diagrams, and one-off visual reasoning;
+- Markdown for content-shaped prose slides;
+- bundled registered components when their cognitive contract fits;
+- project-local registered components when a team has a repeated local pattern.
+
+When a raw pattern recurs, prefer: raw slide → reviewed local pattern →
+project-local registered component → possible bundled incubation after repeated
+cross-project use. Incubation is a product/design decision, not an automatic
+promotion.
 
 - The current built-in themes, scaffold HTML, and component CSS should move into
   a bundled default configuration pack rather than remain planning-only special
