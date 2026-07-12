@@ -195,12 +195,27 @@ props.row_2_value_3 = "Brittle <switch>"
 "#,
     )
     .unwrap();
+    std::fs::write(
+        root.join("slides/03.slide.toml"),
+        r#"component = "workstream-lanes"
+props.title = 'Roadmap" onmouseover="alert(1)'
+props.lane_1_title = "One"
+props.lane_1_body = "First"
+props.lane_2_title = "Two"
+props.lane_2_body = "Second"
+props.lane_3_title = "Three"
+props.lane_3_body = "Third"
+"#,
+    )
+    .unwrap();
     let html = build_output(root);
     assert!(html.contains("data-intent=\"decision-record\""));
     assert!(html.contains("Use schemas &lt;not names&gt;"));
     assert!(html.contains("Typed &amp; discoverable"));
     assert!(html.contains("Brittle &lt;switch&gt;"));
     assert!(html.contains("<table class=\"semantic-table\">"));
+    assert!(html.contains("aria-label=\"Roadmap&quot; onmouseover=&quot;alert(1)\""));
+    assert!(!html.contains(" onmouseover=\"alert(1)\""));
     assert_eq!(html, build_output(root));
 }
 

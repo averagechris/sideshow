@@ -22,7 +22,11 @@ pub mod secure_fs;
 
 pub mod project_packs {
     use super::*;
+    #[cfg(unix)]
+    use cap_std::fs::OpenOptionsExt;
+    use cap_std::{ambient_authority, fs::OpenOptions};
     use sha2::{Digest, Sha256};
+    use std::io::Read;
 
     pub const PACK_SCHEMA_VERSION: u32 = 1;
     pub const PACK_MANIFEST: &str = "pack.toml";
@@ -156,8 +160,26 @@ pub mod project_packs {
         {
             bail!("project pack resource path must be relative without traversal: {rel}");
         }
-        let c = checked_descend(root, rel, false)?;
-        fs::read(&c).with_context(|| format!("failed to read project pack resource {rel}"))
+        let dir = cap_std::fs::Dir::open_ambient_dir(root, ambient_authority())
+            .with_context(|| format!("failed to open project pack root {}", root.display()))?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        options.custom_flags(libc::O_NOFOLLOW);
+        let mut file = dir
+            .open_with(Path::new(rel), &options)
+            .with_context(|| format!("failed to open project pack resource {rel}"))?
+            .into_std();
+        let metadata = file
+            .metadata()
+            .with_context(|| format!("failed to inspect project pack resource {rel}"))?;
+        if !metadata.is_file() {
+            bail!("project pack resource is not a regular file: {rel}");
+        }
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .with_context(|| format!("failed to read project pack resource {rel}"))?;
+        Ok(bytes)
     }
 
     pub fn reject_unsafe_tree(root: &Path) -> anyhow::Result<()> {
@@ -421,6 +443,19 @@ pub mod project_packs {
                     "project pack {owner} asset path collides with template/css/pack manifest role: {}",
                     asset.path
                 );
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_pack_resource_ownership<'a>(
+        owners: &mut BTreeMap<String, String>,
+        owner: &str,
+        resources: impl Iterator<Item = &'a str>,
+    ) -> anyhow::Result<()> {
+        for resource in resources {
+            if let Some(existing) = owners.insert(resource.to_owned(), owner.to_owned()) {
+                bail!("project pack resource {resource} is owned by both {existing} and {owner}");
             }
         }
         Ok(())
@@ -710,6 +745,7 @@ pub mod project_packs {
                 activated: options.activated,
                 note,
             });
+            let mut pack_resource_owners: BTreeMap<String, String> = BTreeMap::new();
             for c in manifest.components {
                 registry::reject_reserved("component", &c.name)?;
                 if c.capabilities.is_empty() || !c.capabilities.iter().any(|x| x == "js-free") {
@@ -781,6 +817,13 @@ pub mod project_packs {
                     &format!("component '{}'", c.name),
                     &[&c.template, &c.css],
                     &c.assets,
+                )?;
+                validate_pack_resource_ownership(
+                    &mut pack_resource_owners,
+                    &format!("component '{}'", c.name),
+                    std::iter::once(c.template.as_str())
+                        .chain(std::iter::once(c.css.as_str()))
+                        .chain(c.assets.iter().map(|a| a.path.as_str())),
                 )?;
                 let assets = load_assets(&root, &format!("component '{}'", c.name), &c.assets)?;
                 validate_markup(&c.name, &template)?;
@@ -871,6 +914,11 @@ pub mod project_packs {
                 let cb = confined_read(&root, &t.css)?;
                 let css = String::from_utf8(cb.clone())?;
                 validate_role_collisions(&format!("theme '{}'", t.name), &[&t.css], &t.assets)?;
+                validate_pack_resource_ownership(
+                    &mut pack_resource_owners,
+                    &format!("theme '{}'", t.name),
+                    std::iter::once(t.css.as_str()).chain(t.assets.iter().map(|a| a.path.as_str())),
+                )?;
                 let assets = load_assets(&root, &format!("theme '{}'", t.name), &t.assets)?;
                 validate_css_with_assets(&t.name, &css, &assets)?;
                 validate_declared_asset_use(&format!("theme '{}'", t.name), &[&css], &assets)?;
@@ -1450,6 +1498,10 @@ pub mod composition {
         Ok(out)
     }
 
+    pub fn validate_bundled_component(slide: &ComponentSlide) -> anyhow::Result<()> {
+        validate_component(slide)
+    }
+
     fn validate_component(slide: &ComponentSlide) -> anyhow::Result<()> {
         let entry = bundled_component_entry(&slide.component)?;
         validate_component_against_entry(slide, &entry)?;
@@ -1505,7 +1557,14 @@ pub mod composition {
             .replace('>', "&gt;")
     }
     fn esc_attr(s: &str) -> String {
-        esc(s).replace('"', "&quot;")
+        esc(s).replace('"', "&quot;").replace('\'', "&#x27;")
+    }
+
+    fn placeholder_is_attribute_context(prefix: &str) -> bool {
+        let after_lt = prefix.rfind('<');
+        let after_gt = prefix.rfind('>');
+        matches!((after_lt, after_gt), (Some(lt), Some(gt)) if lt > gt)
+            || matches!((after_lt, after_gt), (Some(_), None))
     }
 
     enum Escaped<'a> {
@@ -1540,10 +1599,13 @@ pub mod composition {
             let value = values.get(key).with_context(|| {
                 format!("component template {component} references unknown placeholder {key}")
             })?;
+            let in_attr = placeholder_is_attribute_context(&rendered);
             let escaped = match value {
+                Escaped::Text(value) if in_attr => esc_attr(value),
                 Escaped::Text(value) => esc(value),
                 Escaped::Attribute(value) => esc_attr(value),
                 Escaped::Owned(value) => esc(value),
+                Escaped::TrustedHtml(value) if in_attr => esc_attr(value),
                 Escaped::TrustedHtml(value) => value.to_string(),
             };
             rendered.push_str(&escaped);
@@ -1583,10 +1645,14 @@ pub mod composition {
             let value = values.get(key).with_context(|| {
                 format!("component template {component} references unknown placeholder {key}")
             })?;
+            let in_attr = placeholder_is_attribute_context(&rendered);
             rendered.push_str(&match value {
+                Escaped::Text(v) if in_attr => esc_attr(v),
                 Escaped::Text(v) => esc(v),
                 Escaped::Attribute(v) => esc_attr(v),
+                Escaped::Owned(v) if in_attr => esc_attr(v),
                 Escaped::Owned(v) => esc(v),
+                Escaped::TrustedHtml(v) if in_attr => esc_attr(v),
                 Escaped::TrustedHtml(v) => v.to_string(),
             });
             used.insert(key.to_owned());
@@ -1623,6 +1689,10 @@ pub mod composition {
         lock.lock_exclusive()
             .context("failed to lock component slide lock")?;
         Ok(lock)
+    }
+
+    pub fn lock_source_for_update(path: &Path) -> anyhow::Result<fs::File> {
+        lock_source(path)
     }
 
     pub fn atomic_write_source(path: &Path, bytes: &[u8], create_only: bool) -> anyhow::Result<()> {

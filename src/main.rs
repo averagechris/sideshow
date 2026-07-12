@@ -1236,16 +1236,13 @@ fn compose_command(command: ComposeCommand) -> anyhow::Result<()> {
                 files: args.files.into_iter().collect(),
                 bind,
             };
-            let project = validate_effective_component(args.deck.as_deref(), &args.source, &slide)?;
-            if project {
-                write_project_slide(&args.source, &slide, true)?;
-            } else {
-                sideshow::composition::add(&args.source, &slide)?;
-            }
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&composition_explain_effective(&args.source)?)?
-            );
+            let _lock = sideshow::composition::lock_source_for_update(&args.source)?;
+            let deck = resolve_compose_deck(args.deck.as_deref(), &args.source)?;
+            validate_effective_component(deck.as_deref(), &args.source, &slide)?;
+            let explanation =
+                composition_explain_effective_for_slide(deck.as_deref(), &args.source, &slide)?;
+            write_project_slide(&args.source, &slide, true)?;
+            println!("{}", serde_json::to_string_pretty(&explanation)?);
         }
         ComposeCommand::Update(args) => {
             reject_duplicate_keys("--preset", args.presets.iter().map(String::as_str))?;
@@ -1256,6 +1253,8 @@ fn compose_command(command: ComposeCommand) -> anyhow::Result<()> {
                 (None, None) => None,
                 _ => anyhow::bail!("--bind-kind and --bind-id must be provided together"),
             };
+            let _lock = sideshow::composition::lock_source_for_update(&args.source)?;
+            let deck = resolve_compose_deck(args.deck.as_deref(), &args.source)?;
             let mut slide = if args.source.is_file() {
                 sideshow::composition::load(&args.source)?
             } else {
@@ -1297,16 +1296,11 @@ fn compose_command(command: ComposeCommand) -> anyhow::Result<()> {
                 slide.files.extend(args.files);
             }
             slide.bind = bind.or(slide.bind);
-            let project = validate_effective_component(args.deck.as_deref(), &args.source, &slide)?;
-            if project {
-                write_project_slide(&args.source, &slide, false)?;
-            } else {
-                sideshow::composition::update(&args.source, &slide)?;
-            }
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&composition_explain_effective(&args.source)?)?
-            );
+            validate_effective_component(deck.as_deref(), &args.source, &slide)?;
+            let explanation =
+                composition_explain_effective_for_slide(deck.as_deref(), &args.source, &slide)?;
+            write_project_slide(&args.source, &slide, false)?;
+            println!("{}", serde_json::to_string_pretty(&explanation)?);
         }
         ComposeCommand::Explain { source } => println!(
             "{}",
@@ -1360,11 +1354,44 @@ fn validate_effective_component(
             if entry.provenance.source.starts_with("project:") {
                 return Ok(true);
             }
+            let _ = sideshow::composition::effective_props_for_entry(slide, entry)?;
+            sideshow::composition::validate_bundled_component(slide)?;
             return Ok(false);
         }
     }
-    let _ = sideshow::registry::explain("component", &slide.component)?;
+    let entry = sideshow::registry::explain("component", &slide.component)?;
+    let _ = sideshow::composition::effective_props_for_entry(slide, &entry)?;
+    sideshow::composition::validate_bundled_component(slide)?;
     Ok(false)
+}
+
+fn resolve_compose_deck(deck: Option<&Path>, source: &Path) -> anyhow::Result<Option<PathBuf>> {
+    let resolved = match deck {
+        Some(deck) => {
+            let deck = deck
+                .canonicalize()
+                .with_context(|| format!("failed to resolve deck {}", deck.display()))?;
+            let parent = source.parent().unwrap_or_else(|| Path::new("."));
+            let source_anchor = if source.exists() {
+                source.canonicalize()
+            } else {
+                parent
+                    .canonicalize()
+                    .map(|p| p.join(source.file_name().unwrap_or_default()))
+            }
+            .with_context(|| format!("failed to resolve source parent {}", parent.display()))?;
+            if !source_anchor.starts_with(&deck) {
+                anyhow::bail!(
+                    "compose source {} is outside supplied deck {}",
+                    source.display(),
+                    deck.display()
+                );
+            }
+            Some(deck)
+        }
+        None => infer_deck(source),
+    };
+    Ok(resolved)
 }
 
 fn write_project_slide(
@@ -1393,10 +1420,23 @@ fn write_project_slide(
 fn composition_explain_effective(source: &Path) -> anyhow::Result<serde_json::Value> {
     let slide = sideshow::composition::load(source)?;
     if let Some(deck) = infer_deck(source) {
+        return composition_explain_effective_for_slide(Some(&deck), source, &slide);
+    }
+    Ok(serde_json::to_value(sideshow::composition::explain(
+        source,
+    )?)?)
+}
+
+fn composition_explain_effective_for_slide(
+    deck: Option<&Path>,
+    source: &Path,
+    slide: &sideshow::composition::ComponentSlide,
+) -> anyhow::Result<serde_json::Value> {
+    if let Some(deck) = deck {
         let deck_toml = sideshow::parse_deck_toml(&fs::read_to_string(deck.join("deck.toml"))?)?;
         let is_project =
-            sideshow::project_packs::validate_component_slide(&deck, &deck_toml, &slide)?;
-        let doc = registry_document_for_deck(&deck)?;
+            sideshow::project_packs::validate_component_slide(deck, &deck_toml, slide)?;
+        let doc = registry_document_for_deck(deck)?;
         if let Some(entry) = doc
             .entries
             .into_iter()
@@ -1405,15 +1445,16 @@ fn composition_explain_effective(source: &Path) -> anyhow::Result<serde_json::Va
             if entry.provenance.source.starts_with("project:") && !is_project {
                 anyhow::bail!("invalid project component source");
             }
-            let effective = sideshow::composition::effective_props_for_entry(&slide, &entry)?;
+            let effective = sideshow::composition::effective_props_for_entry(slide, &entry)?;
             return Ok(
                 serde_json::json!({"source": source, "component": slide.component, "registry": entry, "props": slide.props, "selected_presets": slide.presets, "effective_props": effective.values, "prop_provenance": effective.provenance, "files": slide.files, "bind": slide.bind, "trust_contract": sideshow::composition::TRUST_CONTRACT}),
             );
         }
     }
-    Ok(serde_json::to_value(sideshow::composition::explain(
-        source,
-    )?)?)
+    let _ = sideshow::registry::explain("component", &slide.component)?;
+    Ok(
+        serde_json::json!({"source": source, "component": slide.component, "props": slide.props, "selected_presets": slide.presets, "files": slide.files, "bind": slide.bind, "trust_contract": sideshow::composition::TRUST_CONTRACT}),
+    )
 }
 
 fn composition_remove_effective(source: &Path) -> anyhow::Result<serde_json::Value> {
