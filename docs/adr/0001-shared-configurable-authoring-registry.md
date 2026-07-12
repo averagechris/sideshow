@@ -114,6 +114,16 @@ The effective registry and the source of each entry must be inspectable through
 the CLI. Name collisions, overrides, missing resources, unsupported capabilities,
 and paths escaping their declared pack roots must fail clearly.
 
+Pack-owned static assets are part of this contract when a project or user pack
+declares them on a component or theme entry. They are not per-slide file inputs:
+they are registry resources with digests, accepted-input bytes, and provenance.
+Asset paths are confined to the declaring pack root, must resolve to regular
+files without symlinks or traversal, and are embedded deterministically when the
+component/theme is rendered or applied so builds stay offline and self-contained.
+The existing remote/data/javascript/SVG/output-budget policies still apply to the
+final deck, and pack JavaScript remains rejected until a separate presentation-JS
+decision exists.
+
 ## Rendering boundary
 
 Askama remains appropriate for fixed compiler-owned templates compiled into the
@@ -144,7 +154,8 @@ asset, remote-reference, SVG, and output-budget checks.
 
 ## Deferred questions
 
-- The exact manifest syntax and names of registry directories.
+- Further manifest syntax changes beyond the current constrained `pack.toml`
+  component/theme/static-asset declarations.
 - The constrained runtime template language for project-defined components.
 - Which presentation JavaScript capabilities, if any, are allowed per profile.
 - Whether a second typed artifact justifies generalizing the plan-data provider

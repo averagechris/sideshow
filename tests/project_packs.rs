@@ -285,6 +285,94 @@ fn compose_remove_handles_project_sources_and_preserves_invalid() {
 }
 
 #[test]
+fn project_pack_assets_are_declared_embedded_and_digest_inputs() {
+    let t = tempfile::tempdir().unwrap();
+    write_pack(t.path());
+    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=1\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\n[[components.assets]]\npath='assets/icon.png'\n[[themes]]\nname='local-theme'\ncss='themes/local.css'\n[[themes.assets]]\npath='assets/bg.png'\n").unwrap();
+    fs::create_dir_all(t.path().join("packs/local/assets")).unwrap();
+    fs::write(t.path().join("packs/local/assets/icon.png"), b"icon").unwrap();
+    fs::write(t.path().join("packs/local/assets/bg.png"), b"bg").unwrap();
+    fs::write(
+        t.path().join("packs/local/components/card.html"),
+        "<article><img src='assets/icon.png'><h1>{{title}}</h1></article>",
+    )
+    .unwrap();
+    fs::write(
+        t.path().join("packs/local/components/card.css"),
+        ".safe-card{background:url(assets/icon.png)}",
+    )
+    .unwrap();
+    fs::write(
+        t.path().join("packs/local/themes/local.css"),
+        "body{background:url(assets/bg.png)}",
+    )
+    .unwrap();
+    let source = t.path().join("slides/01.slide.toml");
+    assert!(
+        bin()
+            .args([
+                "compose",
+                "add",
+                "--deck",
+                t.path().to_str().unwrap(),
+                source.to_str().unwrap(),
+                "--component",
+                "safe-card",
+                "--prop",
+                "title=x"
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let reg = bin()
+        .args(["registry", "list", "--deck", t.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        reg.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reg.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&reg.stdout);
+    assert!(stdout.contains("assets/icon.png"));
+    assert!(stdout.contains("assets/bg.png"));
+    let build = bin()
+        .args(["build", t.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let html = fs::read_to_string(t.path().join("dist/pack-test.html")).unwrap();
+    assert!(html.contains("data:image/png;base64,aWNvbg=="), "{html}");
+    assert!(!html.contains("assets/icon.png"));
+    let applied = bin()
+        .args([
+            "registry",
+            "apply-theme",
+            "--deck",
+            t.path().to_str().unwrap(),
+            "local-theme",
+            "--force",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        applied.status.success(),
+        "{}",
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    assert!(
+        fs::read_to_string(t.path().join("theme.css"))
+            .unwrap()
+            .contains("data:image/png;base64,Ymc=")
+    );
+}
+
+#[test]
 fn project_template_rejects_attribute_placeholders_and_css_urls() {
     let t = tempfile::tempdir().unwrap();
     write_pack(t.path());

@@ -848,6 +848,8 @@ struct VendorComponent {
     name: String,
     template: String,
     css: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    assets: Vec<sideshow::project_packs::PackAsset>,
     #[serde(default)]
     props: Vec<String>,
     #[serde(default)]
@@ -932,6 +934,16 @@ fn vendor_component(deck: &Path, name: &str) -> anyhow::Result<()> {
         sideshow::project_packs::confined_read(&selected_root, &selected_component.template)?;
     let css_bytes =
         sideshow::project_packs::confined_read(&selected_root, &selected_component.css)?;
+    let asset_bytes = selected_component
+        .assets
+        .iter()
+        .map(|asset| {
+            Ok((
+                asset.path.clone(),
+                sideshow::project_packs::confined_read(&selected_root, &asset.path)?,
+            ))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
     let tmp_parent = deck.join("packs/vendor");
     let mut random = [0u8; 16];
     getrandom::fill(&mut random)?;
@@ -946,6 +958,9 @@ fn vendor_component(deck: &Path, name: &str) -> anyhow::Result<()> {
         )?;
         write_confined(&tmp, &selected_component.template, &template_bytes)?;
         write_confined(&tmp, &selected_component.css, &css_bytes)?;
+        for (path, bytes) in &asset_bytes {
+            write_confined(&tmp, path, bytes)?;
+        }
         let test_toml = format!(
             "[deck]\ntitle='T'\n[packs]\nroots=['{}']\n",
             tmp.strip_prefix(deck)?.to_string_lossy().replace('\\', "/")
@@ -973,7 +988,7 @@ fn vendor_component(deck: &Path, name: &str) -> anyhow::Result<()> {
             "kind":"component", "name": name,
             "original_provenance": selected_entry.provenance,
             "original_files": selected_entry.metadata.files,
-            "destination": {"root": dest_rel, "files": [sideshow::project_packs::PACK_MANIFEST, selected_component.template.as_str(), selected_component.css.as_str()]},
+            "destination": {"root": dest_rel, "files": std::iter::once(sideshow::project_packs::PACK_MANIFEST.to_string()).chain([selected_component.template.clone(), selected_component.css.clone()]).chain(selected_component.assets.iter().map(|a| a.path.clone())).collect::<Vec<_>>()},
             "effective_provenance": effective.provenance,
             "effective_files": effective.metadata.files
         }))?

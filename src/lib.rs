@@ -52,6 +52,8 @@ pub mod project_packs {
         template: String,
         css: String,
         #[serde(default)]
+        assets: Vec<PackAsset>,
+        #[serde(default)]
         props: Vec<String>,
         #[serde(default)]
         capabilities: Vec<String>,
@@ -72,6 +74,14 @@ pub mod project_packs {
     struct Theme {
         name: String,
         css: String,
+        #[serde(default)]
+        assets: Vec<PackAsset>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct PackAsset {
+        pub path: String,
     }
 
     #[derive(Debug, Clone)]
@@ -79,6 +89,7 @@ pub mod project_packs {
         pub name: String,
         pub template: String,
         pub css: String,
+        pub assets: BTreeMap<String, Vec<u8>>,
         pub props: Vec<String>,
         pub schema: Vec<registry::PropertySchema>,
         pub presets: BTreeMap<String, BTreeMap<String, registry::PropertyValue>>,
@@ -89,6 +100,7 @@ pub mod project_packs {
     pub struct ProjectTheme {
         pub name: String,
         pub css: String,
+        pub assets: BTreeMap<String, Vec<u8>>,
         pub entry: registry::RegistryEntry,
     }
 
@@ -256,6 +268,128 @@ pub mod project_packs {
             }
         }
         Ok(())
+    }
+
+    fn validate_css_with_assets(
+        name: &str,
+        s: &str,
+        assets: &BTreeMap<String, Vec<u8>>,
+    ) -> anyhow::Result<()> {
+        let scrubbed = CSS_URL_ASSET_RE.replace_all(s, |c: &Captures| {
+            let path = css_asset_capture_path(c).unwrap_or("");
+            let path = asset_ref_without_suffix(path).unwrap_or_else(|| path.to_string());
+            if assets.contains_key(&path) {
+                "pack-asset".to_string()
+            } else {
+                c[0].to_string()
+            }
+        });
+        validate_css(name, &scrubbed)
+    }
+
+    fn load_assets(
+        root: &Path,
+        owner: &str,
+        assets: &[PackAsset],
+    ) -> anyhow::Result<BTreeMap<String, Vec<u8>>> {
+        let mut out = BTreeMap::new();
+        for asset in assets {
+            let bytes = confined_read(root, &asset.path)
+                .with_context(|| format!("project pack asset '{}' for {owner}", asset.path))?;
+            if out.insert(asset.path.clone(), bytes).is_some() {
+                bail!(
+                    "project pack {owner} declares duplicate asset {}",
+                    asset.path
+                );
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn rewrite_local_assets(
+        input: &str,
+        assets: &BTreeMap<String, Vec<u8>>,
+    ) -> anyhow::Result<String> {
+        let to_data = |path: &str| -> anyhow::Result<String> {
+            let path = asset_ref_without_suffix(path).unwrap_or_else(|| path.to_string());
+            let bytes = assets.get(&path).ok_or_else(|| {
+                anyhow::anyhow!("undeclared project pack asset reference: {path}")
+            })?;
+            Ok(format!(
+                "data:{};base64,{}",
+                super::mime_for(&path),
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            ))
+        };
+        let mut err = None;
+        let out = lol_html::rewrite_str(
+            input,
+            RewriteStrSettings {
+                element_content_handlers: vec![element!("*[src], *[href], *[srcset]", |el| {
+                    for name in ["src", "href"] {
+                        if let Some(value) = el.get_attribute(name)
+                            && assets.contains_key(&value)
+                        {
+                            match to_data(&value) {
+                                Ok(uri) => el.set_attribute(name, &uri)?,
+                                Err(e) => err = Some(e),
+                            }
+                        }
+                    }
+                    if let Some(value) = el.get_attribute("srcset") {
+                        let rewritten = split_srcset(&value)
+                            .into_iter()
+                            .map(|candidate| {
+                                let trimmed = candidate.trim();
+                                let mut parts = trimmed.splitn(2, char::is_whitespace);
+                                let url = parts.next().unwrap_or("");
+                                let suffix = parts.next().unwrap_or("");
+                                if assets.contains_key(url) {
+                                    match to_data(url) {
+                                        Ok(uri) => {
+                                            if suffix.is_empty() {
+                                                uri
+                                            } else {
+                                                format!("{uri} {suffix}")
+                                            }
+                                        }
+                                        Err(e) => {
+                                            err = Some(e);
+                                            trimmed.to_string()
+                                        }
+                                    }
+                                } else {
+                                    trimmed.to_string()
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        el.set_attribute("srcset", &rewritten)?;
+                    }
+                    Ok(())
+                })],
+                ..RewriteStrSettings::default()
+            },
+        )
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        if let Some(e) = err {
+            return Err(e);
+        }
+        let mut css_err = None;
+        let out = CSS_URL_ASSET_RE.replace_all(&out, |c: &Captures| {
+            let path = css_asset_capture_path(c).unwrap_or("");
+            match to_data(path) {
+                Ok(uri) => format!("url({uri})"),
+                Err(e) => {
+                    css_err = Some(e);
+                    c[0].to_string()
+                }
+            }
+        });
+        if let Some(e) = css_err {
+            return Err(e);
+        }
+        Ok(out.into_owned())
     }
     fn digest(bytes: &[u8]) -> String {
         format!("sha256:{:x}", Sha256::digest(bytes))
@@ -446,8 +580,11 @@ pub mod project_packs {
                 let cb = confined_read(&root, &c.css)?;
                 let template = String::from_utf8(tb.clone())?;
                 let css = String::from_utf8(cb.clone())?;
+                let assets = load_assets(&root, &format!("component '{}'", c.name), &c.assets)?;
                 validate_markup(&c.name, &template)?;
-                validate_css(&c.name, &css)?;
+                validate_css_with_assets(&c.name, &css, &assets)?;
+                let template = rewrite_local_assets(&template, &assets)?;
+                let css = rewrite_local_assets(&css, &assets)?;
                 let files = vec![
                     registry::ScaffoldFileMetadata {
                         path: c.template.clone(),
@@ -459,7 +596,18 @@ pub mod project_packs {
                         resource: c.css.clone(),
                         digest: digest(&cb),
                     },
-                ];
+                ]
+                .into_iter()
+                .chain(
+                    assets
+                        .iter()
+                        .map(|(path, bytes)| registry::ScaffoldFileMetadata {
+                            path: path.clone(),
+                            resource: path.clone(),
+                            digest: digest(bytes),
+                        }),
+                )
+                .collect();
                 let mut metadata = registry::RegistryMetadata::resource(
                     c.intent,
                     c.accepted_input,
@@ -480,6 +628,7 @@ pub mod project_packs {
                     name: c.name,
                     template,
                     css,
+                    assets,
                     props: c.props,
                     schema: c.schema,
                     presets: c.presets,
@@ -498,27 +647,39 @@ pub mod project_packs {
                 }
                 let cb = confined_read(&root, &t.css)?;
                 let css = String::from_utf8(cb.clone())?;
-                validate_css(&t.name, &css)?;
-                let entry = registry::RegistryEntry {
-                    kind: "theme".into(),
-                    name: t.name.clone(),
-                    metadata: registry::RegistryMetadata::resource(
-                        vec!["project-theme".into()],
-                        vec![],
-                        vec!["css".into()],
-                        Some(t.css.clone()),
-                        Some(&cb),
-                        vec![registry::ScaffoldFileMetadata {
-                            path: t.css.clone(),
-                            resource: t.css,
-                            digest: digest(&cb),
-                        }],
-                    ),
-                    provenance: prov.clone(),
-                };
+                let assets = load_assets(&root, &format!("theme '{}'", t.name), &t.assets)?;
+                validate_css_with_assets(&t.name, &css, &assets)?;
+                let css = rewrite_local_assets(&css, &assets)?;
+                let entry =
+                    registry::RegistryEntry {
+                        kind: "theme".into(),
+                        name: t.name.clone(),
+                        metadata: registry::RegistryMetadata::resource(
+                            vec!["project-theme".into()],
+                            vec![],
+                            vec!["css".into()],
+                            Some(t.css.clone()),
+                            Some(&cb),
+                            std::iter::once(registry::ScaffoldFileMetadata {
+                                path: t.css.clone(),
+                                resource: t.css.clone(),
+                                digest: digest(&cb),
+                            })
+                            .chain(assets.iter().map(|(path, bytes)| {
+                                registry::ScaffoldFileMetadata {
+                                    path: path.clone(),
+                                    resource: path.clone(),
+                                    digest: digest(bytes),
+                                }
+                            }))
+                            .collect(),
+                        ),
+                        provenance: prov.clone(),
+                    };
                 output.themes.push(ProjectTheme {
                     name: t.name,
                     css,
+                    assets,
                     entry,
                 });
             }
@@ -565,12 +726,24 @@ pub mod project_packs {
                         bytes: confined_read(&root, &rel)?,
                     });
                 }
+                for asset in c.assets {
+                    out.push(AcceptedInput {
+                        path: format!("{rel_root}/{}", asset.path),
+                        bytes: confined_read(&root, &asset.path)?,
+                    });
+                }
             }
             for t in parsed.themes {
                 out.push(AcceptedInput {
                     path: format!("{rel_root}/{}", t.css),
                     bytes: confined_read(&root, &t.css)?,
                 });
+                for asset in t.assets {
+                    out.push(AcceptedInput {
+                        path: format!("{rel_root}/{}", asset.path),
+                        bytes: confined_read(&root, &asset.path)?,
+                    });
+                }
             }
         }
         out.sort_by(|a, b| a.path.cmp(&b.path));
