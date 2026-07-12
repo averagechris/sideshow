@@ -104,7 +104,7 @@ pub mod project_packs {
         Ok(out)
     }
 
-    fn checked_descend(base: &Path, rel: &str, want_dir: bool) -> anyhow::Result<PathBuf> {
+    pub fn checked_descend(base: &Path, rel: &str, want_dir: bool) -> anyhow::Result<PathBuf> {
         let mut cur = base.to_path_buf();
         for part in rel.split('/') {
             if part.is_empty() || part == "." || part == ".." {
@@ -128,7 +128,7 @@ pub mod project_packs {
         Ok(cur)
     }
 
-    fn confined_read(root: &Path, rel: &str) -> anyhow::Result<Vec<u8>> {
+    pub fn confined_read(root: &Path, rel: &str) -> anyhow::Result<Vec<u8>> {
         if rel.is_empty()
             || Path::new(rel).is_absolute()
             || rel.split('/').any(|p| p == ".." || p.is_empty())
@@ -139,7 +139,7 @@ pub mod project_packs {
         fs::read(&c).with_context(|| format!("failed to read project pack resource {rel}"))
     }
 
-    fn reject_unsafe_tree(root: &Path) -> anyhow::Result<()> {
+    pub fn reject_unsafe_tree(root: &Path) -> anyhow::Result<()> {
         let mut stack = vec![root.to_path_buf()];
         while let Some(dir) = stack.pop() {
             let mut entries = fs::read_dir(&dir)?.collect::<Result<Vec<_>, _>>()?;
@@ -211,8 +211,25 @@ pub mod project_packs {
         }
         Ok(())
     }
-    fn validate_css(name: &str, s: &str) -> anyhow::Result<()> {
-        let l = s.to_ascii_lowercase();
+    pub fn validate_css(name: &str, s: &str) -> anyhow::Result<()> {
+        // CSS escapes can disguise identifiers such as `url` and `@import`. The
+        // constrained pack contract does not need escapes, so reject them rather
+        // than attempting to duplicate a browser's CSS tokenization rules.
+        if s.contains('\\') {
+            bail!("project pack css for {name} contains forbidden CSS escape");
+        }
+        let mut without_comments = String::with_capacity(s.len());
+        let mut rest = s;
+        while let Some(start) = rest.find("/*") {
+            without_comments.push_str(&rest[..start]);
+            let after_start = &rest[start + 2..];
+            let end = after_start.find("*/").ok_or_else(|| {
+                anyhow::anyhow!("project pack css for {name} contains unterminated comment")
+            })?;
+            rest = &after_start[end + 2..];
+        }
+        without_comments.push_str(rest);
+        let l = without_comments.to_ascii_lowercase();
         let compact: String = l.chars().filter(|c| !c.is_whitespace()).collect();
         for bad in [
             "@import",
@@ -252,7 +269,75 @@ pub mod project_packs {
         let mut comps = Vec::new();
         let mut themes = Vec::new();
         let mut sources = Vec::new();
-        for (ordinal, root) in roots(deck_dir, deck)?.into_iter().enumerate() {
+        let deck_base = deck_dir.canonicalize()?;
+        load_from_roots(
+            LoadOptions {
+                roots: roots(deck_dir, deck)?,
+                source_prefix: "project",
+                activated: true,
+                note_base: Some(deck_base.as_path()),
+            },
+            LoadOutput {
+                names: &mut names,
+                comps: &mut comps,
+                themes: &mut themes,
+                sources: &mut sources,
+            },
+        )?;
+        Ok((comps, themes, sources))
+    }
+
+    pub fn load_discovery_roots(
+        roots: Vec<PathBuf>,
+        source_prefix: &str,
+        activated: bool,
+    ) -> anyhow::Result<(
+        Vec<ProjectComponent>,
+        Vec<ProjectTheme>,
+        Vec<registry::RegistrySource>,
+    )> {
+        let bundled = registry::registry_document()?;
+        let mut names = bundled
+            .entries
+            .iter()
+            .map(|e| (e.kind.clone(), e.name.clone()))
+            .collect::<BTreeSet<_>>();
+        let mut comps = Vec::new();
+        let mut themes = Vec::new();
+        let mut sources = Vec::new();
+        load_from_roots(
+            LoadOptions {
+                roots,
+                source_prefix,
+                activated,
+                note_base: None,
+            },
+            LoadOutput {
+                names: &mut names,
+                comps: &mut comps,
+                themes: &mut themes,
+                sources: &mut sources,
+            },
+        )?;
+        Ok((comps, themes, sources))
+    }
+
+    struct LoadOptions<'a> {
+        roots: Vec<PathBuf>,
+        source_prefix: &'a str,
+        activated: bool,
+        note_base: Option<&'a Path>,
+    }
+
+    struct LoadOutput<'a> {
+        names: &'a mut BTreeSet<(String, String)>,
+        comps: &'a mut Vec<ProjectComponent>,
+        themes: &'a mut Vec<ProjectTheme>,
+        sources: &'a mut Vec<registry::RegistrySource>,
+    }
+
+    fn load_from_roots(options: LoadOptions<'_>, output: LoadOutput<'_>) -> anyhow::Result<()> {
+        for (ordinal, root) in options.roots.into_iter().enumerate() {
             reject_unsafe_tree(&root)?;
             let manifest_bytes = confined_read(&root, PACK_MANIFEST)?;
             let manifest: Manifest = toml::from_str(std::str::from_utf8(&manifest_bytes)?)
@@ -270,19 +355,19 @@ pub mod project_packs {
                 );
             }
             let prov = registry::Provenance {
-                source: format!("project:{}", ordinal),
+                source: format!("{}:{}", options.source_prefix, ordinal),
                 pack: manifest.pack.clone(),
                 pack_schema_version: manifest.schema_version,
             };
-            let deck_base = deck_dir.canonicalize()?;
-            let note = root
-                .strip_prefix(&deck_base)
+            let note = options
+                .note_base
+                .and_then(|base| root.strip_prefix(base).ok())
                 .unwrap_or(&root)
                 .to_string_lossy()
                 .replace('\\', "/");
-            sources.push(registry::RegistrySource {
+            output.sources.push(registry::RegistrySource {
                 provenance: prov.clone(),
-                activated: true,
+                activated: options.activated,
                 note,
             });
             for c in manifest.components {
@@ -341,7 +426,8 @@ pub mod project_packs {
                         c.name
                     );
                 }
-                if !names.insert(("component".into(), c.name.clone())) {
+                validate_registry_name(&c.name)?;
+                if !output.names.insert(("component".into(), c.name.clone())) {
                     bail!(
                         "duplicate or bundled collision registry entry 'component/{}'",
                         c.name
@@ -378,7 +464,7 @@ pub mod project_packs {
                     ),
                     provenance: prov.clone(),
                 };
-                comps.push(ProjectComponent {
+                output.comps.push(ProjectComponent {
                     name: c.name,
                     template,
                     css,
@@ -388,7 +474,8 @@ pub mod project_packs {
             }
             for t in manifest.themes {
                 registry::reject_reserved("theme", &t.name)?;
-                if !names.insert(("theme".into(), t.name.clone())) {
+                validate_registry_name(&t.name)?;
+                if !output.names.insert(("theme".into(), t.name.clone())) {
                     bail!(
                         "duplicate or bundled collision registry entry 'theme/{}'",
                         t.name
@@ -414,14 +501,30 @@ pub mod project_packs {
                     ),
                     provenance: prov.clone(),
                 };
-                themes.push(ProjectTheme {
+                output.themes.push(ProjectTheme {
                     name: t.name,
                     css,
                     entry,
                 });
             }
         }
-        Ok((comps, themes, sources))
+        Ok(())
+    }
+
+    fn validate_registry_name(name: &str) -> anyhow::Result<()> {
+        let valid = !name.is_empty()
+            && name.len() <= 64
+            && name.as_bytes()[0].is_ascii_lowercase()
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            && !name.ends_with('-');
+        if !valid {
+            bail!(
+                "project pack registry name must match [a-z][a-z0-9-]{{0,63}} and not end in '-': {name}"
+            );
+        }
+        Ok(())
     }
 
     pub fn accepted_inputs(deck_dir: &Path, deck: &DeckToml) -> anyhow::Result<Vec<AcceptedInput>> {
@@ -2365,6 +2468,22 @@ pub struct UserConfig {
     pub tools: ToolsConfig,
     #[serde(default)]
     pub srht: SrhtConfig,
+    #[serde(default)]
+    pub registry: UserRegistryConfig,
+    #[serde(default)]
+    pub authoring: AuthoringConfig,
+}
+
+#[derive(Debug, Default, Deserialize, PartialEq)]
+pub struct UserRegistryConfig {
+    #[serde(default)]
+    pub roots: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize, PartialEq)]
+pub struct AuthoringConfig {
+    #[serde(default, rename = "default-theme")]
+    pub default_theme: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, PartialEq)]
@@ -2415,6 +2534,46 @@ pub fn srht_config() -> anyhow::Result<(SrhtConfig, PathBuf)> {
 
 fn parse_user_config(raw: &str, path: &Path) -> anyhow::Result<UserConfig> {
     toml::from_str(raw).with_context(|| format!("failed to parse config file {}", path.display()))
+}
+
+pub fn configured_default_theme() -> anyhow::Result<Option<String>> {
+    Ok(user_config()?.0.authoring.default_theme)
+}
+
+pub fn user_registry_roots() -> anyhow::Result<Vec<PathBuf>> {
+    let (config, path) = user_config()?;
+    if config.registry.roots.is_empty() {
+        return Ok(Vec::new());
+    }
+    let base = path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .canonicalize()?;
+    let mut out = Vec::new();
+    for root in &config.registry.roots {
+        if root.is_empty() || root.split('/').any(|p| p == "..") {
+            bail!("user registry root must not be empty or contain traversal: {root}");
+        }
+        let p = Path::new(root);
+        let c = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            project_packs::checked_descend(&base, root, true)?
+        };
+        if !c.is_dir() {
+            bail!("user registry root is not a directory: {}", c.display());
+        }
+        out.push(c.canonicalize()?);
+    }
+    Ok(out)
+}
+
+pub fn user_registry_discovery() -> anyhow::Result<(
+    Vec<project_packs::ProjectComponent>,
+    Vec<project_packs::ProjectTheme>,
+    Vec<registry::RegistrySource>,
+)> {
+    project_packs::load_discovery_roots(user_registry_roots()?, "user", false)
 }
 
 #[cfg(test)]
@@ -2559,9 +2718,18 @@ pub fn parse_deck_toml(s: &str) -> anyhow::Result<DeckToml> {
 }
 
 pub fn new_deck(dir: &Path, theme: &str) -> anyhow::Result<()> {
-    builtin_theme_css(theme).ok_or_else(|| {
+    let theme_css = if let Some(css) = builtin_theme_css(theme) {
+        Some(css.to_owned())
+    } else {
+        user_registry_discovery()?
+            .1
+            .into_iter()
+            .find(|t| t.name == theme)
+            .map(|t| t.css)
+    }
+    .ok_or_else(|| {
         anyhow::anyhow!(
-            "unknown built-in theme '{theme}' (available: {})",
+            "unknown theme '{theme}' (available bundled: {})",
             THEMES
                 .iter()
                 .map(|t| t.name.as_str())
@@ -2573,8 +2741,22 @@ pub fn new_deck(dir: &Path, theme: &str) -> anyhow::Result<()> {
     fs::create_dir_all(dir.join("slides"))?;
     fs::create_dir_all(dir.join("assets"))?;
     fs::create_dir_all(dir)?;
-    for file in registry::scaffold_files("deck", theme, &title)? {
-        fs::write(dir.join(file.path), file.bytes)?;
+    let scaffold_theme = if builtin_theme_css(theme).is_some() {
+        theme
+    } else {
+        "signal"
+    };
+    for mut file in registry::scaffold_files("deck", scaffold_theme, &title)? {
+        if file.path == "theme.css" {
+            fs::write(dir.join(file.path), theme_css.as_bytes())?;
+        } else {
+            if file.path == "deck.toml" && scaffold_theme != theme {
+                let s = String::from_utf8(file.bytes)?
+                    .replace("theme = \"signal\"", &format!("theme = \"{theme}\""));
+                file.bytes = s.into_bytes();
+            }
+            fs::write(dir.join(file.path), file.bytes)?;
+        }
     }
     Ok(())
 }

@@ -31,8 +31,8 @@ enum Command {
         /// Directory to create.
         dir: PathBuf,
         /// Built-in theme to copy into the deck.
-        #[arg(long, default_value = "signal")]
-        theme: String,
+        #[arg(long)]
+        theme: Option<String>,
     },
     /// Build a deck into dist/<slug-of-title>.html.
     Build { dir: PathBuf },
@@ -192,8 +192,8 @@ enum PlanCommand {
     /// Scaffold a plan deck with canonical plan.json and visual slides.
     New {
         dir: PathBuf,
-        #[arg(long, default_value = "signal")]
-        theme: String,
+        #[arg(long)]
+        theme: Option<String>,
     },
     /// Run normal deck checks plus plan schema/reference checks.
     Check {
@@ -383,19 +383,19 @@ impl From<PlanWorkStatusArg> for sideshow::plan::WorkStatus {
 
 #[derive(Debug, Subcommand)]
 enum RegistryCommand {
-    /// List activated registry entries as stable JSON.
+    /// List bundled and discoverable registry entries as stable JSON.
     List {
         #[arg(long)]
         deck: Option<PathBuf>,
     },
-    /// Explain one activated registry entry as stable JSON.
+    /// Explain one bundled or discoverable registry entry as stable JSON.
     Explain {
         kind: String,
         name: String,
         #[arg(long)]
         deck: Option<PathBuf>,
     },
-    /// List activated registry sources as stable JSON.
+    /// List registry sources and whether each is activated as stable JSON.
     Sources {
         #[arg(long)]
         deck: Option<PathBuf>,
@@ -503,6 +503,10 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::New { dir, theme } => {
+            let theme = match theme {
+                Some(theme) => theme,
+                None => sideshow::configured_default_theme()?.unwrap_or_else(|| "signal".into()),
+            };
             sideshow::new_deck(&dir, &theme)?;
             println!("created {} (theme: {theme})", dir.display());
             println!(
@@ -607,7 +611,7 @@ fn registry_command(command: RegistryCommand) -> anyhow::Result<()> {
     match command {
         RegistryCommand::List { deck: None } => println!(
             "{}",
-            serde_json::to_string_pretty(&sideshow::registry::registry_document()?)?
+            serde_json::to_string_pretty(&registry_document_with_user()?)?
         ),
         RegistryCommand::List { deck: Some(deck) } => println!(
             "{}",
@@ -619,7 +623,13 @@ fn registry_command(command: RegistryCommand) -> anyhow::Result<()> {
             deck: None,
         } => println!(
             "{}",
-            serde_json::to_string_pretty(&sideshow::registry::explain(&kind, &name)?)?
+            serde_json::to_string_pretty(
+                &registry_document_with_user()?
+                    .entries
+                    .into_iter()
+                    .find(|e| e.kind == kind && e.name == name)
+                    .ok_or_else(|| anyhow::anyhow!("unknown registry entry '{kind}/{name}'"))?
+            )?
         ),
         RegistryCommand::Explain {
             kind,
@@ -637,12 +647,13 @@ fn registry_command(command: RegistryCommand) -> anyhow::Result<()> {
         ),
         RegistryCommand::Sources { deck: None } => println!(
             "{}",
-            serde_json::to_string_pretty(&sideshow::registry::sources_document())?
+            serde_json::to_string_pretty(&sources_document_with_user()?)?
         ),
         RegistryCommand::Sources { deck: Some(deck) } => {
             let deck_toml =
                 sideshow::parse_deck_toml(&fs::read_to_string(deck.join("deck.toml"))?)?;
             let (_, _, mut sources) = sideshow::project_packs::load(&deck, &deck_toml)?;
+            let (_, _, user_sources) = sideshow::user_registry_discovery()?;
             sources.insert(
                 0,
                 sideshow::registry::RegistrySource {
@@ -655,6 +666,7 @@ fn registry_command(command: RegistryCommand) -> anyhow::Result<()> {
                     note: "bundled defaults".into(),
                 },
             );
+            sources.extend(user_sources);
             println!(
                 "{}",
                 serde_json::to_string_pretty(&sideshow::registry::RegistrySourcesDocument {
@@ -668,13 +680,39 @@ fn registry_command(command: RegistryCommand) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn registry_document_with_user() -> anyhow::Result<sideshow::registry::RegistryDocument> {
+    let mut entries = sideshow::registry::registry_document()?.entries;
+    let (components, themes, _) = sideshow::user_registry_discovery()?;
+    entries.extend(components.into_iter().map(|c| c.entry));
+    entries.extend(themes.into_iter().map(|t| t.entry));
+    Ok(sideshow::registry::RegistryDocument {
+        schema_version: sideshow::registry::REGISTRY_SCHEMA_VERSION,
+        entries: sideshow::registry::validate_entries(&entries)?,
+    })
+}
+
+fn sources_document_with_user() -> anyhow::Result<sideshow::registry::RegistrySourcesDocument> {
+    let mut sources = sideshow::registry::sources_document().sources;
+    let (_, _, user_sources) = sideshow::user_registry_discovery()?;
+    sources.extend(user_sources);
+    Ok(sideshow::registry::RegistrySourcesDocument {
+        schema_version: sideshow::registry::REGISTRY_SCHEMA_VERSION,
+        sources,
+    })
+}
+
 fn apply_theme(deck: &Path, name: &str, force: bool) -> anyhow::Result<()> {
     let deck_toml = sideshow::parse_deck_toml(&fs::read_to_string(deck.join("deck.toml"))?)?;
     let (_, themes, _) = sideshow::project_packs::load(deck, &deck_toml)?;
-    let theme = themes
-        .into_iter()
-        .find(|t| t.name == name)
-        .ok_or_else(|| anyhow::anyhow!("unknown project theme '{name}'"))?;
+    let theme = if let Some(theme) = themes.into_iter().find(|t| t.name == name) {
+        Some(theme)
+    } else {
+        sideshow::user_registry_discovery()?
+            .1
+            .into_iter()
+            .find(|t| t.name == name)
+    }
+    .ok_or_else(|| anyhow::anyhow!("unknown project or user theme '{name}'"))?;
     let target = deck.join("theme.css");
     if target.exists() && !force {
         anyhow::bail!("theme.css already exists; pass --force to replace it");
@@ -900,6 +938,10 @@ fn parse_key_val(s: &str) -> Result<(String, String), String> {
 fn plan_command(command: PlanCommand) -> anyhow::Result<()> {
     match command {
         PlanCommand::New { dir, theme } => {
+            let theme = match theme {
+                Some(theme) => theme,
+                None => sideshow::configured_default_theme()?.unwrap_or_else(|| "signal".into()),
+            };
             sideshow::plan::new_plan_deck(&dir, &theme)?;
             println!("created plan deck {} (theme: {theme})", dir.display());
             println!(

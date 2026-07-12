@@ -306,14 +306,18 @@ fn project_template_rejects_attribute_placeholders_and_css_urls() {
         "<p>{{title}}</p>",
     )
     .unwrap();
-    fs::write(
-        t.path().join("packs/local/components/card.css"),
+    for css in [
         ".x{background: U R L (https://x)}",
-    )
-    .unwrap();
-    let out = bin()
-        .args(["registry", "list", "--deck", t.path().to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(!out.status.success());
+        r".x{background:u\72l(https://x)}",
+        ".x{background:u/**/rl(https://x)}",
+        r"@im\70ort 'https://x';",
+        "@im/**/port 'https://x';",
+    ] {
+        fs::write(t.path().join("packs/local/components/card.css"), css).unwrap();
+        let out = bin()
+            .args(["registry", "list", "--deck", t.path().to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "CSS passed: {css}");
+    }
 }
