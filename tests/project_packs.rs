@@ -370,6 +370,9 @@ fn project_pack_assets_are_declared_embedded_and_digest_inputs() {
             .unwrap()
             .contains("data:image/png;base64,Ymc=")
     );
+    let applied_json = String::from_utf8_lossy(&applied.stdout);
+    assert!(applied_json.contains("written_digest"));
+    assert!(applied_json.contains("source_digest"));
 }
 
 #[test]
@@ -445,4 +448,140 @@ fn pack_asset_rewrite_is_contextual_declared_and_deterministic() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+#[test]
+fn pack_assets_participate_in_budgets_and_build_agrees() {
+    let t = tempfile::tempdir().unwrap();
+    write_pack(t.path());
+    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=1\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\n[[components.assets]]\npath='assets/html.bin'\n[[components.assets]]\npath='assets/css.bin'\n[[themes]]\nname='local-theme'\ncss='themes/local.css'\n[[themes.assets]]\npath='assets/theme.bin'\n").unwrap();
+    fs::create_dir_all(t.path().join("packs/local/assets")).unwrap();
+    fs::write(
+        t.path().join("packs/local/assets/html.bin"),
+        vec![0u8; 390_000],
+    )
+    .unwrap();
+    fs::write(
+        t.path().join("packs/local/assets/css.bin"),
+        vec![0u8; 390_000],
+    )
+    .unwrap();
+    fs::write(
+        t.path().join("packs/local/assets/theme.bin"),
+        vec![0u8; 390_000],
+    )
+    .unwrap();
+    fs::write(
+        t.path().join("packs/local/components/card.html"),
+        "<article><img src='assets/html.bin'><h1>{{title}}</h1></article>",
+    )
+    .unwrap();
+    fs::write(
+        t.path().join("packs/local/components/card.css"),
+        ".safe-card{background:url(assets/css.bin)}",
+    )
+    .unwrap();
+    fs::write(
+        t.path().join("packs/local/themes/local.css"),
+        "body{background:url(assets/theme.bin)}",
+    )
+    .unwrap();
+    fs::write(
+        t.path().join("slides/01.slide.toml"),
+        "component='safe-card'\n[props]\ntitle='ok'\n",
+    )
+    .unwrap();
+    let applied = bin()
+        .args([
+            "registry",
+            "apply-theme",
+            "--deck",
+            t.path().to_str().unwrap(),
+            "local-theme",
+            "--force",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        applied.status.success(),
+        "{}",
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    let check = bin()
+        .args(["check", t.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    let check_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+    assert!(check_text.contains("asset_size_budget"), "{check_text}");
+    assert!(
+        check_text.contains("pack component/safe-card/assets/html.bin"),
+        "{check_text}"
+    );
+    assert!(
+        check_text.contains("pack component/safe-card/assets/css.bin"),
+        "{check_text}"
+    );
+    assert!(
+        check_text.contains("pack theme/local-theme/assets/theme.bin"),
+        "{check_text}"
+    );
+    let build = bin()
+        .args(["build", t.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+}
+
+#[test]
+fn pack_rejects_svg_policy_navigation_entities_and_role_collisions() {
+    let t = tempfile::tempdir().unwrap();
+    write_pack(t.path());
+    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=1\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\n[[components.assets]]\npath='components/card.css'\n").unwrap();
+    let out = bin()
+        .args(["registry", "list", "--deck", t.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("collides"));
+
+    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=1\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\n[[components.assets]]\npath='assets/bad.SVG'\n").unwrap();
+    fs::create_dir_all(t.path().join("packs/local/assets")).unwrap();
+    fs::write(
+        t.path().join("packs/local/assets/bad.SVG"),
+        "<svg xmlns='http://www.w3.org/2000/svg'><script/></svg>",
+    )
+    .unwrap();
+    fs::write(
+        t.path().join("packs/local/components/card.html"),
+        "<img src='assets/bad.SVG'><h1>{{title}}</h1>",
+    )
+    .unwrap();
+    let out = bin()
+        .args(["registry", "list", "--deck", t.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("static policy"));
+
+    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=1\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\n").unwrap();
+    for template in [
+        "<a href='assets/file.bin'>x</a>",
+        "<img src='java&#x73;cript:alert(1)'>",
+        "<img on&#x6c;oad='alert(1)'>",
+    ] {
+        fs::write(t.path().join("packs/local/components/card.html"), template).unwrap();
+        let out = bin()
+            .args(["registry", "list", "--deck", t.path().to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "template passed: {template}");
+    }
 }

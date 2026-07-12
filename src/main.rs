@@ -1120,10 +1120,11 @@ fn apply_theme(deck: &Path, name: &str, force: bool) -> anyhow::Result<()> {
         anyhow::bail!("theme.css already exists; pass --force to replace it");
     }
     atomic_replace(&target, theme.css.as_bytes(), !force)?;
+    let written_digest = format!("sha256:{}", sha256_hex(theme.css.as_bytes()));
     println!(
         "{}",
         serde_json::to_string_pretty(
-            &serde_json::json!({"theme": name, "target": "theme.css", "digest": theme.entry.metadata.resource_digest, "provenance": theme.entry.provenance})
+            &serde_json::json!({"theme": name, "target": "theme.css", "written_digest": written_digest, "source_digest": theme.entry.metadata.resource_digest, "provenance": theme.entry.provenance})
         )?
     );
     Ok(())

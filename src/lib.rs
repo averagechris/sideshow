@@ -210,8 +210,78 @@ pub mod project_packs {
         if attr_re.is_match(s) {
             bail!("project component {name} contains forbidden event handler attribute");
         }
+        let mut attr_error = None;
+        lol_html::rewrite_str(
+            s,
+            RewriteStrSettings {
+                element_content_handlers: vec![element!("*", |el| {
+                    for attr in el.attributes() {
+                        let attr_name = attr.name().to_ascii_lowercase();
+                        let value = decode_html_char_refs(&attr.value()).to_ascii_lowercase();
+                        if attr_name.starts_with("on") {
+                            attr_error = Some(anyhow::anyhow!(
+                                "project component {name} contains forbidden event handler attribute"
+                            ));
+                        }
+                        if matches!(attr_name.as_str(), "src" | "href" | "srcset" | "style")
+                            && (value.contains("javascript:") || value.contains("data:text/html"))
+                        {
+                            attr_error = Some(anyhow::anyhow!(
+                                "project component {name} contains forbidden decoded active reference"
+                            ));
+                        }
+                        if attr_name == "href" && value.contains("assets/") {
+                            attr_error = Some(anyhow::anyhow!(
+                                "project component {name} uses pack asset in navigation context"
+                            ));
+                        }
+                    }
+                    Ok(())
+                })],
+                ..RewriteStrSettings::default()
+            },
+        )
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        if let Some(e) = attr_error {
+            return Err(e);
+        }
         reject_placeholders_in_tags(name, s)?;
         Ok(())
+    }
+
+    fn decode_html_char_refs(input: &str) -> String {
+        let mut out = String::with_capacity(input.len());
+        let mut rest = input;
+        while let Some(start) = rest.find('&') {
+            out.push_str(&rest[..start]);
+            rest = &rest[start + 1..];
+            let Some(end) = rest.find(';') else {
+                out.push('&');
+                out.push_str(rest);
+                return out;
+            };
+            let entity = &rest[..end];
+            let decoded = if let Some(hex) = entity
+                .strip_prefix("#x")
+                .or_else(|| entity.strip_prefix("#X"))
+            {
+                u32::from_str_radix(hex, 16).ok().and_then(char::from_u32)
+            } else if let Some(dec) = entity.strip_prefix('#') {
+                dec.parse::<u32>().ok().and_then(char::from_u32)
+            } else {
+                None
+            };
+            if let Some(ch) = decoded {
+                out.push(ch);
+            } else {
+                out.push('&');
+                out.push_str(entity);
+                out.push(';');
+            }
+            rest = &rest[end + 1..];
+        }
+        out.push_str(rest);
+        out
     }
 
     fn reject_placeholders_in_tags(name: &str, s: &str) -> anyhow::Result<()> {
@@ -305,11 +375,68 @@ pub mod project_packs {
         for asset in assets {
             let bytes = confined_read(root, &asset.path)
                 .with_context(|| format!("project pack asset '{}' for {owner}", asset.path))?;
+            if asset.path.to_ascii_lowercase().ends_with(".svg") {
+                let svg = std::str::from_utf8(&bytes).with_context(|| {
+                    format!("project pack SVG asset '{}' is not UTF-8", asset.path)
+                })?;
+                super::validate_static_svg(svg).with_context(|| {
+                    format!(
+                        "project pack SVG asset '{}' failed static policy",
+                        asset.path
+                    )
+                })?;
+            }
             if out.insert(asset.path.clone(), bytes).is_some() {
                 bail!(
                     "project pack {owner} declares duplicate asset {}",
                     asset.path
                 );
+            }
+        }
+        Ok(out)
+    }
+
+    fn validate_role_collisions(
+        owner: &str,
+        roles: &[&str],
+        assets: &[PackAsset],
+    ) -> anyhow::Result<()> {
+        let roles = roles.iter().copied().collect::<BTreeSet<_>>();
+        for asset in assets {
+            if roles.contains(asset.path.as_str()) || asset.path == PACK_MANIFEST {
+                bail!(
+                    "project pack {owner} asset path collides with template/css/pack manifest role: {}",
+                    asset.path
+                );
+            }
+        }
+        Ok(())
+    }
+
+    pub fn inline_asset_budget_inputs(
+        deck_dir: &Path,
+        deck: &DeckToml,
+    ) -> anyhow::Result<Vec<(String, u64)>> {
+        let (components, themes, _) = load(deck_dir, deck)?;
+        let applied_theme_css = std::fs::read_to_string(deck_dir.join("theme.css")).ok();
+        let mut out = Vec::new();
+        for component in components {
+            for (path, bytes) in component.assets {
+                out.push((
+                    format!("pack component/{}/{}", component.name, path),
+                    super::projected_data_uri_size(bytes.len() as u64, super::mime_for(&path)),
+                ));
+            }
+        }
+        for theme in themes {
+            if applied_theme_css.as_deref() != Some(theme.css.as_str()) {
+                continue;
+            }
+            for (path, bytes) in theme.assets {
+                out.push((
+                    format!("pack theme/{}/{}", theme.name, path),
+                    super::projected_data_uri_size(bytes.len() as u64, super::mime_for(&path)),
+                ));
             }
         }
         Ok(out)
@@ -637,6 +764,11 @@ pub mod project_packs {
                 let cb = confined_read(&root, &c.css)?;
                 let template = String::from_utf8(tb.clone())?;
                 let css = String::from_utf8(cb.clone())?;
+                validate_role_collisions(
+                    &format!("component '{}'", c.name),
+                    &[&c.template, &c.css],
+                    &c.assets,
+                )?;
                 let assets = load_assets(&root, &format!("component '{}'", c.name), &c.assets)?;
                 validate_markup(&c.name, &template)?;
                 validate_css_with_assets(&c.name, &css, &assets)?;
@@ -724,6 +856,7 @@ pub mod project_packs {
                 }
                 let cb = confined_read(&root, &t.css)?;
                 let css = String::from_utf8(cb.clone())?;
+                validate_role_collisions(&format!("theme '{}'", t.name), &[&t.css], &t.assets)?;
                 let assets = load_assets(&root, &format!("theme '{}'", t.name), &t.assets)?;
                 validate_css_with_assets(&t.name, &css, &assets)?;
                 validate_declared_asset_use(&format!("theme '{}'", t.name), &[&css], &assets)?;
@@ -3924,6 +4057,31 @@ pub fn check_deck(dir: &Path) -> Vec<CheckFinding> {
             message: "asset is not referenced by any slide fragment".into(),
         });
     }
+    let mut pack_asset_total = 0;
+    match project_packs::inline_asset_budget_inputs(dir, &deck) {
+        Ok(pack_assets) => {
+            for (path, projected) in pack_assets {
+                pack_asset_total += projected;
+                if projected > 500 * 1024 {
+                    findings.push(CheckFinding {
+                        path,
+                        severity: FindingSeverity::Warning,
+                        kind: "asset_size_budget".into(),
+                        message: format!(
+                            "projected inlined pack asset size is {} bytes (> 500KB)",
+                            projected
+                        ),
+                    });
+                }
+            }
+        }
+        Err(e) => findings.push(CheckFinding {
+            path: deck_path.display().to_string(),
+            severity: FindingSeverity::Error,
+            kind: "project_pack".into(),
+            message: format!("could not inspect project pack assets: {e:#}"),
+        }),
+    }
     let total: u64 = ordinary_refs
         .iter()
         .filter_map(|r| {
@@ -3933,6 +4091,7 @@ pub fn check_deck(dir: &Path) -> Vec<CheckFinding> {
                 .map(|m| projected_data_uri_size(m.len(), mime_for(r)))
         })
         .sum::<u64>()
+        + pack_asset_total
         + embedded_fonts
             .iter()
             .map(fonts::EmbeddedFont::projected_inline_size)

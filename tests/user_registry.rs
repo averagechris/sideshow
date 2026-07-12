@@ -343,6 +343,90 @@ fn vendor_component_survives_user_config_and_source_removal() {
 }
 
 #[test]
+fn vendor_component_with_assets_survives_source_and_config_removal() {
+    let t = tempfile::tempdir().unwrap();
+    let config_dir = t.path().join("cfg");
+    let pack = config_dir.join("packs/one");
+    fs::create_dir_all(pack.join("components")).unwrap();
+    fs::create_dir_all(pack.join("assets")).unwrap();
+    fs::write(pack.join("pack.toml"), "schema_version=1\npack='user-pack'\n[[components]]\nname='asset-card'\ntemplate='components/asset-card.html'\ncss='components/asset-card.css'\nprops=['title']\ncapabilities=['component-slide','html-escaped','js-free']\nintent=['demo']\n[[components.assets]]\npath='assets/icon.png'\n").unwrap();
+    fs::write(
+        pack.join("components/asset-card.html"),
+        "<article><img src='assets/icon.png'><h1>{{title}}</h1></article>",
+    )
+    .unwrap();
+    fs::write(
+        pack.join("components/asset-card.css"),
+        ".asset-card{color:red}",
+    )
+    .unwrap();
+    fs::write(pack.join("assets/icon.png"), b"icon").unwrap();
+    let config = config_dir.join("config.toml");
+    fs::write(&config, "[registry]\nroots=['packs/one']\n").unwrap();
+    let deck = t.path().join("deck");
+    new_deck(&deck);
+    let vendor = bin()
+        .env("SIDESHOW_CONFIG", &config)
+        .args([
+            "registry",
+            "vendor",
+            "--deck",
+            deck.to_str().unwrap(),
+            "component",
+            "asset-card",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        vendor.status.success(),
+        "{}",
+        String::from_utf8_lossy(&vendor.stderr)
+    );
+    fs::remove_file(&config).unwrap();
+    fs::remove_dir_all(&pack).unwrap();
+    let slide = deck.join("slides/91.slide.toml");
+    let compose = bin()
+        .args([
+            "compose",
+            "add",
+            slide.to_str().unwrap(),
+            "--deck",
+            deck.to_str().unwrap(),
+            "--component",
+            "asset-card",
+            "--prop",
+            "title=Vendored",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        compose.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compose.stderr)
+    );
+    assert!(
+        bin()
+            .args(["check", deck.to_str().unwrap()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        bin()
+            .args(["build", deck.to_str().unwrap()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let html = fs::read_dir(deck.join("dist"))
+        .unwrap()
+        .map(|e| fs::read_to_string(e.unwrap().path()).unwrap())
+        .collect::<String>();
+    assert!(html.contains("Vendored"));
+    assert!(html.contains("data:image/png;base64,aWNvbg=="));
+}
+
+#[test]
 fn vendor_component_collision_rejects_without_mutation() {
     let t = tempfile::tempdir().unwrap();
     let config_dir = t.path().join("cfg");
