@@ -3331,7 +3331,12 @@ fn respond(
             b"<!doctype html><title>404 Not Found</title><h1>404 Not Found</h1>".to_vec(),
         )
     };
-    let mime = match requested.extension().and_then(|s| s.to_str()).unwrap_or("") {
+    let ext = requested
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    let mime = match ext.as_str() {
         "html" => "text/html; charset=utf-8",
         "css" => "text/css",
         "js" => "text/javascript",

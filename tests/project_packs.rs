@@ -378,6 +378,7 @@ fn project_template_rejects_attribute_placeholders_and_css_urls() {
     write_pack(t.path());
     for template in [
         "<div title=\"{{title}}\">x</div>",
+        "<div title=\"not > closed {{title}}\">x</div>",
         "<div title={{title}}>x</div>",
         "<div\n data-x = \"{{title}}\">x</div>",
     ] {
@@ -408,4 +409,40 @@ fn project_template_rejects_attribute_placeholders_and_css_urls() {
             .unwrap();
         assert!(!out.status.success(), "CSS passed: {css}");
     }
+}
+
+#[test]
+fn pack_asset_rewrite_is_contextual_declared_and_deterministic() {
+    let t = tempfile::tempdir().unwrap();
+    write_pack(t.path());
+    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=1\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\n[[components.assets]]\npath='assets/icon.png'\n[[components.assets]]\npath='assets/unused.png'\n").unwrap();
+    fs::create_dir_all(t.path().join("packs/local/assets")).unwrap();
+    fs::write(t.path().join("packs/local/assets/icon.png"), b"icon").unwrap();
+    fs::write(t.path().join("packs/local/assets/unused.png"), b"unused").unwrap();
+    fs::write(t.path().join("packs/local/components/card.html"), "<p>literal assets/icon.png text</p><img src='assets/icon.png?cache=1#x'><h1>{{title}}</h1>").unwrap();
+    fs::write(
+        t.path().join("packs/local/components/card.css"),
+        ".safe-card{color:purple}",
+    )
+    .unwrap();
+    let out = bin()
+        .args(["registry", "list", "--deck", t.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("unused project pack asset(s): assets/unused.png")
+    );
+
+    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=1\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\n[[components.assets]]\npath='assets/icon.png'\n").unwrap();
+    let out = bin()
+        .args(["registry", "list", "--deck", t.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

@@ -233,9 +233,6 @@ pub mod project_packs {
                 in_tag = true;
                 quote = None;
             }
-            if c == '>' && !in_tag {
-                in_tag = false;
-            }
             if c == '{' && matches!(chars.peek(), Some((_, '{'))) && in_tag {
                 bail!(
                     "project component {name} uses placeholder inside HTML tag/attribute context at byte {i}"
@@ -318,6 +315,31 @@ pub mod project_packs {
         Ok(out)
     }
 
+    fn validate_declared_asset_use(
+        owner: &str,
+        documents: &[&str],
+        assets: &BTreeMap<String, Vec<u8>>,
+    ) -> anyhow::Result<()> {
+        let mut used = BTreeSet::new();
+        for document in documents {
+            for reference in super::asset_refs(document)? {
+                if !assets.contains_key(&reference) {
+                    bail!("project pack {owner} references undeclared asset {reference}");
+                }
+                used.insert(reference);
+            }
+        }
+        let unused: Vec<_> = assets
+            .keys()
+            .filter(|path| !used.contains(*path))
+            .cloned()
+            .collect();
+        if !unused.is_empty() {
+            bail!("unused project pack asset(s): {}", unused.join(", "));
+        }
+        Ok(())
+    }
+
     pub fn rewrite_local_assets(
         input: &str,
         assets: &BTreeMap<String, Vec<u8>>,
@@ -340,9 +362,10 @@ pub mod project_packs {
                 element_content_handlers: vec![element!("*[src], *[href], *[srcset]", |el| {
                     for name in ["src", "href"] {
                         if let Some(value) = el.get_attribute(name)
-                            && assets.contains_key(&value)
+                            && let Some(path) = asset_ref_without_suffix(&value)
+                            && assets.contains_key(&path)
                         {
-                            match to_data(&value) {
+                            match to_data(&path) {
                                 Ok(uri) => el.set_attribute(name, &uri)?,
                                 Err(e) => err = Some(e),
                             }
@@ -356,8 +379,10 @@ pub mod project_packs {
                                 let mut parts = trimmed.splitn(2, char::is_whitespace);
                                 let url = parts.next().unwrap_or("");
                                 let suffix = parts.next().unwrap_or("");
-                                if assets.contains_key(url) {
-                                    match to_data(url) {
+                                if let Some(path) = asset_ref_without_suffix(url)
+                                    && assets.contains_key(&path)
+                                {
+                                    match to_data(&path) {
                                         Ok(uri) => {
                                             if suffix.is_empty() {
                                                 uri
@@ -387,11 +412,31 @@ pub mod project_packs {
         if let Some(e) = err {
             return Err(e);
         }
+        Ok(out)
+    }
+
+    pub fn rewrite_local_css_assets(
+        input: &str,
+        assets: &BTreeMap<String, Vec<u8>>,
+    ) -> anyhow::Result<String> {
+        let to_data = |path: &str| -> anyhow::Result<String> {
+            let path = asset_ref_without_suffix(path).unwrap_or_else(|| path.to_string());
+            let bytes = assets.get(&path).ok_or_else(|| {
+                anyhow::anyhow!("undeclared project pack asset reference: {path}")
+            })?;
+            Ok(format!(
+                "data:{};base64,{}",
+                super::mime_for(&path),
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            ))
+        };
         let mut css_err = None;
-        let out = CSS_URL_ASSET_RE.replace_all(&out, |c: &Captures| {
+        let out = CSS_URL_ASSET_RE.replace_all(input, |c: &Captures| {
             let path = css_asset_capture_path(c).unwrap_or("");
             match to_data(path) {
-                Ok(uri) => format!("url({uri})"),
+                Ok(uri) => {
+                    format!("url({uri})")
+                }
                 Err(e) => {
                     css_err = Some(e);
                     c[0].to_string()
@@ -596,8 +641,13 @@ pub mod project_packs {
                 validate_markup(&c.name, &template)?;
                 validate_css_with_assets(&c.name, &css, &assets)?;
                 validate_component_contract(&c.name, &c.props, &c.schema, &c.presets, &c.files)?;
+                validate_declared_asset_use(
+                    &format!("component '{}'", c.name),
+                    &[&template, &css],
+                    &assets,
+                )?;
                 let template = rewrite_local_assets(&template, &assets)?;
-                let css = rewrite_local_assets(&css, &assets)?;
+                let css = rewrite_local_css_assets(&css, &assets)?;
                 let files = vec![
                     registry::ScaffoldFileMetadata {
                         path: c.template.clone(),
@@ -676,7 +726,8 @@ pub mod project_packs {
                 let css = String::from_utf8(cb.clone())?;
                 let assets = load_assets(&root, &format!("theme '{}'", t.name), &t.assets)?;
                 validate_css_with_assets(&t.name, &css, &assets)?;
-                let css = rewrite_local_assets(&css, &assets)?;
+                validate_declared_asset_use(&format!("theme '{}'", t.name), &[&css], &assets)?;
+                let css = rewrite_local_css_assets(&css, &assets)?;
                 let entry =
                     registry::RegistryEntry {
                         kind: "theme".into(),
@@ -4568,7 +4619,9 @@ fn mime_for(p: &str) -> &'static str {
     match Path::new(p)
         .extension()
         .and_then(|s| s.to_str())
-        .unwrap_or("")
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default()
+        .as_str()
     {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
