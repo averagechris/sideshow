@@ -126,6 +126,85 @@ fn plan_bound_component_anchors_and_rejects_unknowns() {
 }
 
 #[test]
+fn bundled_semantic_catalog_discovers_schemas_presets_and_renders_deterministically() {
+    let registry = sideshow().args(["registry", "list"]).output().unwrap();
+    assert!(registry.status.success());
+    let registry: serde_json::Value = serde_json::from_slice(&registry.stdout).unwrap();
+    for name in [
+        "compare-options",
+        "show-dependencies",
+        "workstream-lanes",
+        "risk-register",
+        "decision-record",
+        "verification-evidence",
+        "file-impact-outcomes",
+    ] {
+        let entry = registry["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["kind"] == "component" && entry["name"] == name)
+            .unwrap_or_else(|| panic!("missing {name}"));
+        assert!(!entry["metadata"]["intent"].as_array().unwrap().is_empty());
+        assert!(
+            !entry["metadata"]["accepted_input"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!entry["metadata"]["props"].as_array().unwrap().is_empty());
+        assert!(
+            entry["metadata"]["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "html-escaped")
+        );
+    }
+
+    let explain = sideshow()
+        .args(["registry", "explain", "component", "decision-record"])
+        .output()
+        .unwrap();
+    assert!(explain.status.success());
+    let explain: serde_json::Value = serde_json::from_slice(&explain.stdout).unwrap();
+    assert!(explain["metadata"]["presets"].get("proposed").is_some());
+
+    let temp = deck();
+    let root = temp.path();
+    std::fs::write(
+        root.join("slides/01.slide.toml"),
+        r#"component = "decision-record"
+presets = ["proposed"]
+props.title = "Use schemas <not names>"
+props.body = "Renderer escapes & stays deterministic"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("slides/02.slide.toml"),
+        r#"component = "compare-options"
+presets = ["practical"]
+props.title = "Choose a path"
+props.row_1_label = "Manifest"
+props.row_1_value_2 = "Typed & discoverable"
+props.row_1_value_3 = "Constrained"
+props.row_2_label = "Hardcoded"
+props.row_2_value_2 = "Fast"
+props.row_2_value_3 = "Brittle <switch>"
+"#,
+    )
+    .unwrap();
+    let html = build_output(root);
+    assert!(html.contains("data-intent=\"decision-record\""));
+    assert!(html.contains("Use schemas &lt;not names&gt;"));
+    assert!(html.contains("Typed &amp; discoverable"));
+    assert!(html.contains("Brittle &lt;switch&gt;"));
+    assert!(html.contains("<table class=\"semantic-table\">"));
+    assert_eq!(html, build_output(root));
+}
+
+#[test]
 fn compose_add_update_remove_have_safe_file_semantics() {
     let temp = deck();
     let root = temp.path();

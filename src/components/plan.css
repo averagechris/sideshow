@@ -28,6 +28,10 @@
   box-sizing: inherit;
 }
 
+.semantic-component {
+  --semantic-border: var(--plan-line);
+}
+
 .plan-header,
 .plan-footer {
   display: flex;
@@ -89,6 +93,40 @@
   border: 1px solid var(--plan-line);
   border-radius: var(--plan-radius);
   padding: 1.1rem;
+}
+
+.semantic-list {
+  display: grid;
+  gap: 0.65rem;
+  margin: 0.8rem 0 0;
+  padding-inline-start: 1.35rem;
+}
+
+.semantic-table {
+  width: 100%;
+  border-collapse: collapse;
+  overflow: hidden;
+  border: 1px solid var(--semantic-border, var(--plan-line));
+  border-radius: var(--plan-radius);
+  background: color-mix(in srgb, var(--plan-panel) 88%, transparent);
+}
+
+.semantic-table caption {
+  color: var(--plan-muted);
+  padding: 0.6rem;
+  text-align: start;
+}
+
+.semantic-table th,
+.semantic-table td {
+  border-block-start: 1px solid var(--plan-line);
+  padding: 0.85rem;
+  text-align: start;
+  vertical-align: top;
+}
+
+.semantic-table thead th {
+  color: var(--plan-accent);
 }
 
 .plan-card h3,

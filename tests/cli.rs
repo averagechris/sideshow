@@ -405,9 +405,16 @@ fn registry_discovery_is_stable_bundled_and_clear() {
     assert_eq!(
         keys,
         vec![
+            "component/compare-options",
+            "component/decision-record",
+            "component/file-impact-outcomes",
             "component/literal-card",
             "component/plan-primitives",
             "component/plan-record-card",
+            "component/risk-register",
+            "component/show-dependencies",
+            "component/verification-evidence",
+            "component/workstream-lanes",
             "scaffold/deck",
             "theme/ledger",
             "theme/poster",

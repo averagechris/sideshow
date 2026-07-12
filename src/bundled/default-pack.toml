@@ -73,6 +73,11 @@ templates = ["bundled/components/literal-card.html"]
 intent = ["render a data-only literal title/body card"]
 accepted_input = [".slide.toml props: eyebrow, title, body"]
 capabilities = ["component-slide", "html-escaped", "js-free"]
+props = [
+  { name = "eyebrow", type = "string", required = true },
+  { name = "title", type = "string", required = true },
+  { name = "body", type = "string", required = true },
+]
 
 [[components]]
 name = "plan-record-card"
@@ -81,3 +86,171 @@ templates = ["bundled/components/plan-record-card.html"]
 intent = ["render a canonical plan record by stable kind/id"]
 accepted_input = [".slide.toml bind: kind, id", "optional prop: label"]
 capabilities = ["component-slide", "data-plan-anchors", "html-escaped", "js-free", "plan-bound"]
+props = [
+  { name = "label", type = "string" },
+]
+
+[[components]]
+name = "compare-options"
+css = "components/plan.css"
+templates = ["bundled/components/semantic-table.html"]
+intent = ["compare options", "show tradeoffs", "support a decision"]
+accepted_input = [".slide.toml props for caption, columns, and two option rows"]
+capabilities = ["component-slide", "html-escaped", "js-free", "semantic-table"]
+props = [
+  { name = "intent", type = "string", default = "compare-options" },
+  { name = "eyebrow", type = "string", default = "Compare" },
+  { name = "title", type = "string", required = true },
+  { name = "meta", type = "string", default = "Options" },
+  { name = "caption", type = "string", default = "Option comparison" },
+  { name = "col_1", type = "string", default = "Option" },
+  { name = "col_2", type = "string", default = "Upside" },
+  { name = "col_3", type = "string", default = "Tradeoff" },
+  { name = "row_1_label", type = "string", required = true },
+  { name = "row_1_value_2", type = "string", required = true },
+  { name = "row_1_value_3", type = "string", required = true },
+  { name = "row_2_label", type = "string", required = true },
+  { name = "row_2_value_2", type = "string", required = true },
+  { name = "row_2_value_3", type = "string", required = true },
+]
+[components.presets.practical]
+eyebrow = "Decision"
+meta = "Recommended path"
+caption = "Practical option comparison"
+
+[[components]]
+name = "workstream-lanes"
+css = "components/plan.css"
+templates = ["bundled/components/semantic-lanes.html"]
+intent = ["show workstream lanes", "summarize parallel work"]
+accepted_input = [".slide.toml props for three accessible lanes"]
+capabilities = ["component-slide", "html-escaped", "js-free", "semantic-lanes"]
+props = [
+  { name = "intent", type = "string", default = "workstream-lanes" },
+  { name = "eyebrow", type = "string", default = "Workstreams" },
+  { name = "title", type = "string", required = true },
+  { name = "meta", type = "string", default = "Parallel lanes" },
+  { name = "lane_1_tone", type = "enum", values = ["good", "warn", "risk", "info"], default = "good" },
+  { name = "lane_1_status", type = "string", default = "Ready" },
+  { name = "lane_1_title", type = "string", required = true },
+  { name = "lane_1_body", type = "string", required = true },
+  { name = "lane_2_tone", type = "enum", values = ["good", "warn", "risk", "info"], default = "info" },
+  { name = "lane_2_status", type = "string", default = "Next" },
+  { name = "lane_2_title", type = "string", required = true },
+  { name = "lane_2_body", type = "string", required = true },
+  { name = "lane_3_tone", type = "enum", values = ["good", "warn", "risk", "info"], default = "warn" },
+  { name = "lane_3_status", type = "string", default = "Watch" },
+  { name = "lane_3_title", type = "string", required = true },
+  { name = "lane_3_body", type = "string", required = true },
+]
+[components.presets.delivery]
+eyebrow = "Delivery"
+meta = "Owners and state"
+
+[[components]]
+name = "show-dependencies"
+css = "components/plan.css"
+templates = ["bundled/components/semantic-list.html"]
+intent = ["explain ordering constraints", "show dependencies"]
+accepted_input = [".slide.toml props: title, summary, and three dependency items"]
+capabilities = ["component-slide", "html-escaped", "js-free", "semantic-list"]
+props = [
+  { name = "intent", type = "string", default = "show-dependencies" },
+  { name = "eyebrow", type = "string", default = "Dependencies" },
+  { name = "title", type = "string", required = true },
+  { name = "meta", type = "string", default = "Order matters" },
+  { name = "heading", type = "string", default = "Critical path" },
+  { name = "summary", type = "string", required = true },
+  { name = "item_1", type = "string", required = true },
+  { name = "item_2", type = "string", required = true },
+  { name = "item_3", type = "string", required = true },
+]
+[components.presets.launch]
+heading = "Launch blockers"
+meta = "Before rollout"
+
+[[components]]
+name = "risk-register"
+css = "components/plan.css"
+templates = ["bundled/components/semantic-card.html"]
+intent = ["show mitigation", "summarize risks"]
+accepted_input = [".slide.toml props: title, heading, risk body, status and tone"]
+capabilities = ["component-slide", "html-escaped", "js-free", "semantic-card"]
+props = [
+  { name = "intent", type = "string", default = "risk-register" },
+  { name = "eyebrow", type = "string", default = "Risk" },
+  { name = "title", type = "string", required = true },
+  { name = "tone", type = "enum", values = ["good", "warn", "risk", "info"], default = "risk" },
+  { name = "status", type = "string", default = "Mitigate" },
+  { name = "heading", type = "string", required = true },
+  { name = "body", type = "string", required = true },
+  { name = "meta", type = "string", default = "Owner needed" },
+]
+[components.presets.active]
+status = "Active risk"
+tone = "risk"
+
+[[components]]
+name = "decision-record"
+css = "components/plan.css"
+templates = ["bundled/components/semantic-card.html"]
+intent = ["explain rationale", "record a decision"]
+accepted_input = [".slide.toml props: decision title, rationale, state"]
+capabilities = ["component-slide", "html-escaped", "js-free", "semantic-card"]
+props = [
+  { name = "intent", type = "string", default = "decision-record" },
+  { name = "eyebrow", type = "string", default = "Decision" },
+  { name = "title", type = "string", required = true },
+  { name = "tone", type = "enum", values = ["good", "warn", "risk", "info"], default = "good" },
+  { name = "status", type = "string", default = "Accepted" },
+  { name = "heading", type = "string", default = "Rationale" },
+  { name = "body", type = "string", required = true },
+  { name = "meta", type = "string", default = "Decision log" },
+]
+[components.presets.proposed]
+status = "Proposed"
+tone = "info"
+
+[[components]]
+name = "verification-evidence"
+css = "components/plan.css"
+templates = ["bundled/components/semantic-list.html"]
+intent = ["present evidence", "prove done", "show verification"]
+accepted_input = [".slide.toml props: title, summary, and three evidence checks"]
+capabilities = ["component-slide", "html-escaped", "js-free", "semantic-list"]
+props = [
+  { name = "intent", type = "string", default = "verification-evidence" },
+  { name = "eyebrow", type = "string", default = "Evidence" },
+  { name = "title", type = "string", required = true },
+  { name = "meta", type = "string", default = "Verification" },
+  { name = "heading", type = "string", default = "Proof points" },
+  { name = "summary", type = "string", required = true },
+  { name = "item_1", type = "string", required = true },
+  { name = "item_2", type = "string", required = true },
+  { name = "item_3", type = "string", required = true },
+]
+[components.presets.ci]
+heading = "CI evidence"
+meta = "Reproducible checks"
+
+[[components]]
+name = "file-impact-outcomes"
+css = "components/plan.css"
+templates = ["bundled/components/semantic-list.html"]
+intent = ["connect changes to outcomes", "show file impact"]
+accepted_input = [".slide.toml props: changed areas and outcome summary"]
+capabilities = ["component-slide", "html-escaped", "js-free", "semantic-list"]
+props = [
+  { name = "intent", type = "string", default = "file-impact-outcomes" },
+  { name = "eyebrow", type = "string", default = "Impact" },
+  { name = "title", type = "string", required = true },
+  { name = "meta", type = "string", default = "Files → outcomes" },
+  { name = "heading", type = "string", default = "Changed areas" },
+  { name = "summary", type = "string", required = true },
+  { name = "item_1", type = "string", required = true },
+  { name = "item_2", type = "string", required = true },
+  { name = "item_3", type = "string", required = true },
+]
+[components.presets.review]
+heading = "Review surface"
+meta = "Impact map"

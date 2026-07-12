@@ -809,7 +809,7 @@ pub mod project_packs {
         Ok(true)
     }
 
-    fn validate_prop_value(
+    pub(super) fn validate_prop_value(
         component: &str,
         prop: &registry::PropertySchema,
         value: &registry::PropertyValue,
@@ -970,27 +970,12 @@ pub mod composition {
         if let Some(rendered) = render_project(deck_dir, &slide)? {
             return Ok(rendered);
         }
-        validate_component(&slide)?;
+        let entry = bundled_component_entry(&slide.component)?;
+        validate_component_against_entry(&slide, &entry)?;
         match slide.component.as_str() {
             "literal-card" => {
                 reject_bind(&slide)?;
-                render_template_resource(
-                    "literal-card",
-                    BTreeMap::from([
-                        (
-                            "eyebrow",
-                            Escaped::Owned(required(&slide, "eyebrow")?.as_render_string()),
-                        ),
-                        (
-                            "title",
-                            Escaped::Owned(required(&slide, "title")?.as_render_string()),
-                        ),
-                        (
-                            "body",
-                            Escaped::Owned(required(&slide, "body")?.as_render_string()),
-                        ),
-                    ]),
-                )
+                render_bundled_entry(&entry, &effective_props(&slide, &entry)?)
             }
             "plan-record-card" => {
                 let bind = slide
@@ -1013,8 +998,59 @@ pub mod composition {
                     ]),
                 )
             }
-            _ => bail!("unknown component {}", slide.component),
+            _ => {
+                reject_bind(&slide)?;
+                render_bundled_entry(&entry, &effective_props(&slide, &entry)?)
+            }
         }
+    }
+
+    fn bundled_component_entry(component: &str) -> anyhow::Result<registry::RegistryEntry> {
+        registry::registry_document()?
+            .entries
+            .into_iter()
+            .find(|e| e.kind == "component" && e.name == component)
+            .with_context(|| format!("unknown component {component}"))
+    }
+
+    fn effective_props(
+        slide: &ComponentSlide,
+        entry: &registry::RegistryEntry,
+    ) -> anyhow::Result<BTreeMap<String, registry::PropertyValue>> {
+        let mut effective = BTreeMap::new();
+        for prop in &entry.metadata.props {
+            if let Some(default) = &prop.default {
+                effective.insert(prop.name.clone(), default.clone());
+            }
+        }
+        for preset in &slide.presets {
+            let values = entry.metadata.presets.get(preset).with_context(|| {
+                format!("unknown preset {preset} for component {}", slide.component)
+            })?;
+            effective.extend(values.clone());
+        }
+        effective.extend(slide.props.clone());
+        Ok(effective)
+    }
+
+    fn render_bundled_entry(
+        entry: &registry::RegistryEntry,
+        values: &BTreeMap<String, registry::PropertyValue>,
+    ) -> anyhow::Result<String> {
+        let template_path = entry
+            .metadata
+            .files
+            .iter()
+            .map(|f| f.resource.as_str())
+            .find(|resource| resource.ends_with(".html"))
+            .with_context(|| format!("component {} has no bundled template", entry.name))?;
+        let template = registry::bundled_template(template_path)
+            .with_context(|| format!("missing bundled template {template_path}"))?;
+        let render_values = values
+            .iter()
+            .map(|(k, v)| (k.as_str(), Escaped::Owned(v.as_render_string())))
+            .collect();
+        render_template_string(&entry.name, template, render_values)
     }
 
     fn render_project(deck_dir: &Path, slide: &ComponentSlide) -> anyhow::Result<Option<String>> {
@@ -1060,23 +1096,10 @@ pub mod composition {
     }
 
     fn validate_component(slide: &ComponentSlide) -> anyhow::Result<()> {
-        let allowed: &[&str] = match slide.component.as_str() {
-            "literal-card" => &["eyebrow", "title", "body"],
-            "plan-record-card" => &["label"],
-            _ => bail!("unknown component {}", slide.component),
-        };
-        for key in slide.props.keys() {
-            if !allowed.contains(&key.as_str()) {
-                bail!("unknown prop {key} for component {}", slide.component);
-            }
-        }
+        let entry = bundled_component_entry(&slide.component)?;
+        validate_component_against_entry(slide, &entry)?;
         match slide.component.as_str() {
-            "literal-card" => {
-                reject_bind(slide)?;
-                for key in ["eyebrow", "title", "body"] {
-                    required(slide, key)?;
-                }
-            }
+            "literal-card" => reject_bind(slide)?,
             "plan-record-card" => {
                 let bind = slide
                     .bind
@@ -1084,7 +1107,35 @@ pub mod composition {
                     .context("plan-record-card requires [bind]")?;
                 validate_binding(bind)?;
             }
-            _ => unreachable!(),
+            _ => reject_bind(slide)?,
+        }
+        Ok(())
+    }
+
+    fn validate_component_against_entry(
+        slide: &ComponentSlide,
+        entry: &registry::RegistryEntry,
+    ) -> anyhow::Result<()> {
+        let effective = effective_props(slide, entry)?;
+        let declared = entry
+            .metadata
+            .props
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<BTreeSet<_>>();
+        for key in effective.keys() {
+            if !declared.contains(key.as_str()) {
+                bail!("unknown prop {key} for component {}", slide.component);
+            }
+        }
+        for prop in &entry.metadata.props {
+            match effective.get(&prop.name) {
+                Some(value) => {
+                    crate::project_packs::validate_prop_value(&slide.component, prop, value)?
+                }
+                None if prop.required => bail!("missing prop {}", prop.name),
+                None => {}
+            }
         }
         Ok(())
     }
@@ -1109,15 +1160,6 @@ pub mod composition {
             bail!("{} does not accept plan binding", slide.component);
         }
         Ok(())
-    }
-    fn required<'a>(
-        slide: &'a ComponentSlide,
-        key: &str,
-    ) -> anyhow::Result<&'a registry::PropertyValue> {
-        slide
-            .props
-            .get(key)
-            .with_context(|| format!("missing prop {key}"))
     }
     fn esc(s: &str) -> String {
         s.replace('&', "&amp;")

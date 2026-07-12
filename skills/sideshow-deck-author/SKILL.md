@@ -100,7 +100,7 @@ sideshow registry sources
 sideshow registry sources --deck mydeck
 ```
 
-The registry commands emit stable JSON. Select entries by `kind`, `name`, `metadata.intent`, `metadata.capabilities`, and `provenance`: use bundled themes (`ledger`, `poster`, `signal`, `terminal`) when their mood/intent matches the deck; use `literal-card` for ordinary eyebrow/title/body cards; use `plan-primitives` for globally included JS-free plan CSS; and use `plan-record-card` only for a slide bound to canonical `plan.json` data. Current registered components are HTML/CSS/data-only; there is no component JavaScript catalog.
+The registry commands emit stable JSON. Select entries by `kind`, `name`, `metadata.intent`, `metadata.capabilities`, and `provenance`: use bundled themes (`ledger`, `poster`, `signal`, `terminal`) when their mood/intent matches the deck; use `literal-card` for ordinary eyebrow/title/body cards; use `plan-primitives` for globally included JS-free plan CSS; and use `plan-record-card` only for a slide bound to canonical `plan.json` data. For semantic work-story slides prefer the bundled manifest-backed components over bespoke HTML when they fit: `compare-options`, `show-dependencies`, `workstream-lanes`, `risk-register`, `decision-record`, `verification-evidence`, and `file-impact-outcomes`. These expose typed schemas, intent metadata, accepted inputs, and presets; inspect them with `sideshow registry explain component NAME` before authoring. Current registered components are HTML/CSS/data-only; there is no component JavaScript catalog.
 
 If the current registry cannot express the intent, fall back to ordinary raw slide fragments: HTML, Markdown, JSON data you transform yourself, and explicit `theme.css`. Do not invent commands or registry names.
 

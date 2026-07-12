@@ -296,6 +296,18 @@ fn bundled_resource_bytes(path: &str) -> Option<&'static [u8]> {
         "bundled/components/plan-record-card.html" => {
             Some(include_bytes!("bundled/components/plan-record-card.html"))
         }
+        "bundled/components/semantic-card.html" => {
+            Some(include_bytes!("bundled/components/semantic-card.html"))
+        }
+        "bundled/components/semantic-list.html" => {
+            Some(include_bytes!("bundled/components/semantic-list.html"))
+        }
+        "bundled/components/semantic-table.html" => {
+            Some(include_bytes!("bundled/components/semantic-table.html"))
+        }
+        "bundled/components/semantic-lanes.html" => {
+            Some(include_bytes!("bundled/components/semantic-lanes.html"))
+        }
         "bundled/scaffolds/deck/deck.toml" => {
             Some(include_bytes!("bundled/scaffolds/deck/deck.toml"))
         }
@@ -308,6 +320,10 @@ fn bundled_resource_bytes(path: &str) -> Option<&'static [u8]> {
         "bundled/scaffolds/deck/assets/.gitkeep" => Some(b""),
         _ => None,
     }
+}
+
+pub fn bundled_template(path: &str) -> Option<&'static str> {
+    bundled_resource_bytes(path).and_then(|bytes| std::str::from_utf8(bytes).ok())
 }
 
 pub fn bundled_themes() -> anyhow::Result<Vec<ThemeResource>> {
@@ -646,9 +662,16 @@ mod tests {
         assert_eq!(
             keys,
             vec![
+                "component/compare-options",
+                "component/decision-record",
+                "component/file-impact-outcomes",
                 "component/literal-card",
                 "component/plan-primitives",
                 "component/plan-record-card",
+                "component/risk-register",
+                "component/show-dependencies",
+                "component/verification-evidence",
+                "component/workstream-lanes",
                 "scaffold/deck",
                 "theme/ledger",
                 "theme/poster",
