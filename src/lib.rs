@@ -1476,9 +1476,24 @@ pub mod plan {
     }
 
     pub enum PlanMutation {
+        UpdatePlan {
+            title: String,
+            status: PlanStatus,
+            objective: String,
+        },
         AddOutcome(Outcome),
         UpdateOutcome(Outcome),
         RemoveOutcome {
+            id: String,
+        },
+        AddConstraint(Constraint),
+        UpdateConstraint(Constraint),
+        RemoveConstraint {
+            id: String,
+        },
+        AddDecision(Decision),
+        UpdateDecision(Decision),
+        RemoveDecision {
             id: String,
         },
         AddWorkstream(Workstream),
@@ -1502,6 +1517,11 @@ pub mod plan {
         RemoveTask {
             id: String,
         },
+        AddRisk(Risk),
+        UpdateRisk(Risk),
+        RemoveRisk {
+            id: String,
+        },
     }
 
     pub fn mutate(dir: &Path, mutation: PlanMutation) -> anyhow::Result<Plan> {
@@ -1518,6 +1538,15 @@ pub mod plan {
             .context("failed to lock plan mutation lock")?;
         let mut plan = load(dir)?;
         match mutation {
+            PlanMutation::UpdatePlan {
+                title,
+                status,
+                objective,
+            } => {
+                plan.title = title;
+                plan.status = status;
+                plan.objective = objective;
+            }
             PlanMutation::AddOutcome(outcome) => {
                 if id_exists(&plan, &outcome.id) {
                     bail!("duplicate id {}", outcome.id);
@@ -1540,6 +1569,36 @@ pub mod plan {
                     bail!("cannot remove outcome {id}: still referenced by a task");
                 }
                 remove_one(&mut plan.outcomes, &id, |o| &o.id)?;
+            }
+            PlanMutation::AddConstraint(constraint) => {
+                if id_exists(&plan, &constraint.id) {
+                    bail!("duplicate id {}", constraint.id);
+                }
+                plan.constraints.push(constraint);
+            }
+            PlanMutation::UpdateConstraint(constraint) => {
+                let Some(slot) = plan.constraints.iter_mut().find(|c| c.id == constraint.id) else {
+                    bail!("unknown constraint {}", constraint.id);
+                };
+                *slot = constraint;
+            }
+            PlanMutation::RemoveConstraint { id } => {
+                remove_one(&mut plan.constraints, &id, |c| &c.id)?;
+            }
+            PlanMutation::AddDecision(decision) => {
+                if id_exists(&plan, &decision.id) {
+                    bail!("duplicate id {}", decision.id);
+                }
+                plan.decisions.push(decision);
+            }
+            PlanMutation::UpdateDecision(decision) => {
+                let Some(slot) = plan.decisions.iter_mut().find(|d| d.id == decision.id) else {
+                    bail!("unknown decision {}", decision.id);
+                };
+                *slot = decision;
+            }
+            PlanMutation::RemoveDecision { id } => {
+                remove_one(&mut plan.decisions, &id, |d| &d.id)?;
             }
             PlanMutation::AddWorkstream(workstream) => {
                 if id_exists(&plan, &workstream.id) {
@@ -1631,6 +1690,21 @@ pub mod plan {
                     bail!("unknown task {id}");
                 };
                 remove_one(&mut ws.tasks, &id, |t| &t.id)?;
+            }
+            PlanMutation::AddRisk(risk) => {
+                if id_exists(&plan, &risk.id) {
+                    bail!("duplicate id {}", risk.id);
+                }
+                plan.risks.push(risk);
+            }
+            PlanMutation::UpdateRisk(risk) => {
+                let Some(slot) = plan.risks.iter_mut().find(|r| r.id == risk.id) else {
+                    bail!("unknown risk {}", risk.id);
+                };
+                *slot = risk;
+            }
+            PlanMutation::RemoveRisk { id } => {
+                remove_one(&mut plan.risks, &id, |r| &r.id)?;
             }
         }
         let semantic = semantic_findings(&plan);
@@ -2190,12 +2264,19 @@ pub mod plan {
                 findings.push(err(
                     "plan.json",
                     "plan-decision",
-                    format!("decision {} needs status and rationale", d.id),
+                    format!("decision {} needs title and rationale", d.id),
                 ));
             }
         }
         for r in &plan.risks {
             id!(r.id);
+            if r.description.trim().is_empty() {
+                findings.push(err(
+                    "plan.json",
+                    "plan-risk",
+                    format!("risk {} needs a description", r.id),
+                ));
+            }
             if r.mitigation.trim().is_empty() {
                 findings.push(err(
                     "plan.json",

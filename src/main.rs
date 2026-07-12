@@ -252,9 +252,22 @@ struct ComposeWriteArgs {
 
 #[derive(Debug, Subcommand)]
 enum PlanMutateCommand {
+    UpdatePlan(PlanArgs),
     AddOutcome(OutcomeArgs),
     UpdateOutcome(OutcomeArgs),
     RemoveOutcome {
+        #[arg(long)]
+        id: String,
+    },
+    AddConstraint(ConstraintArgs),
+    UpdateConstraint(ConstraintArgs),
+    RemoveConstraint {
+        #[arg(long)]
+        id: String,
+    },
+    AddDecision(DecisionArgs),
+    UpdateDecision(DecisionArgs),
+    RemoveDecision {
         #[arg(long)]
         id: String,
     },
@@ -270,6 +283,22 @@ enum PlanMutateCommand {
         #[arg(long)]
         id: String,
     },
+    AddRisk(RiskArgs),
+    UpdateRisk(RiskArgs),
+    RemoveRisk {
+        #[arg(long)]
+        id: String,
+    },
+}
+
+#[derive(Debug, clap::Args)]
+struct PlanArgs {
+    #[arg(long)]
+    title: String,
+    #[arg(long, value_enum)]
+    status: PlanStatusArg,
+    #[arg(long)]
+    objective: String,
 }
 
 #[derive(Debug, clap::Args)]
@@ -280,6 +309,40 @@ struct OutcomeArgs {
     description: String,
     #[arg(long = "proof")]
     proof: Vec<String>,
+}
+
+#[derive(Debug, clap::Args)]
+struct ConstraintArgs {
+    #[arg(long)]
+    id: String,
+    #[arg(long)]
+    description: String,
+}
+
+#[derive(Debug, clap::Args)]
+struct DecisionArgs {
+    #[arg(long)]
+    id: String,
+    #[arg(long)]
+    title: String,
+    #[arg(long, value_enum)]
+    status: DecisionStatusArg,
+    #[arg(long)]
+    rationale: String,
+}
+
+#[derive(Debug, clap::Args)]
+struct RiskArgs {
+    #[arg(long)]
+    id: String,
+    #[arg(long)]
+    description: String,
+    #[arg(long, value_enum)]
+    likelihood: RiskLevelArg,
+    #[arg(long, value_enum)]
+    impact: RiskLevelArg,
+    #[arg(long)]
+    mitigation: String,
 }
 
 #[derive(Debug, clap::Args)]
@@ -366,6 +429,69 @@ enum PlanWorkStatusArg {
     InReview,
     Done,
     Dropped,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum PlanStatusArg {
+    Draft,
+    InReview,
+    Approved,
+    Active,
+    Blocked,
+    Completed,
+    Superseded,
+}
+
+impl From<PlanStatusArg> for sideshow::plan::PlanStatus {
+    fn from(value: PlanStatusArg) -> Self {
+        match value {
+            PlanStatusArg::Draft => Self::Draft,
+            PlanStatusArg::InReview => Self::InReview,
+            PlanStatusArg::Approved => Self::Approved,
+            PlanStatusArg::Active => Self::Active,
+            PlanStatusArg::Blocked => Self::Blocked,
+            PlanStatusArg::Completed => Self::Completed,
+            PlanStatusArg::Superseded => Self::Superseded,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum DecisionStatusArg {
+    Proposed,
+    Accepted,
+    Rejected,
+    Deferred,
+    Superseded,
+}
+
+impl From<DecisionStatusArg> for sideshow::plan::DecisionStatus {
+    fn from(value: DecisionStatusArg) -> Self {
+        match value {
+            DecisionStatusArg::Proposed => Self::Proposed,
+            DecisionStatusArg::Accepted => Self::Accepted,
+            DecisionStatusArg::Rejected => Self::Rejected,
+            DecisionStatusArg::Deferred => Self::Deferred,
+            DecisionStatusArg::Superseded => Self::Superseded,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum RiskLevelArg {
+    Low,
+    Medium,
+    High,
+}
+
+impl From<RiskLevelArg> for sideshow::plan::RiskLevel {
+    fn from(value: RiskLevelArg) -> Self {
+        match value {
+            RiskLevelArg::Low => Self::Low,
+            RiskLevelArg::Medium => Self::Medium,
+            RiskLevelArg::High => Self::High,
+        }
+    }
 }
 
 impl From<PlanWorkStatusArg> for sideshow::plan::WorkStatus {
@@ -996,6 +1122,11 @@ fn plan_command(command: PlanCommand) -> anyhow::Result<()> {
         PlanCommand::Serve { dir, port, open } => serve(&dir, port, true, open),
         PlanCommand::Mutate { dir, command } => {
             let op = match *command {
+                PlanMutateCommand::UpdatePlan(a) => sideshow::plan::PlanMutation::UpdatePlan {
+                    title: a.title,
+                    status: a.status.into(),
+                    objective: a.objective,
+                },
                 PlanMutateCommand::AddOutcome(a) => {
                     sideshow::plan::PlanMutation::AddOutcome(sideshow::plan::Outcome {
                         id: a.id,
@@ -1012,6 +1143,40 @@ fn plan_command(command: PlanCommand) -> anyhow::Result<()> {
                 }
                 PlanMutateCommand::RemoveOutcome { id } => {
                     sideshow::plan::PlanMutation::RemoveOutcome { id }
+                }
+                PlanMutateCommand::AddConstraint(a) => {
+                    sideshow::plan::PlanMutation::AddConstraint(sideshow::plan::Constraint {
+                        id: a.id,
+                        description: a.description,
+                    })
+                }
+                PlanMutateCommand::UpdateConstraint(a) => {
+                    sideshow::plan::PlanMutation::UpdateConstraint(sideshow::plan::Constraint {
+                        id: a.id,
+                        description: a.description,
+                    })
+                }
+                PlanMutateCommand::RemoveConstraint { id } => {
+                    sideshow::plan::PlanMutation::RemoveConstraint { id }
+                }
+                PlanMutateCommand::AddDecision(a) => {
+                    sideshow::plan::PlanMutation::AddDecision(sideshow::plan::Decision {
+                        id: a.id,
+                        title: a.title,
+                        status: a.status.into(),
+                        rationale: a.rationale,
+                    })
+                }
+                PlanMutateCommand::UpdateDecision(a) => {
+                    sideshow::plan::PlanMutation::UpdateDecision(sideshow::plan::Decision {
+                        id: a.id,
+                        title: a.title,
+                        status: a.status.into(),
+                        rationale: a.rationale,
+                    })
+                }
+                PlanMutateCommand::RemoveDecision { id } => {
+                    sideshow::plan::PlanMutation::RemoveDecision { id }
                 }
                 PlanMutateCommand::AddWorkstream(a) => {
                     sideshow::plan::PlanMutation::AddWorkstream(sideshow::plan::Workstream {
@@ -1082,6 +1247,27 @@ fn plan_command(command: PlanCommand) -> anyhow::Result<()> {
                 },
                 PlanMutateCommand::RemoveTask { id } => {
                     sideshow::plan::PlanMutation::RemoveTask { id }
+                }
+                PlanMutateCommand::AddRisk(a) => {
+                    sideshow::plan::PlanMutation::AddRisk(sideshow::plan::Risk {
+                        id: a.id,
+                        description: a.description,
+                        likelihood: a.likelihood.into(),
+                        impact: a.impact.into(),
+                        mitigation: a.mitigation,
+                    })
+                }
+                PlanMutateCommand::UpdateRisk(a) => {
+                    sideshow::plan::PlanMutation::UpdateRisk(sideshow::plan::Risk {
+                        id: a.id,
+                        description: a.description,
+                        likelihood: a.likelihood.into(),
+                        impact: a.impact.into(),
+                        mitigation: a.mitigation,
+                    })
+                }
+                PlanMutateCommand::RemoveRisk { id } => {
+                    sideshow::plan::PlanMutation::RemoveRisk { id }
                 }
             };
             let plan = sideshow::plan::mutate(&dir, op)?;

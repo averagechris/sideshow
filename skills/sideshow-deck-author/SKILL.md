@@ -22,17 +22,26 @@ sideshow plan serve my-plan --open
 sideshow plan export my-plan --format markdown --output /tmp/plan-digest.md
 ```
 
-Use `plan mutate` for the implemented semantic vertical slice: outcomes, workstreams, and tasks. It rewrites `plan.json` only after full schema-v2 validation and prints normalized JSON to stdout. CLI status arguments use kebab-case spellings (`todo`, `in-progress`, `blocked`, `in-review`, `done`, or `dropped`); canonical schema-v2 JSON and DOM `data-state` values stay snake_case for multiword statuses (`in_progress`, `in_review`). Do not rewrite canonical data to kebab-case by hand.
+Use `plan mutate` for implemented semantic mutations: plan metadata, outcomes, constraints, decisions, workstreams, tasks, and risks. It locks, rewrites `plan.json` only after full schema-v2 semantic validation, and prints normalized JSON to stdout exactly matching the written file. CLI status arguments use kebab-case spellings (`in-review`, `in-progress`); canonical schema-v2 JSON and DOM `data-state` values stay snake_case for multiword statuses (`in_review`, `in_progress`). Do not rewrite canonical data to kebab-case by hand. Strict projection checking is separate: `plan mutate` proves the data is semantically valid, while `sideshow plan check --strict` also enforces visual coverage/readiness.
 
 ```bash
 sideshow plan mutate my-plan add-outcome --id outcome-demo --description "Reviewers understand the demo path" --proof "slides/10-demo.html"
 sideshow plan mutate my-plan update-outcome --id outcome-demo --description "Reviewers understand the demo path and trade-offs" --proof "slides/10-demo.html"
+sideshow plan mutate my-plan update-plan --title "Demo plan" --status in-review --objective "Align on the demo path"
+sideshow plan mutate my-plan add-constraint --id constraint-static --description "The demo remains a static deck"
+sideshow plan mutate my-plan add-decision --id decision-demo --title "Use a focused demo path" --status accepted --rationale "It keeps review bounded"
+sideshow plan mutate my-plan add-risk --id risk-drift --description "Slides drift from canonical plan data" --likelihood medium --impact high --mitigation "Run strict plan checks before handoff"
 sideshow plan mutate my-plan add-workstream --id ws-demo --title "Demo path" --status todo --owner planning-agent --task-id task-demo --task-title "Author demo evidence" --task-status todo --task-outcome outcome-demo --task-file slides/10-demo.html --task-acceptance-check "Slide names the trade-off" --task-verification-intent "Confirm the plan and deck remain consistent" --task-verification-command "sideshow plan check my-plan --strict" --task-verification-command "sideshow build my-plan"
 sideshow plan mutate my-plan update-task --workstream ws-demo --id task-demo --title "Author demo evidence" --status in-review --outcome outcome-demo --file slides/10-demo.html --acceptance-check "Slide names the trade-off" --verification-intent "Confirm the plan and deck remain consistent" --verification-command "sideshow plan check my-plan --strict" --verification-command "sideshow build my-plan"
 sideshow plan mutate my-plan remove-task --id task-demo
 sideshow plan mutate my-plan remove-workstream --id ws-demo
+sideshow plan mutate my-plan remove-risk --id risk-drift
+sideshow plan mutate my-plan remove-decision --id decision-demo
+sideshow plan mutate my-plan remove-constraint --id constraint-static
 sideshow plan mutate my-plan remove-outcome --id outcome-demo
 ```
+
+Non-goals are deliberately not typed mutation targets because schema v2 stores them as strings without stable IDs. Dedicated nested list mutations for tasks are also not needed; use full `update-task` for outcomes, dependencies, files, acceptance checks, and verification commands.
 
 After any mutation, run exact verification commands from canonical plan data when present, then at minimum:
 
@@ -124,7 +133,7 @@ sideshow compose add myplan/slides/30-task.slide.toml --component plan-record-ca
 sideshow compose explain myplan/slides/30-task.slide.toml
 ```
 
-Only bind to implemented record kinds present in the schema and CLI validation. Do not claim mutation support for constraints, decisions, risks, non-goals, dependencies, or review records; those mutation record types are deferred.
+Bindable plan component kinds are `outcome`, `constraint`, `decision`, `workstream`, `task`, and `risk`. Mutable plan record kinds are `outcome`, `constraint`, `decision`, `workstream`, `task`, and `risk` (plus full plan metadata via `update-plan`). Do not claim bind or mutation support for non-goals, dependencies as standalone records, nested task lists as standalone records, or review records.
 
 ## Core contract
 

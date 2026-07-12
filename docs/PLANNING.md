@@ -157,6 +157,16 @@ Schema rules:
 - References must resolve: task outcomes and dependencies are checked.
 - Status values are closed enums. Unknown statuses fail `plan check`; these values
   express planning maturity and proposed state, not synchronized tracker status.
+- `plan mutate` provides atomic typed CRUD for stable-ID record kinds: outcomes,
+  constraints, decisions, workstreams, tasks, and risks, plus a full typed
+  `update-plan` for title/status/objective. Mutations take a lock, validate the
+  resulting schema-v2 plan semantically, write canonical pretty JSON only after a
+  valid candidate exists, and print stdout that byte-for-byte matches the written
+  `plan.json`.
+- Non-goals are intentionally edited only through full JSON authoring for now:
+  schema v2 stores them as strings with no stable IDs. Dedicated nested task-list
+  mutations are also unnecessary because full typed `update-task` covers outcomes,
+  dependencies, files, acceptance checks, and verification commands.
 - Task file paths are repository-relative when the plan lives inside a repo.
 - Task acceptance checks state observable completion conditions; verification is
   a required object with nonblank human-readable `intent` and at least one
@@ -215,6 +225,15 @@ plan is still a normal, expressive Sideshow deck rather than a second renderer.
 No command authenticates to, reads from, or writes to an issue tracker. Agents can
 combine exports with separately obtained organizational context using their own
 tools and judgment.
+
+Mutable record kinds and bindable projection kinds overlap but are not the same
+contract. `plan mutate` changes semantic plan records (`outcome`, `constraint`,
+`decision`, `workstream`, `task`, `risk`, plus plan metadata); `compose --bind-*`
+binds visual components only to bindable record kinds implemented by the
+component projection (`outcome`, `constraint`, `decision`, `workstream`, `task`,
+and `risk`). Mutation semantic validation proves the canonical plan is coherent;
+strict projection checking additionally verifies that authored slides cover the
+records expected by reviewers.
 
 ## Static component and theme architecture
 
