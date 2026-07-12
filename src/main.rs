@@ -214,6 +214,143 @@ enum PlanCommand {
         #[arg(long)]
         open: bool,
     },
+    /// Mutate schema-v2 plan.json with full semantic validation.
+    Mutate {
+        dir: PathBuf,
+        #[command(subcommand)]
+        command: PlanMutateCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PlanMutateCommand {
+    AddOutcome(OutcomeArgs),
+    UpdateOutcome(OutcomeArgs),
+    RemoveOutcome {
+        #[arg(long)]
+        id: String,
+    },
+    AddWorkstream(WorkstreamWithTaskArgs),
+    UpdateWorkstream(WorkstreamArgs),
+    RemoveWorkstream {
+        #[arg(long)]
+        id: String,
+    },
+    AddTask(TaskArgs),
+    UpdateTask(TaskArgs),
+    RemoveTask {
+        #[arg(long)]
+        id: String,
+    },
+}
+
+#[derive(Debug, clap::Args)]
+struct OutcomeArgs {
+    #[arg(long)]
+    id: String,
+    #[arg(long)]
+    description: String,
+    #[arg(long = "proof")]
+    proof: Vec<String>,
+}
+
+#[derive(Debug, clap::Args)]
+struct WorkstreamArgs {
+    #[arg(long)]
+    id: String,
+    #[arg(long)]
+    title: String,
+    #[arg(long, value_enum)]
+    status: PlanWorkStatusArg,
+    #[arg(long)]
+    owner: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+struct WorkstreamWithTaskArgs {
+    #[arg(long)]
+    id: String,
+    #[arg(long)]
+    title: String,
+    #[arg(long, value_enum)]
+    status: PlanWorkStatusArg,
+    #[arg(long)]
+    owner: Option<String>,
+    #[command(flatten)]
+    task: InitialTaskArgs,
+}
+
+#[derive(Debug, clap::Args)]
+struct InitialTaskArgs {
+    #[arg(long = "task-id")]
+    task_id: String,
+    #[arg(long = "task-title")]
+    task_title: String,
+    #[arg(long = "task-status", value_enum)]
+    task_status: PlanWorkStatusArg,
+    #[arg(long = "task-owner")]
+    task_owner: Option<String>,
+    #[arg(long = "task-outcome")]
+    task_outcomes: Vec<String>,
+    #[arg(long = "task-dependency")]
+    task_dependencies: Vec<String>,
+    #[arg(long = "task-file")]
+    task_files: Vec<String>,
+    #[arg(long = "task-acceptance-check")]
+    task_acceptance_checks: Vec<String>,
+    #[arg(long = "task-verification-intent")]
+    verification_intent: String,
+    #[arg(long = "task-verification-command")]
+    verification_commands: Vec<String>,
+}
+
+#[derive(Debug, clap::Args)]
+struct TaskArgs {
+    #[arg(long)]
+    workstream: String,
+    #[arg(long)]
+    id: String,
+    #[arg(long)]
+    title: String,
+    #[arg(long, value_enum)]
+    status: PlanWorkStatusArg,
+    #[arg(long)]
+    owner: Option<String>,
+    #[arg(long = "outcome")]
+    outcomes: Vec<String>,
+    #[arg(long = "dependency")]
+    dependencies: Vec<String>,
+    #[arg(long = "file")]
+    files: Vec<String>,
+    #[arg(long = "acceptance-check")]
+    acceptance_checks: Vec<String>,
+    #[arg(long = "verification-intent")]
+    verification_intent: String,
+    #[arg(long = "verification-command")]
+    verification_commands: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum PlanWorkStatusArg {
+    Todo,
+    InProgress,
+    Blocked,
+    InReview,
+    Done,
+    Dropped,
+}
+
+impl From<PlanWorkStatusArg> for sideshow::plan::WorkStatus {
+    fn from(value: PlanWorkStatusArg) -> Self {
+        match value {
+            PlanWorkStatusArg::Todo => Self::Todo,
+            PlanWorkStatusArg::InProgress => Self::InProgress,
+            PlanWorkStatusArg::Blocked => Self::Blocked,
+            PlanWorkStatusArg::InReview => Self::InReview,
+            PlanWorkStatusArg::Done => Self::Done,
+            PlanWorkStatusArg::Dropped => Self::Dropped,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -491,6 +628,100 @@ fn plan_command(command: PlanCommand) -> anyhow::Result<()> {
             Ok(())
         }
         PlanCommand::Serve { dir, port, open } => serve(&dir, port, true, open),
+        PlanCommand::Mutate { dir, command } => {
+            let op = match command {
+                PlanMutateCommand::AddOutcome(a) => {
+                    sideshow::plan::PlanMutation::AddOutcome(sideshow::plan::Outcome {
+                        id: a.id,
+                        description: a.description,
+                        proof: a.proof,
+                    })
+                }
+                PlanMutateCommand::UpdateOutcome(a) => {
+                    sideshow::plan::PlanMutation::UpdateOutcome(sideshow::plan::Outcome {
+                        id: a.id,
+                        description: a.description,
+                        proof: a.proof,
+                    })
+                }
+                PlanMutateCommand::RemoveOutcome { id } => {
+                    sideshow::plan::PlanMutation::RemoveOutcome { id }
+                }
+                PlanMutateCommand::AddWorkstream(a) => {
+                    sideshow::plan::PlanMutation::AddWorkstream(sideshow::plan::Workstream {
+                        id: a.id,
+                        title: a.title,
+                        status: a.status.into(),
+                        owner: a.owner,
+                        tasks: vec![sideshow::plan::Task {
+                            id: a.task.task_id,
+                            title: a.task.task_title,
+                            status: a.task.task_status.into(),
+                            owner: a.task.task_owner,
+                            outcomes: a.task.task_outcomes,
+                            dependencies: a.task.task_dependencies,
+                            files: a.task.task_files,
+                            acceptance_checks: a.task.task_acceptance_checks,
+                            verification: sideshow::plan::Verification {
+                                intent: a.task.verification_intent,
+                                commands: a.task.verification_commands,
+                            },
+                        }],
+                    })
+                }
+                PlanMutateCommand::UpdateWorkstream(a) => {
+                    sideshow::plan::PlanMutation::UpdateWorkstream {
+                        id: a.id,
+                        title: a.title,
+                        status: a.status.into(),
+                        owner: a.owner,
+                    }
+                }
+                PlanMutateCommand::RemoveWorkstream { id } => {
+                    sideshow::plan::PlanMutation::RemoveWorkstream { id }
+                }
+                PlanMutateCommand::AddTask(a) => sideshow::plan::PlanMutation::AddTask {
+                    workstream: a.workstream,
+                    task: sideshow::plan::Task {
+                        id: a.id,
+                        title: a.title,
+                        status: a.status.into(),
+                        owner: a.owner,
+                        outcomes: a.outcomes,
+                        dependencies: a.dependencies,
+                        files: a.files,
+                        acceptance_checks: a.acceptance_checks,
+                        verification: sideshow::plan::Verification {
+                            intent: a.verification_intent,
+                            commands: a.verification_commands,
+                        },
+                    },
+                },
+                PlanMutateCommand::UpdateTask(a) => sideshow::plan::PlanMutation::UpdateTask {
+                    workstream: a.workstream,
+                    task: sideshow::plan::Task {
+                        id: a.id,
+                        title: a.title,
+                        status: a.status.into(),
+                        owner: a.owner,
+                        outcomes: a.outcomes,
+                        dependencies: a.dependencies,
+                        files: a.files,
+                        acceptance_checks: a.acceptance_checks,
+                        verification: sideshow::plan::Verification {
+                            intent: a.verification_intent,
+                            commands: a.verification_commands,
+                        },
+                    },
+                },
+                PlanMutateCommand::RemoveTask { id } => {
+                    sideshow::plan::PlanMutation::RemoveTask { id }
+                }
+            };
+            let plan = sideshow::plan::mutate(&dir, op)?;
+            print!("{}", sideshow::plan::canonical_json(&plan)?);
+            Ok(())
+        }
     }
 }
 

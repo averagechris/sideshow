@@ -401,6 +401,284 @@ pub mod plan {
         Ok(format!("{}\n", serde_json::to_string_pretty(plan)?))
     }
 
+    pub enum PlanMutation {
+        AddOutcome(Outcome),
+        UpdateOutcome(Outcome),
+        RemoveOutcome {
+            id: String,
+        },
+        AddWorkstream(Workstream),
+        UpdateWorkstream {
+            id: String,
+            title: String,
+            status: WorkStatus,
+            owner: Option<String>,
+        },
+        RemoveWorkstream {
+            id: String,
+        },
+        AddTask {
+            workstream: String,
+            task: Task,
+        },
+        UpdateTask {
+            workstream: String,
+            task: Task,
+        },
+        RemoveTask {
+            id: String,
+        },
+    }
+
+    pub fn mutate(dir: &Path, mutation: PlanMutation) -> anyhow::Result<Plan> {
+        use fs4::fs_std::FileExt;
+        let lock_path = dir.join(".plan.json.lock");
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock_path)
+            .with_context(|| format!("failed to open mutation lock {}", lock_path.display()))?;
+        lock.lock_exclusive()
+            .context("failed to lock plan mutation lock")?;
+        let mut plan = load(dir)?;
+        match mutation {
+            PlanMutation::AddOutcome(outcome) => {
+                if id_exists(&plan, &outcome.id) {
+                    bail!("duplicate id {}", outcome.id);
+                }
+                plan.outcomes.push(outcome);
+            }
+            PlanMutation::UpdateOutcome(outcome) => {
+                let Some(slot) = plan.outcomes.iter_mut().find(|o| o.id == outcome.id) else {
+                    bail!("unknown outcome {}", outcome.id);
+                };
+                *slot = outcome;
+            }
+            PlanMutation::RemoveOutcome { id } => {
+                if plan
+                    .workstreams
+                    .iter()
+                    .flat_map(|w| &w.tasks)
+                    .any(|t| t.outcomes.contains(&id))
+                {
+                    bail!("cannot remove outcome {id}: still referenced by a task");
+                }
+                remove_one(&mut plan.outcomes, &id, |o| &o.id)?;
+            }
+            PlanMutation::AddWorkstream(workstream) => {
+                if id_exists(&plan, &workstream.id) {
+                    bail!("duplicate id {}", workstream.id);
+                }
+                plan.workstreams.push(workstream);
+            }
+            PlanMutation::UpdateWorkstream {
+                id,
+                title,
+                status,
+                owner,
+            } => {
+                let Some(ws) = plan.workstreams.iter_mut().find(|w| w.id == id) else {
+                    bail!("unknown workstream {id}");
+                };
+                ws.title = title;
+                ws.status = status;
+                ws.owner = owner;
+            }
+            PlanMutation::RemoveWorkstream { id } => {
+                let Some(ws) = plan.workstreams.iter().find(|w| w.id == id) else {
+                    bail!("unknown workstream {id}");
+                };
+                let removed_task_ids: BTreeSet<_> =
+                    ws.tasks.iter().map(|t| t.id.as_str()).collect();
+                for task in plan.workstreams.iter().flat_map(|w| &w.tasks) {
+                    if !removed_task_ids.contains(task.id.as_str())
+                        && task
+                            .dependencies
+                            .iter()
+                            .any(|dep| removed_task_ids.contains(dep.as_str()))
+                    {
+                        bail!(
+                            "cannot remove workstream {id}: task {} depends on a contained task",
+                            task.id
+                        );
+                    }
+                }
+                remove_one(&mut plan.workstreams, &id, |w| &w.id)?;
+            }
+            PlanMutation::AddTask { workstream, task } => {
+                if id_exists(&plan, &task.id) {
+                    bail!("duplicate id {}", task.id);
+                }
+                let Some(ws) = plan.workstreams.iter_mut().find(|w| w.id == workstream) else {
+                    bail!("unknown workstream {workstream}");
+                };
+                ws.tasks.push(task);
+            }
+            PlanMutation::UpdateTask { workstream, task } => {
+                let Some(old_ws_index) = plan
+                    .workstreams
+                    .iter()
+                    .position(|w| w.tasks.iter().any(|t| t.id == task.id))
+                else {
+                    bail!("unknown task {}", task.id);
+                };
+                let Some(new_ws_index) = plan.workstreams.iter().position(|w| w.id == workstream)
+                else {
+                    bail!("unknown workstream {workstream}");
+                };
+                let task_index = plan.workstreams[old_ws_index]
+                    .tasks
+                    .iter()
+                    .position(|t| t.id == task.id)
+                    .unwrap();
+                if old_ws_index == new_ws_index {
+                    plan.workstreams[old_ws_index].tasks[task_index] = task;
+                } else {
+                    plan.workstreams[old_ws_index].tasks.remove(task_index);
+                    plan.workstreams[new_ws_index].tasks.push(task);
+                }
+            }
+            PlanMutation::RemoveTask { id } => {
+                if plan
+                    .workstreams
+                    .iter()
+                    .flat_map(|w| &w.tasks)
+                    .any(|t| t.dependencies.contains(&id))
+                {
+                    bail!("cannot remove task {id}: still referenced by a dependency");
+                }
+                let Some(ws) = plan
+                    .workstreams
+                    .iter_mut()
+                    .find(|w| w.tasks.iter().any(|t| t.id == id))
+                else {
+                    bail!("unknown task {id}");
+                };
+                remove_one(&mut ws.tasks, &id, |t| &t.id)?;
+            }
+        }
+        let semantic = semantic_findings(&plan);
+        let errors: Vec<_> = semantic
+            .iter()
+            .filter(|f| f.severity == FindingSeverity::Error)
+            .collect();
+        if !errors.is_empty() {
+            bail!(
+                "plan mutation failed validation: {}",
+                errors
+                    .iter()
+                    .map(|f| f.message.as_str())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            );
+        }
+        let outcome = atomic_write_plan(dir, &canonical_json(&plan)?)?;
+        if let AtomicPlanWriteOutcome::CommittedButDirectorySyncFailed(error) = outcome {
+            bail!("plan.json was replaced, but directory sync failed: {error}");
+        }
+        Ok(plan)
+    }
+
+    enum AtomicPlanWriteOutcome {
+        Durable,
+        CommittedButDirectorySyncFailed(std::io::Error),
+    }
+
+    fn id_exists(plan: &Plan, id: &str) -> bool {
+        plan.outcomes.iter().any(|o| o.id == id)
+            || plan.constraints.iter().any(|c| c.id == id)
+            || plan.decisions.iter().any(|d| d.id == id)
+            || plan.risks.iter().any(|r| r.id == id)
+            || plan
+                .workstreams
+                .iter()
+                .any(|w| w.id == id || w.tasks.iter().any(|t| t.id == id))
+    }
+    fn remove_one<T>(
+        items: &mut Vec<T>,
+        id: &str,
+        get: impl Fn(&T) -> &String,
+    ) -> anyhow::Result<()> {
+        let Some(index) = items.iter().position(|item| get(item) == id) else {
+            bail!("unknown id {id}");
+        };
+        items.remove(index);
+        Ok(())
+    }
+    fn atomic_write_plan(dir: &Path, json: &str) -> anyhow::Result<AtomicPlanWriteOutcome> {
+        let path = dir.join("plan.json");
+        let mut last_error = None;
+        for attempt in 0..128u32 {
+            let tmp = dir.join(format!(
+                ".plan.json.{}.{}.tmp",
+                std::process::id(),
+                unique_suffix(attempt)
+            ));
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(
+                    fs::metadata(&path)
+                        .map(|m| {
+                            use std::os::unix::fs::PermissionsExt;
+                            m.permissions().mode() & 0o777
+                        })
+                        .unwrap_or(0o666),
+                );
+            }
+            let mut file = match options.open(&tmp) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    last_error = Some(error);
+                    continue;
+                }
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("failed to create {}", tmp.display()));
+                }
+            };
+            let result = (|| -> anyhow::Result<AtomicPlanWriteOutcome> {
+                if let Ok(meta) = fs::metadata(&path) {
+                    file.set_permissions(meta.permissions())?;
+                }
+                use std::io::Write;
+                file.write_all(json.as_bytes())?;
+                file.sync_all()?;
+                drop(file);
+                sync_plan_dir(dir)?;
+                fs::rename(&tmp, &path)?;
+                Ok(match sync_plan_dir(dir) {
+                    Ok(()) => AtomicPlanWriteOutcome::Durable,
+                    Err(error) => AtomicPlanWriteOutcome::CommittedButDirectorySyncFailed(error),
+                })
+            })();
+            match result {
+                Ok(outcome) => return Ok(outcome),
+                Err(error) => {
+                    let _ = fs::remove_file(&tmp);
+                    return Err(error)
+                        .with_context(|| format!("failed to replace {}", path.display()));
+                }
+            }
+        }
+        Err(last_error
+            .unwrap_or_else(|| std::io::Error::other("could not create unique plan temporary")))
+        .context("failed to create unique plan temporary")
+    }
+    fn unique_suffix(attempt: u32) -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        format!("{nanos:x}.{attempt:x}")
+    }
+    fn sync_plan_dir(dir: &Path) -> std::io::Result<()> {
+        fs::File::open(dir)?.sync_all()
+    }
+
     pub fn markdown(plan: &Plan) -> String {
         let mut out = format!(
             "# {}\n\n- Schema: {}\n- Status: {}\n\n## Objective\n{}\n",
@@ -734,6 +1012,40 @@ pub mod plan {
                 return findings;
             }
         };
+        findings.extend(semantic_findings(&plan));
+        let mut ids = BTreeSet::new();
+        for o in &plan.outcomes {
+            ids.insert(o.id.clone());
+        }
+        for c in &plan.constraints {
+            ids.insert(c.id.clone());
+        }
+        for d in &plan.decisions {
+            ids.insert(d.id.clone());
+        }
+        for r in &plan.risks {
+            ids.insert(r.id.clone());
+        }
+        for ws in &plan.workstreams {
+            ids.insert(ws.id.clone());
+            for t in &ws.tasks {
+                ids.insert(t.id.clone());
+            }
+        }
+        check_slide_refs(dir, &ids, &mut findings);
+        for id in ids {
+            if !slide_refs(dir).contains(&id) {
+                findings.push(warn(
+                    "slides",
+                    "plan-coverage",
+                    format!("plan id {id} is not referenced by any data-plan-id"),
+                ));
+            }
+        }
+        findings
+    }
+    fn semantic_findings(plan: &Plan) -> Vec<CheckFinding> {
+        let mut findings = vec![];
         if plan.schema_version != 2 {
             findings.push(err("plan.json", "plan-schema", "schema_version must be 2"));
         }
@@ -879,22 +1191,12 @@ pub mod plan {
                 }
             }
         }
-        for c in cycles(&plan) {
+        for c in cycles(plan) {
             findings.push(err(
                 "plan.json",
                 "plan-cycle",
                 format!("task dependency cycle: {}", c.join(" -> ")),
             ));
-        }
-        check_slide_refs(dir, &ids, &mut findings);
-        for id in ids {
-            if !slide_refs(dir).contains(&id) {
-                findings.push(warn(
-                    "slides",
-                    "plan-coverage",
-                    format!("plan id {id} is not referenced by any data-plan-id"),
-                ));
-            }
         }
         findings
     }

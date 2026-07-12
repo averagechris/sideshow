@@ -11,6 +11,377 @@ fn sideshow_command() -> Command {
     Command::new(env!("CARGO_BIN_EXE_sideshow"))
 }
 
+fn new_plan_deck() -> (tempfile::TempDir, std::path::PathBuf) {
+    let temp = tempfile::tempdir().unwrap();
+    let deck = temp.path().join("plan");
+    let status = sideshow_command()
+        .args(["plan", "new"])
+        .arg(&deck)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    (temp, deck)
+}
+
+#[test]
+fn plan_mutate_add_update_remove_and_json_stdout_are_deterministic() {
+    let (_temp, deck) = new_plan_deck();
+    let hostile_command = " \tprintf '%s' \"$HOME\"; rm -rf / # not executed\nnext";
+    let output = sideshow_command()
+        .args(["plan", "mutate"])
+        .arg(&deck)
+        .args([
+            "add-task",
+            "--workstream",
+            "ws-alignment",
+            "--id",
+            "task-zed",
+            "--title",
+            "Zed task",
+            "--status",
+            "todo",
+            "--outcome",
+            "outcome-alignment",
+            "--dependency",
+            "task-refine-digest",
+            "--file",
+            "src/lib.rs",
+            "--acceptance-check",
+            "check one",
+            "--verification-intent",
+            "preserve bytes",
+            "--verification-command",
+            hostile_command,
+            "--verification-command",
+            hostile_command,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["workstreams"][0]["tasks"][3]["id"], "task-zed");
+    assert_eq!(
+        value["workstreams"][0]["tasks"][3]["verification"]["commands"],
+        serde_json::json!([hostile_command, hostile_command])
+    );
+    assert_eq!(
+        output.stdout,
+        std::fs::read(deck.join("plan.json")).unwrap()
+    );
+
+    assert!(
+        sideshow_command()
+            .args(["plan", "mutate"])
+            .arg(&deck)
+            .args([
+                "update-outcome",
+                "--id",
+                "outcome-alignment",
+                "--description",
+                "Updated",
+                "--proof",
+                "p"
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        sideshow_command()
+            .args(["plan", "mutate"])
+            .arg(&deck)
+            .args(["remove-task", "--id", "task-zed"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let checked = sideshow_command()
+        .args(["plan", "check", "--format", "json"])
+        .arg(&deck)
+        .output()
+        .unwrap();
+    assert!(checked.status.success());
+    let exported = sideshow_command()
+        .args(["plan", "export", "--format", "json"])
+        .arg(&deck)
+        .output()
+        .unwrap();
+    assert!(exported.status.success());
+}
+
+#[test]
+fn plan_mutate_workstream_transaction_and_task_order_are_coherent() {
+    let (_temp, deck) = new_plan_deck();
+    let output = sideshow_command()
+        .args(["plan", "mutate"])
+        .arg(&deck)
+        .args([
+            "add-workstream",
+            "--id",
+            "ws-extra",
+            "--title",
+            "Extra",
+            "--status",
+            "todo",
+            "--task-id",
+            "task-extra",
+            "--task-title",
+            "Extra task",
+            "--task-status",
+            "todo",
+            "--task-outcome",
+            "outcome-alignment",
+            "--task-file",
+            "extra.rs",
+            "--task-acceptance-check",
+            "accepted",
+            "--task-verification-intent",
+            "verify",
+            "--task-verification-command",
+            "cargo test",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["workstreams"][1]["id"], "ws-extra");
+    assert_eq!(value["workstreams"][1]["tasks"][0]["id"], "task-extra");
+
+    let before = sideshow_command()
+        .args(["plan", "export", "--format", "json"])
+        .arg(&deck)
+        .output()
+        .unwrap()
+        .stdout;
+    let updated = sideshow_command()
+        .args(["plan", "mutate"])
+        .arg(&deck)
+        .args([
+            "update-task",
+            "--workstream",
+            "ws-alignment",
+            "--id",
+            "task-explore",
+            "--title",
+            "Explore updated",
+            "--status",
+            "todo",
+            "--outcome",
+            "outcome-proposal",
+            "--dependency",
+            "task-align",
+            "--file",
+            "plan.json",
+            "--acceptance-check",
+            "still second",
+            "--verification-intent",
+            "verify",
+            "--verification-command",
+            "cmd",
+        ])
+        .output()
+        .unwrap();
+    assert!(updated.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&updated.stdout).unwrap();
+    assert_eq!(value["workstreams"][0]["tasks"][0]["id"], "task-align");
+    assert_eq!(value["workstreams"][0]["tasks"][1]["id"], "task-explore");
+    assert_eq!(
+        value["workstreams"][0]["tasks"][2]["id"],
+        "task-refine-digest"
+    );
+
+    let moved = sideshow_command()
+        .args(["plan", "mutate"])
+        .arg(&deck)
+        .args([
+            "update-task",
+            "--workstream",
+            "ws-extra",
+            "--id",
+            "task-explore",
+            "--title",
+            "Explore moved",
+            "--status",
+            "todo",
+            "--outcome",
+            "outcome-proposal",
+            "--dependency",
+            "task-align",
+            "--file",
+            "plan.json",
+            "--acceptance-check",
+            "moved",
+            "--verification-intent",
+            "verify",
+            "--verification-command",
+            "cmd",
+        ])
+        .output()
+        .unwrap();
+    assert!(moved.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&moved.stdout).unwrap();
+    assert_eq!(value["workstreams"][1]["tasks"][0]["id"], "task-extra");
+    assert_eq!(value["workstreams"][1]["tasks"][1]["id"], "task-explore");
+
+    assert!(
+        sideshow_command()
+            .args(["plan", "mutate"])
+            .arg(&deck)
+            .args([
+                "update-task",
+                "--workstream",
+                "ws-alignment",
+                "--id",
+                "task-refine-digest",
+                "--title",
+                "Refine reviewed planning digest",
+                "--status",
+                "todo",
+                "--outcome",
+                "outcome-reviewed-digest",
+                "--file",
+                "plan.json",
+                "--acceptance-check",
+                "ready",
+                "--verification-intent",
+                "verify",
+                "--verification-command",
+                "cmd",
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        sideshow_command()
+            .args(["plan", "mutate"])
+            .arg(&deck)
+            .args(["remove-task", "--id", "task-explore"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        sideshow_command()
+            .args(["plan", "mutate"])
+            .arg(&deck)
+            .args(["remove-workstream", "--id", "ws-extra"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert_ne!(before, std::fs::read(deck.join("plan.json")).unwrap());
+}
+
+#[test]
+fn plan_mutate_rejects_invalid_candidates_without_writing() {
+    let (_temp, deck) = new_plan_deck();
+    let before = std::fs::read(deck.join("plan.json")).unwrap();
+    for args in [
+        vec!["add-outcome", "--id", "task-align", "--description", "dup"],
+        vec![
+            "add-task",
+            "--workstream",
+            "ws-alignment",
+            "--id",
+            "task-bad",
+            "--title",
+            "Bad",
+            "--status",
+            "todo",
+            "--outcome",
+            "missing-outcome",
+            "--file",
+            "x",
+            "--acceptance-check",
+            "a",
+            "--verification-intent",
+            "v",
+            "--verification-command",
+            "cmd",
+        ],
+        vec![
+            "update-task",
+            "--workstream",
+            "ws-alignment",
+            "--id",
+            "task-align",
+            "--title",
+            "Cycle",
+            "--status",
+            "todo",
+            "--outcome",
+            "outcome-alignment",
+            "--dependency",
+            "task-refine-digest",
+            "--file",
+            "x",
+            "--acceptance-check",
+            "a",
+            "--verification-intent",
+            "v",
+            "--verification-command",
+            "cmd",
+        ],
+        vec!["remove-task", "--id", "task-align"],
+        vec!["remove-outcome", "--id", "outcome-alignment"],
+    ] {
+        let output = sideshow_command()
+            .args(["plan", "mutate"])
+            .arg(&deck)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert_eq!(std::fs::read(deck.join("plan.json")).unwrap(), before);
+    }
+}
+
+#[test]
+fn plan_mutate_malformed_source_is_byte_identical_and_strict_after_projection() {
+    let (_temp, deck) = new_plan_deck();
+    let plan_path = deck.join("plan.json");
+    let before = br#"{"schema_version":2,"unknown":true}"#.to_vec();
+    std::fs::write(&plan_path, &before).unwrap();
+    let output = sideshow_command()
+        .args(["plan", "mutate"])
+        .arg(&deck)
+        .args(["add-outcome", "--id", "outcome-x", "--description", "x"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(std::fs::read(&plan_path).unwrap(), before);
+
+    std::fs::remove_dir_all(&deck).unwrap();
+    let (_temp2, deck) = new_plan_deck();
+    let anchors = r#"<div data-plan-id="outcome-alignment"></div><div data-plan-id="outcome-proposal"></div><div data-plan-id="outcome-reviewed-digest"></div><div data-plan-id="constraint-authored-projection"></div><div data-plan-id="constraint-strict-clean"></div><div data-plan-id="decision-json-canonical"></div><div data-plan-id="decision-verify-intent"></div><div data-plan-id="ws-alignment"></div><div data-plan-id="task-align"></div><div data-plan-id="task-explore"></div><div data-plan-id="task-refine-digest"></div><div data-plan-id="risk-drift"></div>"#;
+    std::fs::write(deck.join("slides/99-anchors.html"), anchors).unwrap();
+    assert!(
+        sideshow_command()
+            .args(["plan", "check", "--strict", "--format", "json"])
+            .arg(&deck)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        sideshow_command()
+            .args(["plan", "export", "--format", "json"])
+            .arg(&deck)
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
 #[test]
 fn registry_discovery_is_stable_bundled_and_clear() {
     let list = sideshow_command()
