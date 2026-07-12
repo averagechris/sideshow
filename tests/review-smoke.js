@@ -45,6 +45,10 @@
     captureEtag(response);
     return response.json();
   };
+  const trustedQuestions = await fetch("/__sideshow/review/questions", { headers }).then((response) => response.json());
+  assert(trustedQuestions.schema_version === 2 && Array.isArray(trustedQuestions.questions), "trusted questions endpoint schema");
+  const trustedPrompt = document.querySelector(".sideshow-review-question .sideshow-review-trusted-label");
+  if (trustedQuestions.questions.length) assert(trustedPrompt && /Trusted authored prompt/.test(trustedPrompt.textContent), "trusted prompt label");
   const mutate = (payload) => fetch("/__sideshow/review", {
     method: "POST",
     headers: { ...headers, "Content-Type": "application/json", ...(apiEtag ? { "If-Match": apiEtag } : {}) },
@@ -85,6 +89,7 @@
   await waitFor(() => !panel.classList.contains("is-collapsed"), "R reopen with draft");
   save();
   await waitFor(() => articleWithBody(pointBody), "point annotation create");
+  assert(/Untrusted answer\/annotation/.test(articleWithBody(pointBody).querySelector(".sideshow-review-meta")?.textContent || ""), "untrusted answer label");
   assert((await snapshot()).annotations.find((item) => item.body === pointBody)?.target.type === "point", "click was not inferred as a point");
 
   articleWithBody(pointBody).querySelector('[aria-label="Edit annotation"]').click();
@@ -170,7 +175,20 @@
   const afterRegion = await snapshot();
   assert(afterRegion.annotations.find((item) => item.body === regionBody)?.target.type === "region", "region target was not persisted");
 
-  let cleanup = afterRegion;
+  const markerCount = overlay.querySelectorAll(".sideshow-review-marker").length;
+  document.querySelector('[aria-label="Comment on the complete deck"]').click();
+  await waitFor(() => form.classList.contains("is-open"), "deck feedback editor");
+  const deckBody = `${unique}-deck`;
+  enterBody(deckBody);
+  save();
+  await waitFor(() => articleWithBody(deckBody), "deck annotation create");
+  const afterDeck = await snapshot();
+  const deckAnnotation = afterDeck.annotations.find((item) => item.body === deckBody);
+  assert(deckAnnotation?.target.type === "deck", "deck target was not persisted");
+  assert(!("slide_id" in deckAnnotation) && !("source_path" in deckAnnotation), "deck target persisted fake slide identity");
+  assert(overlay.querySelectorAll(".sideshow-review-marker").length === markerCount, "deck annotation created a slide marker");
+
+  let cleanup = afterDeck;
   for (const item of cleanup.annotations.filter((annotation) => annotation.body.startsWith(unique))) {
     const response = await mutate({ operation: "delete", revision: cleanup.revision, id: item.id });
     assert(response.status === 200, "smoke cleanup failed");
@@ -181,7 +199,7 @@
 
   return JSON.stringify({
     ok: true,
-    operations: ["create", "edit", "disposition", "resolve", "freshness-authority", "conflict-recover", "region", "delete"],
+    operations: ["create", "edit", "disposition", "resolve", "freshness-authority", "conflict-recover", "region", "deck", "delete"],
     final_revision: cleanup.revision,
   });
 })()

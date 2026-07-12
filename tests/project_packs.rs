@@ -16,7 +16,8 @@ fn write_pack(deck: &Path) {
     fs::write(deck.join("theme.css"), "body{color:black}").unwrap();
     fs::write(
         deck.join("packs/local/pack.toml"),
-        "schema_version=1\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\n[[themes]]\nname='local-theme'\ncss='themes/local.css'\n",
+        "schema_version=2\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']
+cognitive_contract={relationship_communicated='demo relationship',when_to_use='use for safe demo cards',when_misleading='misleading for production evidence'}\n[[themes]]\nname='local-theme'\ncss='themes/local.css'\n",
     )
     .unwrap();
     fs::write(
@@ -34,6 +35,60 @@ fn write_pack(deck: &Path) {
         "body{color:green}",
     )
     .unwrap();
+}
+
+#[test]
+fn project_pack_requires_nonblank_cognitive_contract() {
+    let t = tempfile::tempdir().unwrap();
+    write_pack(t.path());
+    for (manifest, expected) in [
+        (
+            "schema_version=2\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\n",
+            "missing field `cognitive_contract`",
+        ),
+        (
+            "schema_version=2\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\ncognitive_contract={relationship_communicated='',when_to_use='use it',when_misleading='do not'}\n",
+            "cognitive_contract.relationship_communicated must be nonblank",
+        ),
+    ] {
+        fs::write(t.path().join("packs/local/pack.toml"), manifest).unwrap();
+        let out = bin()
+            .args(["registry", "list", "--deck", t.path().to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains(expected),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn project_pack_v1_is_rejected_before_cognitive_contract_shape_errors() {
+    let t = tempfile::tempdir().unwrap();
+    write_pack(t.path());
+    fs::write(
+        t.path().join("packs/local/pack.toml"),
+        "schema_version=1\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\n",
+    )
+    .unwrap();
+    let out = bin()
+        .args(["registry", "list", "--deck", t.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("unsupported schema_version 1"), "{stderr}");
+    assert!(
+        stderr.contains("migrate pack.toml to schema_version=2"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("missing field `cognitive_contract`"),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -198,7 +253,8 @@ fn project_pack_rejects_collisions_runtime_names_and_unsafe_markup() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("forbidden"));
 
     write_pack(t.path());
-    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=1\npack='local'\n[[components]]\nname='review-feedback'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\n").unwrap();
+    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=2\npack='local'\n[[components]]\nname='review-feedback'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']
+cognitive_contract={relationship_communicated='demo relationship',when_to_use='use for safe demo cards',when_misleading='misleading for production evidence'}\n").unwrap();
     let out = bin()
         .args(["registry", "list", "--deck", t.path().to_str().unwrap()])
         .output()
@@ -206,7 +262,8 @@ fn project_pack_rejects_collisions_runtime_names_and_unsafe_markup() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("fixed runtime"));
 
-    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=1\npack='local'\n[[components]]\nname='literal-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\n").unwrap();
+    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=2\npack='local'\n[[components]]\nname='literal-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']
+cognitive_contract={relationship_communicated='demo relationship',when_to_use='use for safe demo cards',when_misleading='misleading for production evidence'}\n").unwrap();
     let out = bin()
         .args(["registry", "list", "--deck", t.path().to_str().unwrap()])
         .output()
@@ -309,7 +366,8 @@ fn compose_remove_handles_project_sources_and_preserves_invalid() {
 fn project_pack_assets_are_declared_embedded_and_digest_inputs() {
     let t = tempfile::tempdir().unwrap();
     write_pack(t.path());
-    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=1\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\n[[components.assets]]\npath='assets/icon.png'\n[[themes]]\nname='local-theme'\ncss='themes/local.css'\n[[themes.assets]]\npath='assets/bg.png'\n").unwrap();
+    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=2\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']
+cognitive_contract={relationship_communicated='demo relationship',when_to_use='use for safe demo cards',when_misleading='misleading for production evidence'}\n[[components.assets]]\npath='assets/icon.png'\n[[themes]]\nname='local-theme'\ncss='themes/local.css'\n[[themes.assets]]\npath='assets/bg.png'\n").unwrap();
     fs::create_dir_all(t.path().join("packs/local/assets")).unwrap();
     fs::write(t.path().join("packs/local/assets/icon.png"), b"icon").unwrap();
     fs::write(t.path().join("packs/local/assets/bg.png"), b"bg").unwrap();
@@ -439,7 +497,8 @@ fn project_template_rejects_attribute_placeholders_and_css_urls() {
 fn pack_asset_rewrite_is_contextual_declared_and_deterministic() {
     let t = tempfile::tempdir().unwrap();
     write_pack(t.path());
-    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=1\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\n[[components.assets]]\npath='assets/icon.png'\n[[components.assets]]\npath='assets/unused.png'\n").unwrap();
+    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=2\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']
+cognitive_contract={relationship_communicated='demo relationship',when_to_use='use for safe demo cards',when_misleading='misleading for production evidence'}\n[[components.assets]]\npath='assets/icon.png'\n[[components.assets]]\npath='assets/unused.png'\n").unwrap();
     fs::create_dir_all(t.path().join("packs/local/assets")).unwrap();
     fs::write(t.path().join("packs/local/assets/icon.png"), b"icon").unwrap();
     fs::write(t.path().join("packs/local/assets/unused.png"), b"unused").unwrap();
@@ -459,7 +518,8 @@ fn pack_asset_rewrite_is_contextual_declared_and_deterministic() {
             .contains("unused project pack asset(s): assets/unused.png")
     );
 
-    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=1\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\n[[components.assets]]\npath='assets/icon.png'\n").unwrap();
+    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=2\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']
+cognitive_contract={relationship_communicated='demo relationship',when_to_use='use for safe demo cards',when_misleading='misleading for production evidence'}\n[[components.assets]]\npath='assets/icon.png'\n").unwrap();
     let out = bin()
         .args(["registry", "list", "--deck", t.path().to_str().unwrap()])
         .output()
@@ -475,7 +535,8 @@ fn pack_asset_rewrite_is_contextual_declared_and_deterministic() {
 fn pack_assets_participate_in_budgets_and_build_agrees() {
     let t = tempfile::tempdir().unwrap();
     write_pack(t.path());
-    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=1\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\n[[components.assets]]\npath='assets/html.bin'\n[[components.assets]]\npath='assets/css.bin'\n[[themes]]\nname='local-theme'\ncss='themes/local.css'\n[[themes.assets]]\npath='assets/theme.bin'\n").unwrap();
+    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=2\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']
+cognitive_contract={relationship_communicated='demo relationship',when_to_use='use for safe demo cards',when_misleading='misleading for production evidence'}\n[[components.assets]]\npath='assets/html.bin'\n[[components.assets]]\npath='assets/css.bin'\n[[themes]]\nname='local-theme'\ncss='themes/local.css'\n[[themes.assets]]\npath='assets/theme.bin'\n").unwrap();
     fs::create_dir_all(t.path().join("packs/local/assets")).unwrap();
     fs::write(
         t.path().join("packs/local/assets/html.bin"),
@@ -565,7 +626,8 @@ fn pack_assets_participate_in_budgets_and_build_agrees() {
 fn pack_rejects_svg_policy_navigation_entities_and_role_collisions() {
     let t = tempfile::tempdir().unwrap();
     write_pack(t.path());
-    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=1\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\n[[components.assets]]\npath='components/card.css'\n").unwrap();
+    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=2\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']
+cognitive_contract={relationship_communicated='demo relationship',when_to_use='use for safe demo cards',when_misleading='misleading for production evidence'}\n[[components.assets]]\npath='components/card.css'\n").unwrap();
     let out = bin()
         .args(["registry", "list", "--deck", t.path().to_str().unwrap()])
         .output()
@@ -573,7 +635,8 @@ fn pack_rejects_svg_policy_navigation_entities_and_role_collisions() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("collides"));
 
-    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=1\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\n[[components.assets]]\npath='assets/bad.SVG'\n").unwrap();
+    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=2\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']
+cognitive_contract={relationship_communicated='demo relationship',when_to_use='use for safe demo cards',when_misleading='misleading for production evidence'}\n[[components.assets]]\npath='assets/bad.SVG'\n").unwrap();
     fs::create_dir_all(t.path().join("packs/local/assets")).unwrap();
     fs::write(
         t.path().join("packs/local/assets/bad.SVG"),
@@ -592,7 +655,8 @@ fn pack_rejects_svg_policy_navigation_entities_and_role_collisions() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("static policy"));
 
-    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=1\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\n").unwrap();
+    fs::write(t.path().join("packs/local/pack.toml"), "schema_version=2\npack='local'\n[[components]]\nname='safe-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']
+cognitive_contract={relationship_communicated='demo relationship',when_to_use='use for safe demo cards',when_misleading='misleading for production evidence'}\n").unwrap();
     for template in [
         "<a href='assets/file.bin'>x</a>",
         "<img src='java&#x73;cript:alert(1)'>",

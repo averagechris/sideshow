@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 pack = "sideshow-defaults"
 
 [[themes]]
@@ -65,6 +65,7 @@ templates = []
 intent = ["provide plan status, diagram, risk, and verification primitives", "render canonical plan decks"]
 accepted_input = ["plan.json data projected into compiler-owned templates", "static HTML plan component classes and data-plan-id anchors"]
 capabilities = ["css", "globally-included", "js-free"]
+cognitive_contract = { relationship_communicated = "plan execution state, dependency flow, risk, and evidence as canonical CSS primitives", when_to_use = "use for compiler-owned plan decks and static plan sections that need shared visual language", when_misleading = "misleading when used as a standalone authored slide component or for non-plan narratives" }
 
 [[components]]
 name = "literal-card"
@@ -73,6 +74,7 @@ templates = ["bundled/components/literal-card.html"]
 intent = ["render a data-only literal title/body card"]
 accepted_input = [".slide.toml props: eyebrow, title, body"]
 capabilities = ["component-slide", "html-escaped", "js-free"]
+cognitive_contract = { relationship_communicated = "a single literal message with eyebrow, title, and body", when_to_use = "use for data-only narrative slides with one concise claim", when_misleading = "misleading for comparisons, evidence, or structured plan records" }
 props = [
   { name = "eyebrow", type = "string", required = true },
   { name = "title", type = "string", required = true },
@@ -86,6 +88,7 @@ templates = ["bundled/components/plan-record-card.html"]
 intent = ["render a canonical plan record by stable kind/id"]
 accepted_input = [".slide.toml bind: kind, id", "optional prop: label"]
 capabilities = ["component-slide", "data-plan-anchors", "html-escaped", "js-free", "plan-bound"]
+cognitive_contract = { relationship_communicated = "one canonical plan record identified by stable kind and id", when_to_use = "use when a slide should faithfully surface a specific plan item", when_misleading = "misleading without a valid plan binding or when synthesizing multiple records" }
 props = [
   { name = "label", type = "string" },
 ]
@@ -96,7 +99,8 @@ css = "components/plan.css"
 templates = ["bundled/components/semantic-table.html"]
 intent = ["compare options", "show tradeoffs", "support a decision"]
 accepted_input = [".slide.toml props for caption, columns, and two option rows"]
-capabilities = ["component-slide", "html-escaped", "js-free", "semantic-table"]
+capabilities = ["component-slide", "html-escaped", "js-free", "plan-bindable", "semantic-table"]
+cognitive_contract = { relationship_communicated = "tradeoffs between two options across parallel criteria", when_to_use = "use when supporting a decision with balanced option comparison", when_misleading = "misleading when there is no real choice or more than two options matter" }
 props = [
   { name = "intent", type = "string", default = "compare-options" },
   { name = "eyebrow", type = "string", default = "Compare" },
@@ -125,6 +129,7 @@ templates = ["bundled/components/semantic-lanes.html"]
 intent = ["show workstream lanes", "summarize parallel work"]
 accepted_input = [".slide.toml props for three accessible lanes"]
 capabilities = ["component-slide", "html-escaped", "js-free", "semantic-lanes"]
+cognitive_contract = { relationship_communicated = "parallel workstreams with status, owner-like headings, and risks", when_to_use = "use to summarize three concurrent lanes of delivery or responsibility", when_misleading = "misleading for sequential timelines or deeply nested ownership models" }
 props = [
   { name = "intent", type = "string", default = "workstream-lanes" },
   { name = "eyebrow", type = "string", default = "Workstreams" },
@@ -154,6 +159,7 @@ templates = ["bundled/components/semantic-list.html"]
 intent = ["explain ordering constraints", "show dependencies"]
 accepted_input = [".slide.toml props: title, summary, and three dependency items"]
 capabilities = ["component-slide", "html-escaped", "js-free", "semantic-list"]
+cognitive_contract = { relationship_communicated = "ordering constraints and critical path dependencies", when_to_use = "use when the audience must understand prerequisites before action", when_misleading = "misleading for unordered task lists or broad background context" }
 props = [
   { name = "intent", type = "string", default = "show-dependencies" },
   { name = "eyebrow", type = "string", default = "Dependencies" },
@@ -176,6 +182,7 @@ templates = ["bundled/components/semantic-card.html"]
 intent = ["show mitigation", "summarize risks"]
 accepted_input = [".slide.toml props: title, heading, risk body, status and tone"]
 capabilities = ["component-slide", "html-escaped", "js-free", "semantic-card"]
+cognitive_contract = { relationship_communicated = "a risk, its status, and mitigation focus", when_to_use = "use to make one active risk explicit and actionable", when_misleading = "misleading for resolved issues, opportunities, or routine status updates" }
 props = [
   { name = "intent", type = "string", default = "risk-register" },
   { name = "eyebrow", type = "string", default = "Risk" },
@@ -197,6 +204,7 @@ templates = ["bundled/components/semantic-card.html"]
 intent = ["explain rationale", "record a decision"]
 accepted_input = [".slide.toml props: decision title, rationale, state"]
 capabilities = ["component-slide", "html-escaped", "js-free", "semantic-card"]
+cognitive_contract = { relationship_communicated = "a decision and its rationale/state", when_to_use = "use to document or present a settled or proposed decision", when_misleading = "misleading for open brainstorming or options that still require comparison" }
 props = [
   { name = "intent", type = "string", default = "decision-record" },
   { name = "eyebrow", type = "string", default = "Decision" },
@@ -218,6 +226,7 @@ templates = ["bundled/components/semantic-list.html"]
 intent = ["present evidence", "prove done", "show verification"]
 accepted_input = [".slide.toml props: title, summary, and three evidence checks"]
 capabilities = ["component-slide", "html-escaped", "js-free", "semantic-list"]
+cognitive_contract = { relationship_communicated = "verification claims backed by concrete evidence items", when_to_use = "use when showing test, review, or validation evidence", when_misleading = "misleading for aspirations, plans without evidence, or unverifiable claims" }
 props = [
   { name = "intent", type = "string", default = "verification-evidence" },
   { name = "eyebrow", type = "string", default = "Evidence" },
@@ -240,6 +249,7 @@ templates = ["bundled/components/semantic-list.html"]
 intent = ["connect changes to outcomes", "show file impact"]
 accepted_input = [".slide.toml props: changed areas and outcome summary"]
 capabilities = ["component-slide", "html-escaped", "js-free", "semantic-list"]
+cognitive_contract = { relationship_communicated = "file-level changes connected to user-visible outcomes", when_to_use = "use to explain code impact through concrete files and outcomes", when_misleading = "misleading for non-code work or when files are incidental rather than causal" }
 props = [
   { name = "intent", type = "string", default = "file-impact-outcomes" },
   { name = "eyebrow", type = "string", default = "Impact" },
@@ -254,3 +264,103 @@ props = [
 [components.presets.review]
 heading = "Review surface"
 meta = "Impact map"
+
+[[components]]
+name = "current-state-failure"
+css = "components/plan.css"
+templates = ["bundled/components/current-state-failure.html"]
+intent = ["explain why change is needed", "show current state and failure sequence"]
+accepted_input = [".slide.toml props describing current state, failure mode, and consequence"]
+capabilities = ["component-slide", "html-escaped", "js-free", "plan-bindable", "semantic-sequence"]
+cognitive_contract = { relationship_communicated = "a causal sequence from current state through failure mode to consequence", when_to_use = "use when the audience must understand why the existing state creates a concrete failure", when_misleading = "misleading for neutral status updates or when causality has not been established" }
+props = [
+  { name = "intent", type = "string", default = "current-state-failure" },
+  { name = "eyebrow", type = "string", default = "Current state" },
+  { name = "title", type = "string", required = true },
+  { name = "tone", type = "enum", values = ["good", "warn", "risk", "info"], default = "risk" },
+  { name = "status", type = "string", default = "Failure path" },
+  { name = "current_label", type = "string", default = "Current" },
+  { name = "current_body", type = "string", required = true },
+  { name = "failure_label", type = "string", default = "Failure" },
+  { name = "failure_body", type = "string", required = true },
+  { name = "consequence_label", type = "string", default = "Consequence" },
+  { name = "consequence_body", type = "string", required = true },
+]
+
+[[components]]
+name = "before-after"
+css = "components/plan.css"
+templates = ["bundled/components/before-after.html"]
+intent = ["contrast change impact", "show before and after"]
+accepted_input = [".slide.toml props for before and after states"]
+capabilities = ["component-slide", "html-escaped", "js-free", "plan-bindable", "semantic-contrast"]
+cognitive_contract = { relationship_communicated = "a two-state contrast between the prior condition and expected changed condition", when_to_use = "use when the core message is the delta caused by a change", when_misleading = "misleading when there are more than two important states or no verified delta" }
+props = [
+  { name = "intent", type = "string", default = "before-after" },
+  { name = "eyebrow", type = "string", default = "Before / After" },
+  { name = "title", type = "string", required = true },
+  { name = "meta", type = "string", default = "Delta" },
+  { name = "before_label", type = "string", default = "Before" },
+  { name = "before_body", type = "string", required = true },
+  { name = "after_label", type = "string", default = "After" },
+  { name = "after_body", type = "string", required = true },
+]
+
+[[components]]
+name = "trust-boundary"
+css = "components/plan.css"
+templates = ["bundled/components/trust-boundary.html"]
+intent = ["clarify ownership boundary", "show trust boundary"]
+accepted_input = [".slide.toml props for owned, boundary, and external responsibilities"]
+capabilities = ["component-slide", "html-escaped", "js-free", "plan-bindable", "semantic-boundary"]
+cognitive_contract = { relationship_communicated = "ownership and trust split across controlled, boundary, and external zones", when_to_use = "use when security, responsibility, or interface ownership must be explicit", when_misleading = "misleading for simple task ownership without a trust or interface boundary" }
+props = [
+  { name = "intent", type = "string", default = "trust-boundary" },
+  { name = "eyebrow", type = "string", default = "Boundary" },
+  { name = "title", type = "string", required = true },
+  { name = "meta", type = "string", default = "Ownership map" },
+  { name = "owned_label", type = "string", default = "Owned" },
+  { name = "owned_body", type = "string", required = true },
+  { name = "boundary_label", type = "string", default = "Boundary" },
+  { name = "boundary_body", type = "string", required = true },
+  { name = "external_label", type = "string", default = "External" },
+  { name = "external_body", type = "string", required = true },
+]
+
+[[components]]
+name = "concrete-example"
+css = "components/plan.css"
+templates = ["bundled/components/concrete-example.html"]
+intent = ["ground abstract claim", "show annotated concrete example"]
+accepted_input = [".slide.toml props for example text and annotation"]
+capabilities = ["component-slide", "html-escaped", "js-free", "plan-bindable", "semantic-example"]
+cognitive_contract = { relationship_communicated = "one concrete example with an explicit annotation explaining why it matters", when_to_use = "use to ground an abstract decision, API, or behavior in inspectable evidence", when_misleading = "misleading when the example is synthetic, cherry-picked, or not representative" }
+props = [
+  { name = "intent", type = "string", default = "concrete-example" },
+  { name = "eyebrow", type = "string", default = "Example" },
+  { name = "title", type = "string", required = true },
+  { name = "meta", type = "string", default = "Concrete evidence" },
+  { name = "example", type = "string", required = true },
+  { name = "annotation_label", type = "string", default = "Why it matters:" },
+  { name = "annotation", type = "string", required = true },
+]
+
+[[components]]
+name = "decision-feedback"
+css = "components/plan.css"
+templates = ["bundled/components/decision-feedback.html"]
+intent = ["make decision ask explicit", "request decision feedback"]
+accepted_input = [".slide.toml props for proposed decision and requested feedback"]
+capabilities = ["component-slide", "html-escaped", "js-free", "plan-bindable", "semantic-decision-request"]
+cognitive_contract = { relationship_communicated = "a proposed decision paired with the exact feedback or approval requested", when_to_use = "use when the slide needs an explicit decision or review response from the audience", when_misleading = "misleading for already-settled decisions or open-ended brainstorming" }
+props = [
+  { name = "intent", type = "string", default = "decision-feedback" },
+  { name = "eyebrow", type = "string", default = "Decision request" },
+  { name = "title", type = "string", required = true },
+  { name = "tone", type = "enum", values = ["good", "warn", "risk", "info"], default = "info" },
+  { name = "status", type = "string", default = "Feedback needed" },
+  { name = "decision_label", type = "string", default = "Proposed decision" },
+  { name = "decision", type = "string", required = true },
+  { name = "request_label", type = "string", default = "Please decide" },
+  { name = "request", type = "string", required = true },
+]

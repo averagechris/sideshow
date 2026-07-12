@@ -99,16 +99,22 @@
           "title": "Model the Phase 2 work as strict canonical plan data",
           "status": "in_review",
           "owner": "implementation-agent",
-          "outcomes": ["outcome-verification-scaffold"],
+          "outcomes": [
+            "outcome-verification-scaffold"
+          ],
           "dependencies": [],
-          "files": ["examples/planning-sideshow/plan.json"],
+          "files": [
+            "examples/planning-sideshow/plan.json"
+          ],
           "acceptance_checks": [
             "schema_version is 2 and every task has verification.intent and verification.commands",
             "outcomes, dependencies, files, acceptance checks, decisions, constraints, risks, and exact repository commands describe the real ticket #166 Phase 2 work"
           ],
           "verification": {
             "intent": "Confirm the canonical plan is parseable, internally linked, and fully projected before the example is treated as reviewable.",
-            "commands": ["cargo run -- plan check examples/planning-sideshow --strict"]
+            "commands": [
+              "cargo run -- plan check examples/planning-sideshow --strict"
+            ]
           }
         }
       ]
@@ -124,16 +130,28 @@
           "title": "Author expressive anchored slides",
           "status": "in_review",
           "owner": "implementation-agent",
-          "outcomes": ["outcome-visual-grammar"],
-          "dependencies": ["task-model-canonical-plan"],
-          "files": ["examples/planning-sideshow/slides/01-title.html", "examples/planning-sideshow/slides/02-tracks.html", "examples/planning-sideshow/slides/03-trust-boundary.html", "examples/planning-sideshow/slides/04-repeatable-loop.html"],
+          "outcomes": [
+            "outcome-visual-grammar"
+          ],
+          "dependencies": [
+            "task-model-canonical-plan"
+          ],
+          "files": [
+            "examples/planning-sideshow/slides/01-title.html",
+            "examples/planning-sideshow/slides/02-tracks.html",
+            "examples/planning-sideshow/slides/03-trust-boundary.html",
+            "examples/planning-sideshow/slides/04-repeatable-loop.html"
+          ],
           "acceptance_checks": [
             "slides use stable data-plan-kind/data-plan-id anchors for every plan ID",
             "slides include plan rail, layers, connectors, and native plan evidence disclosure without review UI changes"
           ],
           "verification": {
             "intent": "Prove the authored projection remains complete after visual composition changes.",
-            "commands": ["cargo run -- plan check examples/planning-sideshow --strict", "cargo run -- build examples/planning-sideshow"]
+            "commands": [
+              "cargo run -- plan check examples/planning-sideshow --strict",
+              "cargo run -- build examples/planning-sideshow"
+            ]
           }
         }
       ]
@@ -149,9 +167,23 @@
           "title": "Document the repeatable local workflow",
           "status": "in_review",
           "owner": "implementation-agent",
-          "outcomes": ["outcome-repository-example", "outcome-tracker-neutral-digest"],
-          "dependencies": ["task-author-expressive-slides"],
-          "files": ["README.md", "docs/PLANNING.md", "skills/sideshow-deck-author/SKILL.md", "skills/sideshow-deck-author/planning-components.md", "examples/planning-sideshow/README.md", "examples/planning-sideshow/plan.json", "examples/planning-sideshow/slides/05-manual-digest.html", "examples/planning-sideshow/theme.css"],
+          "outcomes": [
+            "outcome-repository-example",
+            "outcome-tracker-neutral-digest"
+          ],
+          "dependencies": [
+            "task-author-expressive-slides"
+          ],
+          "files": [
+            "README.md",
+            "docs/PLANNING.md",
+            "skills/sideshow-deck-author/SKILL.md",
+            "skills/sideshow-deck-author/planning-components.md",
+            "examples/planning-sideshow/README.md",
+            "examples/planning-sideshow/plan.json",
+            "examples/planning-sideshow/slides/05-manual-digest.html",
+            "examples/planning-sideshow/theme.css"
+          ],
           "acceptance_checks": [
             "documentation describes an alignment-first lifecycle that ends with a human- or agent-authored tracker digest rather than synchronized execution",
             "documentation presents later demos and project summaries as separate authoring workflows assembled from available context without built-in ingestion",
@@ -174,9 +206,23 @@
           "title": "Dogfood the tracker-neutral planning digest increment",
           "status": "in_review",
           "owner": "implementation-agent",
-          "outcomes": ["outcome-tracker-neutral-digest"],
-          "dependencies": ["task-document-repeatable-loop"],
-          "files": ["README.md", "docs/PLANNING.md", "skills/sideshow-deck-author/SKILL.md", "skills/sideshow-deck-author/planning-components.md", "src/lib.rs", "tests/cli.rs", "examples/planning-sideshow/README.md", "examples/planning-sideshow/plan.json", "examples/planning-sideshow/slides/05-manual-digest.html"],
+          "outcomes": [
+            "outcome-tracker-neutral-digest"
+          ],
+          "dependencies": [
+            "task-document-repeatable-loop"
+          ],
+          "files": [
+            "README.md",
+            "docs/PLANNING.md",
+            "skills/sideshow-deck-author/SKILL.md",
+            "skills/sideshow-deck-author/planning-components.md",
+            "src/lib.rs",
+            "tests/cli.rs",
+            "examples/planning-sideshow/README.md",
+            "examples/planning-sideshow/plan.json",
+            "examples/planning-sideshow/slides/05-manual-digest.html"
+          ],
           "acceptance_checks": [
             "README, planning docs, example docs, and authoring skill guidance describe the tracker-neutral digest contract without adding tracker APIs or execution history",
             "the dogfood deck includes an anchored expressive slide that maps rationale to per-task packets to manual tracker translation using rails, layers, and connectors",
@@ -188,7 +234,11 @@
           ],
           "verification": {
             "intent": "Confirm the digest implementation, strict dogfood projection, and generated deck preserve structural and command handoff contracts without committing generated output.",
-            "commands": ["cargo test plan_ --test cli", "cargo run -- plan check examples/planning-sideshow --strict", "cargo run -- build examples/planning-sideshow"]
+            "commands": [
+              "cargo test plan_ --test cli",
+              "cargo run -- plan check examples/planning-sideshow --strict",
+              "cargo run -- build examples/planning-sideshow"
+            ]
           }
         }
       ]
@@ -215,6 +265,21 @@
       "likelihood": "low",
       "impact": "medium",
       "mitigation": "Build for validation, inspect output exists, remove examples/planning-sideshow/dist before handoff, and keep exports in a fresh directory created with mktemp -d."
+    }
+  ],
+  "review_questions": [
+    {
+      "id": "question-review-readiness",
+      "question": "Does the planning digest give reviewers enough trusted context to decide the next manual issue-drafting step?",
+      "target": {
+        "type": "plan_record",
+        "kind": "outcome",
+        "id": "outcome-tracker-neutral-digest"
+      },
+      "tags": [
+        "review",
+        "readiness"
+      ]
     }
   ]
 }

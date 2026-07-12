@@ -6,7 +6,7 @@ use lol_html::{RewriteStrSettings, element, html_content::ContentType};
 use regex::{Captures, Regex};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -28,7 +28,8 @@ pub mod project_packs {
     use sha2::{Digest, Sha256};
     use std::io::Read;
 
-    pub const PACK_SCHEMA_VERSION: u32 = 1;
+    pub const PACK_SCHEMA_VERSION: u32 = 2;
+    pub const PACK_SCHEMA_MIGRATION_MESSAGE: &str = "pack schema_version 1 is no longer supported; migrate pack.toml to schema_version=2 and add complete nonblank cognitive_contract fields to every component";
     pub const PACK_MANIFEST: &str = "pack.toml";
 
     #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
@@ -50,6 +51,13 @@ pub mod project_packs {
     }
 
     #[derive(Debug, Deserialize)]
+    struct ManifestHeader {
+        schema_version: u32,
+        #[serde(default)]
+        pack: Option<String>,
+    }
+
+    #[derive(Debug, Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Component {
         name: String,
@@ -65,6 +73,7 @@ pub mod project_packs {
         intent: Vec<String>,
         #[serde(default)]
         accepted_input: Vec<String>,
+        cognitive_contract: registry::CognitiveContract,
         #[serde(default)]
         schema: Vec<registry::PropertySchema>,
         #[serde(default)]
@@ -715,13 +724,28 @@ pub mod project_packs {
         for (ordinal, root) in options.roots.into_iter().enumerate() {
             reject_unsafe_tree(&root)?;
             let manifest_bytes = confined_read(&root, PACK_MANIFEST)?;
-            let manifest: Manifest = toml::from_str(std::str::from_utf8(&manifest_bytes)?)
-                .with_context(|| {
+            let manifest_text = std::str::from_utf8(&manifest_bytes)?;
+            let manifest_header: ManifestHeader =
+                toml::from_str(manifest_text).with_context(|| {
                     format!(
                         "invalid project pack manifest {}",
                         root.join(PACK_MANIFEST).display()
                     )
                 })?;
+            if manifest_header.schema_version == 1 {
+                let pack = manifest_header.pack.as_deref().unwrap_or("<unknown>");
+                bail!(
+                    "project pack '{}' uses unsupported schema_version 1: {}",
+                    pack,
+                    PACK_SCHEMA_MIGRATION_MESSAGE
+                );
+            }
+            let manifest: Manifest = toml::from_str(manifest_text).with_context(|| {
+                format!(
+                    "invalid project pack manifest {}",
+                    root.join(PACK_MANIFEST).display()
+                )
+            })?;
             if manifest.schema_version != PACK_SCHEMA_VERSION {
                 bail!(
                     "project pack '{}' has unsupported schema_version {}",
@@ -828,6 +852,8 @@ pub mod project_packs {
                 let assets = load_assets(&root, &format!("component '{}'", c.name), &c.assets)?;
                 validate_markup(&c.name, &template)?;
                 validate_css_with_assets(&c.name, &css, &assets)?;
+                c.cognitive_contract
+                    .validate(&format!("project component '{}'", c.name))?;
                 validate_component_contract(&c.name, &c.props, &c.schema, &c.presets, &c.files)?;
                 validate_declared_asset_use(
                     &format!("component '{}'", c.name),
@@ -884,6 +910,7 @@ pub mod project_packs {
                 metadata.props = effective_schema.clone();
                 metadata.presets = c.presets.clone();
                 metadata.file_slots = c.files.clone();
+                metadata.cognitive_contract = Some(c.cognitive_contract.clone());
                 let entry = registry::RegistryEntry {
                     kind: "component".into(),
                     name: c.name.clone(),
@@ -1377,11 +1404,37 @@ pub mod composition {
                     ]),
                 )
             }
-            _ => {
-                reject_bind(&slide)?;
-                render_bundled_entry(&entry, &effective_props(&slide, &entry)?)
-            }
+            _ => render_semantic_bundled(deck_dir, &slide, &entry),
         }
+    }
+
+    fn render_semantic_bundled(
+        deck_dir: &Path,
+        slide: &ComponentSlide,
+        entry: &registry::RegistryEntry,
+    ) -> anyhow::Result<String> {
+        let mut html = render_bundled_entry(entry, &effective_props(slide, entry)?)?;
+        if let Some(bind) = &slide.bind {
+            if !entry
+                .metadata
+                .capabilities
+                .iter()
+                .any(|c| c == "plan-bindable")
+            {
+                bail!("{} does not accept plan binding", slide.component);
+            }
+            validate_binding(bind)?;
+            crate::plan::bound_record(deck_dir, &bind.kind, &bind.id)?;
+            let attrs = format!(
+                " data-plan-kind=\"{}\" data-plan-id=\"{}\"",
+                esc_attr(&bind.kind),
+                esc_attr(&bind.id)
+            );
+            html = html
+                .replacen("<section ", &format!("<section{attrs} "), 1)
+                .replacen("<section>", &format!("<section{attrs}>"), 1);
+        }
+        Ok(html)
     }
 
     fn bundled_component_entry(component: &str) -> anyhow::Result<registry::RegistryEntry> {
@@ -1514,9 +1567,36 @@ pub mod composition {
                     .context("plan-record-card requires [bind]")?;
                 validate_binding(bind)?;
             }
-            _ => reject_bind(slide)?,
+            _ => {
+                if let Some(bind) = &slide.bind {
+                    if !entry
+                        .metadata
+                        .capabilities
+                        .iter()
+                        .any(|c| c == "plan-bindable")
+                    {
+                        bail!("{} does not accept plan binding", slide.component);
+                    }
+                    validate_binding(bind)?;
+                }
+            }
         }
         Ok(())
+    }
+
+    pub(crate) fn component_accepts_binding(component: &str) -> anyhow::Result<bool> {
+        if component == "plan-record-card" {
+            return Ok(true);
+        }
+        if component == "literal-card" {
+            return Ok(false);
+        }
+        let entry = bundled_component_entry(component)?;
+        Ok(entry
+            .metadata
+            .capabilities
+            .iter()
+            .any(|c| c == "plan-bindable"))
     }
 
     fn validate_component_against_entry(
@@ -1529,7 +1609,7 @@ pub mod composition {
         let _ = effective_props_for_entry(slide, entry)?;
         Ok(())
     }
-    fn validate_binding(bind: &PlanBinding) -> anyhow::Result<()> {
+    pub(crate) fn validate_binding(bind: &PlanBinding) -> anyhow::Result<()> {
         match bind.kind.as_str() {
             "outcome" | "constraint" | "decision" | "workstream" | "task" | "risk" => {}
             _ => bail!("unknown plan record kind {}", bind.kind),
@@ -1581,6 +1661,13 @@ pub mod composition {
         let template = match component {
             "literal-card" => include_str!("bundled/components/literal-card.html"),
             "plan-record-card" => include_str!("bundled/components/plan-record-card.html"),
+            "current-state-failure" => {
+                include_str!("bundled/components/current-state-failure.html")
+            }
+            "before-after" => include_str!("bundled/components/before-after.html"),
+            "trust-boundary" => include_str!("bundled/components/trust-boundary.html"),
+            "concrete-example" => include_str!("bundled/components/concrete-example.html"),
+            "decision-feedback" => include_str!("bundled/components/decision-feedback.html"),
             _ => bail!("unknown component template {component}"),
         };
         let mut rendered = String::with_capacity(template.len());
@@ -1924,6 +2011,8 @@ pub mod plan {
         pub title: String,
         pub status: PlanStatus,
         pub objective: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub review_questions: Vec<ReviewQuestion>,
         #[serde(default)]
         pub outcomes: Vec<Outcome>,
         #[serde(default)]
@@ -1936,6 +2025,22 @@ pub mod plan {
         pub workstreams: Vec<Workstream>,
         #[serde(default)]
         pub risks: Vec<Risk>,
+    }
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    pub struct ReviewQuestion {
+        pub id: String,
+        pub question: String,
+        pub target: ReviewQuestionTarget,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub tags: Vec<String>,
+    }
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(deny_unknown_fields, tag = "type", rename_all = "snake_case")]
+    pub enum ReviewQuestionTarget {
+        Deck,
+        Slide { path: String },
+        PlanRecord { kind: String, id: String },
     }
     #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
@@ -2031,6 +2136,7 @@ pub mod plan {
             status: PlanStatus::Draft,
             objective: "Align stakeholders on a focused, reviewable increment by framing scope, exploring proposal options, and refining a strict-check-clean planning digest before execution begins."
                 .into(),
+            review_questions: vec![ReviewQuestion { id: "question-scope-boundary".into(), question: "Does the proposal draw a clear enough boundary between authored planning source and later tracker translation?".into(), target: ReviewQuestionTarget::PlanRecord { kind: "constraint".into(), id: "constraint-authored-projection".into() }, tags: vec!["scope".into(), "review".into()] }],
             outcomes: vec![
                 Outcome { id: "outcome-alignment".into(), description: "Readers understand the goal, scope boundaries, proposal shape, and review criteria before work begins.".into(), proof: vec!["slides/01-title.html and slides/02-plan.html reference alignment anchors".into(), "plan.json captures constraints, decisions, risks, owners, and dependencies without live tracker state".into()] },
                 Outcome { id: "outcome-proposal".into(), description: "The proposed increment is expressed as tracker-neutral work that can be translated after alignment.".into(), proof: vec!["proposal task acceptance checks explain scope and dependency intent".into(), "slides/02-plan.html anchors the proposal workstream and exploration task".into()] },
@@ -2204,6 +2310,23 @@ pub mod plan {
     }
     pub fn canonical_json(plan: &Plan) -> anyhow::Result<String> {
         Ok(format!("{}\n", serde_json::to_string_pretty(plan)?))
+    }
+
+    pub fn trusted_review_questions(dir: &Path) -> anyhow::Result<Vec<ReviewQuestion>> {
+        if !dir.join("plan.json").exists() {
+            return Ok(vec![]);
+        }
+        let plan = load(dir)?;
+        let findings = semantic_findings_for_dir(dir, &plan);
+        if findings
+            .iter()
+            .any(|f| f.severity == FindingSeverity::Error)
+        {
+            bail!(
+                "plan.json failed semantic validation; explicit review questions are unavailable"
+            );
+        }
+        Ok(plan.review_questions)
     }
 
     pub enum PlanMutation {
@@ -2467,6 +2590,7 @@ pub mod plan {
 
     fn id_exists(plan: &Plan, id: &str) -> bool {
         plan.outcomes.iter().any(|o| o.id == id)
+            || plan.review_questions.iter().any(|q| q.id == id)
             || plan.constraints.iter().any(|c| c.id == id)
             || plan.decisions.iter().any(|d| d.id == id)
             || plan.risks.iter().any(|r| r.id == id)
@@ -2586,6 +2710,22 @@ pub mod plan {
         }
         out.push_str("\n## Non-goals\n");
         out.push_str(&format!("{}\n", bullets(&plan.non_goals)));
+        if !plan.review_questions.is_empty() {
+            out.push_str("\n## Explicit review questions\n");
+            for q in &plan.review_questions {
+                out.push_str(&format!(
+                    "- **{}** [{}]: {}{}\n",
+                    md_inline(&q.id),
+                    md_inline(&review_question_target_label(&q.target)),
+                    md_inline(&q.question),
+                    if q.tags.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" _(tags: {})_", list(&q.tags))
+                    }
+                ));
+            }
+        }
         out.push_str("\n## Proposed work\n");
         for ws in &plan.workstreams {
             out.push_str(&format!(
@@ -2892,29 +3032,42 @@ pub mod plan {
                 return findings;
             }
         };
-        findings.extend(semantic_findings(&plan));
+        findings.extend(semantic_findings_for_dir(dir, &plan));
         let mut ids = BTreeSet::new();
+        let mut typed_ids = BTreeSet::new();
         for o in &plan.outcomes {
             ids.insert(o.id.clone());
+            typed_ids.insert(("outcome".to_string(), o.id.clone()));
         }
         for c in &plan.constraints {
             ids.insert(c.id.clone());
+            typed_ids.insert(("constraint".to_string(), c.id.clone()));
         }
         for d in &plan.decisions {
             ids.insert(d.id.clone());
+            typed_ids.insert(("decision".to_string(), d.id.clone()));
         }
         for r in &plan.risks {
             ids.insert(r.id.clone());
+            typed_ids.insert(("risk".to_string(), r.id.clone()));
         }
         for ws in &plan.workstreams {
             ids.insert(ws.id.clone());
+            typed_ids.insert(("workstream".to_string(), ws.id.clone()));
             for t in &ws.tasks {
                 ids.insert(t.id.clone());
+                typed_ids.insert(("task".to_string(), t.id.clone()));
             }
         }
-        check_slide_refs(dir, &ids, &mut findings);
+        let slide_refs = collect_slide_plan_refs(dir);
+        check_slide_refs(&slide_refs, &typed_ids, &mut findings);
+        findings.extend(slide_refs.findings);
         for id in ids {
-            if !slide_refs(dir).contains(&id) {
+            if !slide_refs
+                .typed
+                .iter()
+                .any(|(_, referenced_id)| referenced_id == &id)
+            {
                 findings.push(warn(
                     "slides",
                     "plan-coverage",
@@ -2925,6 +3078,34 @@ pub mod plan {
         findings
     }
     fn semantic_findings(plan: &Plan) -> Vec<CheckFinding> {
+        semantic_findings_with_slides(plan, None)
+    }
+    fn semantic_findings_for_dir(dir: &Path, plan: &Plan) -> Vec<CheckFinding> {
+        semantic_findings_with_slides(plan, authored_slide_sources(dir).ok().as_ref())
+    }
+    fn authored_slide_sources(dir: &Path) -> anyhow::Result<BTreeSet<String>> {
+        let deck = parse_deck_toml(&fs::read_to_string(dir.join("deck.toml"))?)?;
+        let canonical_root = dir.canonicalize()?;
+        slide_order(dir, &deck)?
+            .into_iter()
+            .map(|slide| {
+                let rel = slide.strip_prefix(&canonical_root).with_context(|| {
+                    format!(
+                        "slide source {} is outside deck root {}",
+                        slide.display(),
+                        canonical_root.display()
+                    )
+                })?;
+                rel.to_str()
+                    .map(|path| path.to_owned())
+                    .with_context(|| format!("slide source is not valid UTF-8: {}", rel.display()))
+            })
+            .collect()
+    }
+    fn semantic_findings_with_slides(
+        plan: &Plan,
+        authored_slides: Option<&BTreeSet<String>>,
+    ) -> Vec<CheckFinding> {
         let mut findings = vec![];
         if plan.schema_version != 2 {
             findings.push(err("plan.json", "plan-schema", "schema_version must be 2"));
@@ -2977,6 +3158,28 @@ pub mod plan {
                     "plan-coverage",
                     format!("outcome {} has no proof", o.id),
                 ));
+            }
+        }
+        for q in &plan.review_questions {
+            id!(q.id);
+            if q.question.trim().is_empty() {
+                findings.push(err(
+                    "plan.json",
+                    "plan-review-question",
+                    format!("review question {} needs question text", q.id),
+                ));
+            }
+            for tag in &q.tags {
+                if !valid_plan_id(tag) {
+                    findings.push(err(
+                        "plan.json",
+                        "plan-review-question",
+                        format!(
+                            "review question {} tag {} must use lowercase kebab-case",
+                            q.id, tag
+                        ),
+                    ));
+                }
             }
         }
         for c in &plan.constraints {
@@ -3078,6 +3281,9 @@ pub mod plan {
                 }
             }
         }
+        for q in &plan.review_questions {
+            validate_review_question_target(plan, q, authored_slides, &mut findings);
+        }
         for c in cycles(plan) {
             findings.push(err(
                 "plan.json",
@@ -3091,6 +3297,69 @@ pub mod plan {
         static PLAN_ID_RE: LazyLock<Regex> =
             LazyLock::new(|| Regex::new(r"^[a-z0-9]+(?:-[a-z0-9]+)*$").unwrap());
         PLAN_ID_RE.is_match(id)
+    }
+    fn review_question_target_label(target: &ReviewQuestionTarget) -> String {
+        match target {
+            ReviewQuestionTarget::Deck => "deck".into(),
+            ReviewQuestionTarget::Slide { path } => format!("slide:{path}"),
+            ReviewQuestionTarget::PlanRecord { kind, id } => format!("{kind}:{id}"),
+        }
+    }
+    fn validate_review_question_target(
+        plan: &Plan,
+        question: &ReviewQuestion,
+        authored_slides: Option<&BTreeSet<String>>,
+        findings: &mut Vec<CheckFinding>,
+    ) {
+        match &question.target {
+            ReviewQuestionTarget::Deck => {}
+            ReviewQuestionTarget::Slide { path } => {
+                if path.trim().is_empty()
+                    || path.starts_with('/')
+                    || path.contains("..")
+                    || !path.starts_with("slides/")
+                    || !(path.ends_with(".html")
+                        || path.ends_with(".md")
+                        || path.ends_with(".slide.toml"))
+                {
+                    findings.push(err("plan.json", "plan-review-question", format!("review question {} slide target must be a relative slides/*.html, slides/*.md, or slides/*.slide.toml path", question.id)));
+                } else if authored_slides.is_some_and(|slides| !slides.contains(path)) {
+                    findings.push(err(
+                        "plan.json",
+                        "plan-review-question",
+                        format!(
+                            "review question {} targets unknown authored slide {path}",
+                            question.id
+                        ),
+                    ));
+                }
+            }
+            ReviewQuestionTarget::PlanRecord { kind, id } => {
+                let ok = match kind.as_str() {
+                    "outcome" => plan.outcomes.iter().any(|r| r.id == *id),
+                    "constraint" => plan.constraints.iter().any(|r| r.id == *id),
+                    "decision" => plan.decisions.iter().any(|r| r.id == *id),
+                    "workstream" => plan.workstreams.iter().any(|r| r.id == *id),
+                    "task" => plan
+                        .workstreams
+                        .iter()
+                        .flat_map(|w| &w.tasks)
+                        .any(|r| r.id == *id),
+                    "risk" => plan.risks.iter().any(|r| r.id == *id),
+                    _ => false,
+                };
+                if !ok {
+                    findings.push(err(
+                        "plan.json",
+                        "plan-review-question",
+                        format!(
+                            "review question {} targets unknown plan record {kind}/{id}",
+                            question.id
+                        ),
+                    ));
+                }
+            }
+        }
     }
     fn err(path: &str, kind: &str, message: impl Into<String>) -> CheckFinding {
         CheckFinding {
@@ -3108,28 +3377,119 @@ pub mod plan {
             message: message.into(),
         }
     }
-    fn slide_refs(dir: &Path) -> BTreeSet<String> {
+    struct SlidePlanRefs {
+        typed: BTreeSet<(String, String)>,
+        raw_ids: BTreeSet<String>,
+        findings: Vec<CheckFinding>,
+    }
+
+    fn collect_slide_plan_refs(dir: &Path) -> SlidePlanRefs {
+        let mut out = SlidePlanRefs {
+            typed: BTreeSet::new(),
+            raw_ids: BTreeSet::new(),
+            findings: vec![],
+        };
         let Ok(slides) = fs::read_dir(dir.join("slides")) else {
-            return BTreeSet::new();
+            return out;
         };
         let re = Regex::new(r#"data-plan-id\s*=\s*[\"']([^\"']+)[\"']"#).unwrap();
-        slides
-            .filter_map(Result::ok)
-            .filter_map(|e| fs::read_to_string(e.path()).ok())
-            .flat_map(|s| {
-                re.captures_iter(&s)
-                    .map(|c| c[1].to_string())
-                    .collect::<Vec<_>>()
-            })
-            .collect()
+        let typed_re = Regex::new(r#"data-plan-kind\s*=\s*[\"']([^\"']+)[\"'][^>]*data-plan-id\s*=\s*[\"']([^\"']+)[\"']|data-plan-id\s*=\s*[\"']([^\"']+)[\"'][^>]*data-plan-kind\s*=\s*[\"']([^\"']+)[\"']"#).unwrap();
+        for entry in slides.filter_map(Result::ok) {
+            let path = entry.path();
+            let rel = path
+                .strip_prefix(dir)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .to_string();
+            if composition::is_component_slide_path(&path) {
+                match composition::load(&path) {
+                    Ok(slide) => {
+                        if let Some(bind) = slide.bind {
+                            match composition::component_accepts_binding(&slide.component) {
+                                Ok(true) => {
+                                    if let Err(e) = composition::validate_binding(&bind) {
+                                        out.findings.push(err(
+                                            &rel,
+                                            "component_slide",
+                                            format!("invalid plan binding: {e:#}"),
+                                        ));
+                                    } else {
+                                        out.typed.insert((bind.kind, bind.id));
+                                    }
+                                }
+                                Ok(false) => out.findings.push(err(
+                                    &rel,
+                                    "component_slide",
+                                    format!("{} does not accept plan binding", slide.component),
+                                )),
+                                Err(e) => out.findings.push(err(
+                                    &rel,
+                                    "component_slide",
+                                    format!("{e:#}"),
+                                )),
+                            }
+                        }
+                    }
+                    Err(e) => out
+                        .findings
+                        .push(err(&rel, "component_slide", format!("{e:#}"))),
+                }
+                continue;
+            }
+            if !matches!(
+                path.extension().and_then(|s| s.to_str()),
+                Some("html" | "md")
+            ) {
+                continue;
+            }
+            let Ok(s) = fs::read_to_string(&path) else {
+                continue;
+            };
+            out.raw_ids
+                .extend(re.captures_iter(&s).map(|c| c[1].to_string()));
+            out.typed.extend(typed_re.captures_iter(&s).map(|c| {
+                let kind = c.get(1).or_else(|| c.get(4)).unwrap().as_str().to_string();
+                let id = c.get(2).or_else(|| c.get(3)).unwrap().as_str().to_string();
+                (kind, id)
+            }));
+        }
+        out
     }
-    fn check_slide_refs(dir: &Path, ids: &BTreeSet<String>, findings: &mut Vec<CheckFinding>) {
-        for id in slide_refs(dir) {
-            if !ids.contains(&id) {
+    fn check_slide_refs(
+        slide_refs: &SlidePlanRefs,
+        typed_ids: &BTreeSet<(String, String)>,
+        findings: &mut Vec<CheckFinding>,
+    ) {
+        let valid_kinds = [
+            "outcome",
+            "constraint",
+            "decision",
+            "workstream",
+            "task",
+            "risk",
+        ];
+        for raw_id in &slide_refs.raw_ids {
+            if !slide_refs.typed.iter().any(|(_, id)| id == raw_id) {
                 findings.push(err(
                     "slides",
                     "plan-reference",
-                    format!("data-plan-id references unknown id {id}"),
+                    format!("data-plan-id {raw_id} must be paired with data-plan-kind"),
+                ));
+            }
+        }
+        for (kind, id) in &slide_refs.typed {
+            if !valid_kinds.contains(&kind.as_str()) {
+                findings.push(err(
+                    "slides",
+                    "plan-reference",
+                    format!("data-plan-kind {kind} is not a known plan record kind"),
+                ));
+            }
+            if !typed_ids.contains(&(kind.clone(), id.clone())) {
+                findings.push(err(
+                    "slides",
+                    "plan-reference",
+                    format!("data-plan-kind/id references unknown plan record {kind}/{id}"),
                 ));
             }
         }
@@ -3468,6 +3828,8 @@ pub struct DeckToml {
     pub fonts: Vec<FontFaceConfig>,
     #[serde(default)]
     pub packs: project_packs::PackConfig,
+    #[serde(default)]
+    pub review: DeckReviewConfig,
 }
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct DeckMeta {
@@ -3475,6 +3837,29 @@ pub struct DeckMeta {
     #[serde(default = "default_theme")]
     pub theme: String,
     pub slides: Option<Vec<String>>,
+}
+#[derive(Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DeckReviewConfig {
+    #[serde(default)]
+    pub questions: Vec<DeckReviewQuestion>,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DeckReviewQuestion {
+    pub id: String,
+    pub question: String,
+    pub target: DeckReviewQuestionTarget,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields, tag = "type", rename_all = "snake_case")]
+pub enum DeckReviewQuestionTarget {
+    Deck,
+    Slide { path: String },
 }
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct BuildConfig {
@@ -3527,6 +3912,130 @@ fn default_max_dim() -> u32 {
 
 pub fn parse_deck_toml(s: &str) -> anyhow::Result<DeckToml> {
     Ok(toml::from_str(s)?)
+}
+
+/// Loads all trusted authored review prompts. Ordinary decks author deck/slide prompts in
+/// `deck.toml`; planning decks may additionally author plan-record prompts in `plan.json`.
+/// Invalid or ambiguous trusted context fails closed rather than silently disappearing.
+pub fn trusted_review_questions(dir: &Path) -> anyhow::Result<Vec<plan::ReviewQuestion>> {
+    let deck_path = dir.join("deck.toml");
+    let deck = if deck_path.exists() {
+        Some(parse_deck_toml(
+            &fs::read_to_string(&deck_path)
+                .with_context(|| format!("failed to read {}", deck_path.display()))?,
+        )?)
+    } else {
+        None
+    };
+    let authored = if deck
+        .as_ref()
+        .is_some_and(|deck| !deck.review.questions.is_empty())
+    {
+        let deck = deck.as_ref().expect("checked above");
+        let canonical_root = dir.canonicalize()?;
+        slide_order(dir, deck)?
+            .into_iter()
+            .map(|path| {
+                path.strip_prefix(&canonical_root)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect::<HashSet<_>>()
+    } else {
+        HashSet::new()
+    };
+    let ordinary_questions = deck.map(|deck| deck.review.questions).unwrap_or_default();
+    if ordinary_questions.len() > 128 {
+        bail!("deck.toml may define at most 128 trusted review questions");
+    }
+    let mut questions = Vec::with_capacity(ordinary_questions.len());
+    let mut ids = HashSet::new();
+    for question in ordinary_questions {
+        if !valid_review_question_token(&question.id) {
+            bail!(
+                "deck.toml review question id {} must use lowercase kebab-case",
+                question.id
+            );
+        }
+        if question.question.trim().is_empty() || question.question.len() > 4096 {
+            bail!(
+                "deck.toml review question {} text must contain 1..=4096 bytes",
+                question.id
+            );
+        }
+        if question
+            .tags
+            .iter()
+            .any(|tag| !valid_review_question_token(tag))
+        {
+            bail!(
+                "deck.toml review question {} tags must use lowercase kebab-case",
+                question.id
+            );
+        }
+        if question.tags.len() > 32 {
+            bail!(
+                "deck.toml review question {} may define at most 32 tags",
+                question.id
+            );
+        }
+        if !ids.insert(question.id.clone()) {
+            bail!("duplicate trusted review question id {}", question.id);
+        }
+        let target = match question.target {
+            DeckReviewQuestionTarget::Deck => plan::ReviewQuestionTarget::Deck,
+            DeckReviewQuestionTarget::Slide { path } => {
+                if !normalized_authored_slide_path(&path) || !authored.contains(&path) {
+                    bail!(
+                        "deck.toml review question {} targets unknown authored slide {}",
+                        question.id,
+                        path
+                    );
+                }
+                plan::ReviewQuestionTarget::Slide { path }
+            }
+        };
+        questions.push(plan::ReviewQuestion {
+            id: question.id,
+            question: question.question,
+            target,
+            tags: question.tags,
+        });
+    }
+    for question in plan::trusted_review_questions(dir)? {
+        if !ids.insert(question.id.clone()) {
+            bail!("duplicate trusted review question id {}", question.id);
+        }
+        questions.push(question);
+    }
+    Ok(questions)
+}
+
+fn valid_review_question_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && value.split('-').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        })
+}
+
+fn normalized_authored_slide_path(value: &str) -> bool {
+    let path = Path::new(value);
+    value.starts_with("slides/")
+        && !value.contains('\\')
+        && !value.split('/').any(str::is_empty)
+        && !path.is_absolute()
+        && path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+        && matches!(
+            path.extension().and_then(|ext| ext.to_str()),
+            Some("html" | "md" | "toml")
+        )
 }
 
 pub fn new_deck(dir: &Path, theme: &str) -> anyhow::Result<()> {
@@ -5801,6 +6310,175 @@ mod tests {
     }
 
     #[test]
+    fn plan_review_questions_validate_targets_and_export_markdown() {
+        let mut plan = plan::Plan {
+            schema_version: 2,
+            title: "Review Questions".into(),
+            status: plan::PlanStatus::Draft,
+            objective: "Check explicit review questions.".into(),
+            review_questions: vec![
+                plan::ReviewQuestion {
+                    id: "question-outcome".into(),
+                    question: "Is the outcome reviewable?".into(),
+                    target: plan::ReviewQuestionTarget::PlanRecord {
+                        kind: "outcome".into(),
+                        id: "outcome-reviewable".into(),
+                    },
+                    tags: vec!["review".into()],
+                },
+                plan::ReviewQuestion {
+                    id: "question-component-slide".into(),
+                    question: "Is the component slide source included in authored order?".into(),
+                    target: plan::ReviewQuestionTarget::Slide {
+                        path: "slides/02.slide.toml".into(),
+                    },
+                    tags: vec!["component-slide".into()],
+                },
+            ],
+            outcomes: vec![plan::Outcome {
+                id: "outcome-reviewable".into(),
+                description: "A reviewer can answer the authored question.".into(),
+                proof: vec!["Markdown includes the question.".into()],
+            }],
+            constraints: vec![],
+            non_goals: vec![],
+            decisions: vec![],
+            workstreams: vec![plan::Workstream {
+                id: "ws-review".into(),
+                title: "Review".into(),
+                status: plan::WorkStatus::Todo,
+                owner: Some("test".into()),
+                tasks: vec![plan::Task {
+                    id: "task-review".into(),
+                    title: "Review".into(),
+                    status: plan::WorkStatus::Todo,
+                    owner: Some("test".into()),
+                    outcomes: vec!["outcome-reviewable".into()],
+                    dependencies: vec![],
+                    files: vec!["plan.json".into()],
+                    acceptance_checks: vec!["Question is deterministic.".into()],
+                    verification: plan::Verification {
+                        intent: "Validate question target.".into(),
+                        commands: vec!["sideshow plan check . --strict".into()],
+                    },
+                }],
+            }],
+            risks: vec![],
+        };
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("slides")).unwrap();
+        fs::write(
+            temp.path().join("deck.toml"),
+            "[deck]\ntitle='T'\nslides=['slides/01.html','slides/02.slide.toml']\n",
+        )
+        .unwrap();
+        fs::write(temp.path().join("theme.css"), "").unwrap();
+        fs::write(temp.path().join("slides/01.html"), "<section data-plan-id='outcome-reviewable'><span data-plan-id='ws-review'><em data-plan-id='task-review'>x</em></span></section>").unwrap();
+        fs::write(temp.path().join("slides/02.slide.toml"), "component='x'\n").unwrap();
+        fs::write(
+            temp.path().join("plan.json"),
+            plan::canonical_json(&plan).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            plan::trusted_review_questions(temp.path()).unwrap().len(),
+            2
+        );
+        assert!(plan::markdown(&plan).contains("Explicit review questions"));
+        plan.review_questions[0].target = plan::ReviewQuestionTarget::PlanRecord {
+            kind: "outcome".into(),
+            id: "missing".into(),
+        };
+        fs::write(
+            temp.path().join("plan.json"),
+            plan::canonical_json(&plan).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            plan::check(temp.path())
+                .iter()
+                .any(|finding| finding.kind == "plan-review-question")
+        );
+        plan.review_questions[0].target = plan::ReviewQuestionTarget::PlanRecord {
+            kind: "outcome".into(),
+            id: "outcome-reviewable".into(),
+        };
+        plan.review_questions[1].target = plan::ReviewQuestionTarget::Slide {
+            path: "slides/missing.html".into(),
+        };
+        fs::write(
+            temp.path().join("plan.json"),
+            plan::canonical_json(&plan).unwrap(),
+        )
+        .unwrap();
+        assert!(plan::check(temp.path()).iter().any(|finding| {
+            finding
+                .message
+                .contains("targets unknown authored slide slides/missing.html")
+        }));
+        assert!(plan::trusted_review_questions(temp.path()).is_err());
+    }
+
+    #[test]
+    fn ordinary_deck_review_questions_are_trusted_and_scope_limited() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("slides")).unwrap();
+        fs::write(temp.path().join("slides/01-title.html"), "<h1>Title</h1>").unwrap();
+        fs::write(
+            temp.path().join("deck.toml"),
+            r#"[deck]
+title = "Ordinary deck"
+slides = ["slides/01-title.html"]
+
+[[review.questions]]
+id = "question-narrative"
+question = "Does the complete narrative support the decision?"
+target = { type = "deck" }
+tags = ["narrative"]
+
+[[review.questions]]
+id = "question-title"
+question = "Is the title specific?"
+target = { type = "slide", path = "slides/01-title.html" }
+"#,
+        )
+        .unwrap();
+        let questions = trusted_review_questions(temp.path()).unwrap();
+        assert_eq!(questions.len(), 2);
+        assert!(matches!(
+            questions[0].target,
+            plan::ReviewQuestionTarget::Deck
+        ));
+        assert!(matches!(
+            questions[1].target,
+            plan::ReviewQuestionTarget::Slide { .. }
+        ));
+
+        let invalid = r#"[deck]
+title = "Ordinary deck"
+[[review.questions]]
+id = "question-plan"
+question = "Not allowed"
+target = { type = "plan_record", kind = "outcome", id = "outcome-x" }
+"#;
+        assert!(parse_deck_toml(invalid).is_err());
+
+        fs::write(
+            temp.path().join("deck.toml"),
+            r#"[deck]
+title = "Ordinary deck"
+slides = ["slides/01-title.html"]
+[[review.questions]]
+id = "question-missing"
+question = "Where is this slide?"
+target = { type = "slide", path = "slides/missing.html" }
+"#,
+        )
+        .unwrap();
+        assert!(trusted_review_questions(temp.path()).is_err());
+    }
+
+    #[test]
     fn project_pack_roots_are_explicit_confined_and_collision_checked() {
         let t = tempfile::tempdir().unwrap();
         fs::write(
@@ -5809,7 +6487,8 @@ mod tests {
         )
         .unwrap();
         fs::create_dir_all(t.path().join("packs/local/components")).unwrap();
-        fs::write(t.path().join("packs/local/pack.toml"), "schema_version=1\npack='local'\n[[components]]\nname='literal-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']\n").unwrap();
+        fs::write(t.path().join("packs/local/pack.toml"), "schema_version=2\npack='local'\n[[components]]\nname='literal-card'\ntemplate='components/card.html'\ncss='components/card.css'\nprops=['title']\ncapabilities=['js-free']
+cognitive_contract={relationship_communicated='demo relationship',when_to_use='use for safe demo cards',when_misleading='misleading for production evidence'}\n").unwrap();
         fs::write(
             t.path().join("packs/local/components/card.html"),
             "<h1>{{title}}</h1>",
@@ -5844,7 +6523,8 @@ mod tests {
             "[deck]\ntitle='T'\n[packs]\nroots=['packs/local']\n",
         )
         .unwrap();
-        fs::write(t.path().join("packs/local/pack.toml"), "schema_version=1\npack='local'\n[[components]]\nname='safe-card'\ntemplate='c/card.html'\ncss='c/card.css'\nprops=['title']\ncapabilities=['js-free']\n").unwrap();
+        fs::write(t.path().join("packs/local/pack.toml"), "schema_version=2\npack='local'\n[[components]]\nname='safe-card'\ntemplate='c/card.html'\ncss='c/card.css'\nprops=['title']\ncapabilities=['js-free']
+cognitive_contract={relationship_communicated='demo relationship',when_to_use='use for safe demo cards',when_misleading='misleading for production evidence'}\n").unwrap();
         fs::write(
             t.path().join("packs/local/c/card.html"),
             "<h1>{{title}}</h1>",

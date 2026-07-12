@@ -866,6 +866,13 @@ struct VendorManifest {
     themes: Vec<toml::Value>,
 }
 
+#[derive(Debug, Deserialize)]
+struct VendorManifestHeader {
+    schema_version: u32,
+    #[serde(default)]
+    pack: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct VendorComponent {
@@ -882,6 +889,7 @@ struct VendorComponent {
     intent: Vec<String>,
     #[serde(default)]
     accepted_input: Vec<String>,
+    cognitive_contract: sideshow::registry::CognitiveContract,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     schema: Vec<sideshow::registry::PropertySchema>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -955,6 +963,13 @@ fn vendor_component(deck: &Path, name: &str) -> anyhow::Result<()> {
         anyhow::bail!("deck already lists vendor root: {dest_rel}");
     }
 
+    if selected_manifest.schema_version == 1 {
+        anyhow::bail!(
+            "user pack '{}' uses unsupported schema_version 1: {}",
+            selected_manifest.pack,
+            sideshow::project_packs::PACK_SCHEMA_MIGRATION_MESSAGE
+        );
+    }
     if selected_manifest.schema_version != sideshow::project_packs::PACK_SCHEMA_VERSION {
         anyhow::bail!(
             "user pack '{}' has unsupported schema_version {}",
@@ -1032,7 +1047,22 @@ fn vendor_component(deck: &Path, name: &str) -> anyhow::Result<()> {
 fn load_vendor_manifest(root: &Path) -> anyhow::Result<VendorManifest> {
     let bytes =
         sideshow::project_packs::confined_read(root, sideshow::project_packs::PACK_MANIFEST)?;
-    toml::from_str(std::str::from_utf8(&bytes)?).with_context(|| {
+    let manifest_text = std::str::from_utf8(&bytes)?;
+    let header: VendorManifestHeader = toml::from_str(manifest_text).with_context(|| {
+        format!(
+            "invalid user pack manifest {}",
+            root.join(sideshow::project_packs::PACK_MANIFEST).display()
+        )
+    })?;
+    if header.schema_version == 1 {
+        let pack = header.pack.as_deref().unwrap_or("<unknown>");
+        anyhow::bail!(
+            "user pack '{}' uses unsupported schema_version 1: {}",
+            pack,
+            sideshow::project_packs::PACK_SCHEMA_MIGRATION_MESSAGE
+        );
+    }
+    toml::from_str(manifest_text).with_context(|| {
         format!(
             "invalid user pack manifest {}",
             root.join(sideshow::project_packs::PACK_MANIFEST).display()
@@ -3323,6 +3353,12 @@ fn handle_stream(
             None => respond_status(stream, "404 Not Found"),
         };
     }
+    if request.path == "__sideshow/review/questions" {
+        return match review {
+            Some(review) => respond_review_questions(stream, &request, review),
+            None => respond_status(stream, "404 Not Found"),
+        };
+    }
     if request.path == "__sideshow/reload" {
         if request.method != "GET" && request.method != "HEAD" {
             return respond_status(stream, "405 Method Not Allowed");
@@ -3639,6 +3675,25 @@ fn respond_review(
                 Err(error) => respond_review_repository_error(stream, error),
             }
         }
+        _ => respond_status(stream, "405 Method Not Allowed"),
+    }
+}
+
+fn respond_review_questions(
+    stream: &mut TcpStream,
+    request: &HttpRequest,
+    review: &ReviewServer,
+) -> anyhow::Result<()> {
+    if request.headers.get("x-sideshow-review") != Some(&review.nonce) {
+        return respond_json_error(stream, "403 Forbidden", "invalid review nonce");
+    }
+    match request.method.as_str() {
+        "GET" | "HEAD" => match review.repository.trusted_questions() {
+            Ok(questions) => {
+                respond_json_etag(stream, "200 OK", &questions, request.method == "HEAD", None)
+            }
+            Err(error) => respond_review_repository_error(stream, error),
+        },
         _ => respond_status(stream, "405 Method Not Allowed"),
     }
 }
@@ -4557,6 +4612,38 @@ mod serve_tests {
     }
 
     #[test]
+    fn review_http_questions_endpoint_is_read_only_trusted_context() {
+        let fixture = review_fixture();
+        fs::create_dir(fixture._deck.path().join("slides")).unwrap();
+        fs::write(
+            fixture._deck.path().join("slides/01-title.html"),
+            "<section></section>",
+        )
+        .unwrap();
+        fs::write(
+            fixture._deck.path().join("plan.json"),
+            r#"{"schema_version":2,"title":"Q","status":"draft","objective":"Show trusted prompts.","review_questions":[{"id":"question-scope","question":"Is the scope clear?","target":{"type":"slide","path":"slides/01-title.html"},"tags":["scope"]},{"id":"question-risk","question":"Is the risk accepted?","target":{"type":"plan_record","kind":"risk","id":"risk-rollout"}}],"outcomes":[{"id":"outcome-review","description":"Review prompts visible.","proof":["unit test"]}],"constraints":[],"non_goals":[],"decisions":[],"workstreams":[{"id":"ws-review","title":"Review","status":"todo","owner":"test","tasks":[{"id":"task-review","title":"Review","status":"todo","owner":"test","outcomes":["outcome-review"],"dependencies":[],"files":["plan.json"],"acceptance_checks":["Prompts are visible."],"verification":{"intent":"Check trusted prompts.","commands":["cargo test review_http_questions_endpoint_is_read_only_trusted_context"]}}]}],"risks":[{"id":"risk-rollout","description":"Rollout risk","likelihood":"medium","impact":"high","mitigation":"Stage it"}]}"#,
+        )
+        .unwrap();
+        let get = b"GET /__sideshow/review/questions HTTP/1.1\r\nHost: localhost:8000\r\nX-Sideshow-Review: test-nonce\r\n\r\n";
+
+        let response = exchange_with_review(get, Arc::clone(&fixture.server));
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+        assert!(response.contains("\"questions\":"));
+        assert!(response.contains("question-scope"));
+        assert!(response.contains("plan_record"));
+        assert_eq!(
+            fixture.server.repository.load_snapshot().unwrap().revision,
+            0
+        );
+
+        let bad_nonce = b"GET /__sideshow/review/questions HTTP/1.1\r\nHost: localhost:8000\r\nX-Sideshow-Review: wrong\r\n\r\n";
+        let response = exchange_with_review(bad_nonce, Arc::clone(&fixture.server));
+        assert!(response.starts_with("HTTP/1.1 403 Forbidden"));
+    }
+
+    #[test]
     fn review_http_requires_well_formed_matching_if_match() {
         let fixture = review_fixture();
         let body = r#"{"operation":"delete","revision":0,"id":"missing"}"#;
@@ -4610,6 +4697,7 @@ mod serve_tests {
                     body: "other process".into(),
                     kind: sideshow::review::ReviewKind::Note,
                     action: None,
+                    question_id: Some("question-follow-up".into()),
                 },
             })
             .unwrap();
@@ -4765,7 +4853,8 @@ mod serve_tests {
         )
         .unwrap();
         fs::write(deck.join("theme.css"), "body{}").unwrap();
-        fs::write(deck.join("packs/local/pack.toml"), "schema_version=1\npack='local'\n[[components]]\nname='safe-card'\ntemplate='c/card.html'\ncss='c/card.css'\nprops=['title']\ncapabilities=['js-free']\n").unwrap();
+        fs::write(deck.join("packs/local/pack.toml"), "schema_version=2\npack='local'\n[[components]]\nname='safe-card'\ntemplate='c/card.html'\ncss='c/card.css'\nprops=['title']\ncapabilities=['js-free']
+cognitive_contract={relationship_communicated='demo relationship',when_to_use='use for safe demo cards',when_misleading='misleading for production evidence'}\n").unwrap();
         fs::write(deck.join("packs/local/c/card.html"), "<h1>{{title}}</h1>").unwrap();
         fs::write(
             deck.join("packs/local/c/card.css"),

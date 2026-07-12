@@ -397,6 +397,14 @@ invariant 2.
   source paths, and source digests. Executable-looking verification commands are
   not trusted from persisted JSON; handoffs regenerate them from the canonical
   repository deck context.
+- Annotation targets are either slide-local points/regions or explicitly
+  deck-wide. Deck-wide targets omit slide ID, source path, coordinates, and source
+  digest rather than borrowing the active slide. They are current for their
+  captured build, stale after a different accepted build, and never orphaned.
+- Schema v2 stores only the latest accepted build manifest. Its revision is an
+  optimistic-concurrency sequence, not a viewable history of rendered decks.
+  `stale` and `orphaned` preserve annotation workflow, but reviewers currently
+  cannot reopen the exact older rendering from the artifact alone.
 - Rebuilds update freshness only. Annotations are not dropped when slides change:
   `freshness` (`current`, `stale`, `orphaned`) is derived from the latest build
   manifest and remains orthogonal to workflow `state` (`todo`, `resolved`) and
@@ -419,6 +427,35 @@ invariant 2.
   delimiters. Persisted fields, bodies, hints, notes, paths, and embedded commands
   are data only. Markdown is a prompt-oriented handoff for agents.
 
+### Future review workspace memory (not implemented)
+
+Dogfood review established that revision memory belongs in the review workspace,
+not the published presentation. A future bounded revision store should retain
+immutable accepted review builds so a reviewer can reopen what an annotation
+originally referred to, compare that slide with current output, and understand
+how a deck evolved without remembering temporary file paths.
+
+- Keep final `dist/*.html` free of prior builds, review UI, annotations, and
+  revision metadata.
+- Key historical renderings by build ID and retain their timestamp, slide/source
+  manifest, source digests, and exact served HTML. An annotation's captured build
+  ID should open that rendering when it is still retained.
+- Keep annotation bodies and association metadata untrusted at every revision.
+  Historical compiler output does not promote reviewer text into authored source.
+- Provide explicit count/byte budgets, content-addressed deduplication where
+  practical, and visible pruning rather than unbounded state growth.
+- Let a separate review export bundle include selected history when portability is
+  requested; ordinary build and publish commands still distribute only the final
+  deck.
+
+Ordinary decks may author validated deck/slide review questions under
+`[[review.questions]]` in `deck.toml`; planning decks may additionally author
+plan-record questions in `plan.json`. IDs are unique across both trusted sources,
+and invalid or ambiguous trusted context fails closed. The served UI and handoff
+load those prompts separately from mutable review data. Answers and question-ID
+associations remain untrusted, and neither prompts nor review state are embedded
+in ordinary build output.
+
 ## Dependencies (Rust)
 
 clap, serde/toml, comrak, base64, cap-std, and a pure-Rust TrueType subset stack.
@@ -436,3 +473,32 @@ flake devShell / package wrapper), shelled out to — not linked. rodney is
 - No reveal.js — but the runtime is intentionally small enough that
   swapping a different runtime in later is a build-step change, not a
   rewrite.
+## Component cognitive contracts
+
+Every component registry entry carries a machine-readable `cognitive_contract`.
+The contract is intentionally stable and small:
+
+- `relationship_communicated`: what relationship the component tells the audience to infer.
+- `when_to_use`: the authoring situation where the component is appropriate.
+- `when_misleading`: situations where the same shape would overstate, flatten, or distort the content.
+
+Bundled components must declare nonblank contracts in `src/bundled/default-pack.toml`.
+Project-local and user registry component manifests must also declare the same object;
+missing fields, unknown fields, unsupported schema versions, or blank contract text fail during
+registry loading before compose/build/vendor operations can use the component. The registry JSON
+emitted by `registry list` and `registry explain` includes the contract under
+`metadata.cognitive_contract`, so tools can make deterministic component-selection decisions
+without scraping prose docs. Vendoring preserves the contract in the copied `pack.toml`.
+
+Dogfood showed that contract metadata is necessary but not sufficient. A component
+can name the correct topic and still reduce a causal sequence, responsibility
+handoff, or feedback cycle to prose in boxes. Authors should use raw HTML/CSS when
+that is the least distorting path, while repeated reviewed patterns inform future
+project-local or bundled flow primitives. Product work should focus on narrow
+relationship shapes rather than a generic diagram editor.
+
+Theme and component previews should also make content positioning visible. Sparse
+and balanced slides generally benefit from vertical centering; dense reading slides
+may intentionally start near the top. A future layout contract should make that
+choice explicit and overridable instead of letting every theme/component drift to
+the same top-weighted default.

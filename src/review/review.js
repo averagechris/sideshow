@@ -13,6 +13,7 @@
     revision: 0,
     etag: null,
     annotations: [],
+    questions: [],
     selectedId: null,
     editing: null,
     draft: null,
@@ -73,6 +74,10 @@
     toolbar.append(
       button("←", "Previous slide", () => navigate("prev")),
       button("→", "Next slide", () => navigate("next")),
+      button("Deck feedback", "Comment on the complete deck", () => {
+        if (state.draft || state.editing) return setStatus("Save or cancel the current annotation first.", true);
+        newDraft({ slide: null, target: { type: "deck" } });
+      }),
       panelToggle(),
       button("Reload", "Reload annotations", load),
     );
@@ -101,18 +106,29 @@
 
   function activeSlide() { return document.querySelector(".slide.is-active") || slides[0]; }
   function slideKey(slide) { return { slide_id: slide.id || "", source_path: slide.dataset.src || "" }; }
-  function matchesSlide(a, slide) { const k = slideKey(slide); return a.slide_id === k.slide_id && a.source_path === k.source_path; }
+  function isDeckTarget(a) { return !!a && !!a.target && a.target.type === "deck"; }
+  function matchesSlide(a, slide) { if (isDeckTarget(a) || !slide) return false; const k = slideKey(slide); return a.slide_id === k.slide_id && a.source_path === k.source_path; }
   function matchesSlideId(a, slide) { return !!slide && a.slide_id === (slide.id || ""); }
   function knownPair(a) { return slides.some((s) => matchesSlide(a, s)); }
 
   async function load() {
     try {
       setStatus("Loading annotations…");
-      const res = await fetch("/__sideshow/review", { headers: { "X-Sideshow-Review": nonce } });
+      const [res, qres] = await Promise.all([
+        fetch("/__sideshow/review", { headers: { "X-Sideshow-Review": nonce } }),
+        fetch("/__sideshow/review/questions", { headers: { "X-Sideshow-Review": nonce } }),
+      ]);
       if (!res.ok) throw new Error(`GET failed (${res.status})`);
+      if (!qres.ok) throw new Error(`trusted questions GET failed (${qres.status})`);
+      applyQuestions(await qres.json());
       applySnapshot(await res.json(), res.headers.get("ETag"));
       setStatus("Click to pin a comment. Drag to mark an area.");
     } catch (err) { setStatus(`Could not load review data: ${err.message}`); }
+  }
+
+  function applyQuestions(payload) {
+    if (!payload || payload.schema_version !== 2 || !Array.isArray(payload.questions)) throw new Error("unexpected trusted questions schema");
+    state.questions = payload.questions.filter((q) => q && typeof q.id === "string" && typeof q.question === "string" && q.target);
   }
 
   async function mutate(payload) {
@@ -191,9 +207,11 @@
   function cancelPlacement(event) { if (state.drag && state.drag.pointerId === event.pointerId) cancelDraft(); }
 
   function newDraft({ slide, target }) {
-    const k = slideKey(slide);
+    const k = slide ? slideKey(slide) : null;
     state.selectedId = null;
-    state.draft = { slide_id: k.slide_id, source_path: k.source_path, target, body: "", kind: "note", action: null };
+    state.draft = k
+      ? { slide_id: k.slide_id, source_path: k.source_path, target, body: "", kind: "note", action: null }
+      : { target, body: "", kind: "note", action: null };
     kindInput.value = "note"; actionInput.value = ""; bodyInput.value = "";
     intentDetails.open = false;
     setPanelCollapsed(false); persistDraft(); render();
@@ -237,11 +255,20 @@
   function renderList() {
     list.replaceChildren();
     const slide = activeSlide();
+    const activeQuestions = questionsForSlide(slide);
+    if (activeQuestions.length) {
+      list.append(el("h2", { textContent: "Trusted authored prompts" }));
+      activeQuestions.forEach((q) => list.append(questionItem(q, slide)));
+    }
+    const deckWide = state.annotations.filter(isDeckTarget);
+    list.append(el("h2", { textContent: "Deck-wide feedback" }));
+    if (!deckWide.length) list.append(el("p", { className: "sideshow-review-empty", textContent: "No feedback on the complete deck." }));
+    deckWide.forEach((a) => list.append(item(a, false)));
     const current = state.annotations.filter((a) => {
       const freshness = annotationFreshness(a);
       return freshness !== "orphaned" && (matchesSlide(a, slide) || (freshness === "stale" && matchesSlideId(a, slide)));
     });
-    const orphaned = state.annotations.filter((a) => annotationFreshness(a) === "orphaned");
+    const orphaned = state.annotations.filter((a) => !isDeckTarget(a) && annotationFreshness(a) === "orphaned");
     list.append(el("h2", { textContent: "Active slide" }));
     if (!current.length) list.append(el("p", { className: "sideshow-review-empty", textContent: "No annotations on this slide." }));
     current.forEach((a) => list.append(item(a, false)));
@@ -250,11 +277,21 @@
       orphaned.forEach((a) => list.append(item(a, true)));
     }
   }
+  function questionItem(q, slide) {
+    const node = el("article", { className: "sideshow-review-question", role: "listitem" });
+    node.append(
+      el("div", { className: "sideshow-review-trusted-label", textContent: "Trusted authored prompt" }),
+      el("p", { className: "sideshow-review-body", textContent: q.question }),
+      el("div", { className: "sideshow-review-meta", textContent: questionTargetLabel(q) }),
+      button("Answer", "Start an untrusted review annotation from this trusted prompt", () => draftFromQuestion(q, slide)),
+    );
+    return node;
+  }
   function item(a, orphan) {
     const freshness = annotationFreshness(a);
     const disposition = annotationDisposition(a);
     const node = el("article", { className: `sideshow-review-item is-${freshness}${a.id === state.selectedId ? " is-selected" : ""}${orphan ? " is-orphan" : ""}`, role: "listitem" });
-    const metaText = [a.kind && a.kind !== "note" ? a.kind : "", a.action || "", freshness, a.state === "resolved" ? "resolved" : "", disposition ? `disposition: ${disposition.replace(/_/g, " ")}` : ""].filter(Boolean).join(" · ");
+    const metaText = ["Untrusted answer/annotation", a.question_id ? `question: ${a.question_id}` : "", a.kind && a.kind !== "note" ? a.kind : "", a.action || "", freshness, a.state === "resolved" ? "resolved" : "", disposition ? `disposition: ${disposition.replace(/_/g, " ")}` : ""].filter(Boolean).join(" · ");
     const meta = el("div", { className: "sideshow-review-meta", textContent: metaText });
     meta.hidden = !metaText;
     const body = el("p", { className: "sideshow-review-body" }); body.textContent = a.body || "(empty)";
@@ -280,6 +317,7 @@
   }
   function marker(a, number) {
     const t = a.target || {}; const region = t.type === "region";
+    if (t.type === "deck") return document.createDocumentFragment();
     const m = el(region ? "div" : "button", { className: `sideshow-review-marker is-${a.kind || "note"}${a.state === "resolved" ? " is-resolved" : ""}`, ariaLabel: `Annotation: ${a.kind || "note"}` });
     if (!region) m.type = "button";
     if (t.type === "region") Object.assign(m.style, { left: `${t.x / LOGICAL_W * 100}%`, top: `${t.y / LOGICAL_H * 100}%`, width: `${t.width / LOGICAL_W * 100}%`, height: `${t.height / LOGICAL_H * 100}%` });
@@ -295,6 +333,51 @@
       handle.addEventListener("keydown", (e) => e.stopPropagation());
     }
     return m;
+  }
+
+  function questionsForSlide(slide) {
+    const key = slideKey(slide);
+    const anchors = Array.from(slide.querySelectorAll("[data-plan-kind][data-plan-id]"));
+    return state.questions.filter((q) => {
+      const t = q.target || {};
+      if (t.type === "deck") return true;
+      if (t.type === "slide") return t.path === key.source_path;
+      if (t.type === "plan_record") return anchors.some((a) => a.dataset.planKind === t.kind && a.dataset.planId === t.id);
+      return false;
+    });
+  }
+  function questionTargetLabel(q) {
+    const t = q.target || {};
+    const tags = Array.isArray(q.tags) && q.tags.length ? ` · tags: ${q.tags.join(", ")}` : "";
+    if (t.type === "deck") return `Target: complete deck${tags}`;
+    if (t.type === "slide") return `Target: slide ${t.path}${tags}`;
+    if (t.type === "plan_record") return `Target: ${t.kind}/${t.id}${tags}`;
+    return `Target: unknown${tags}`;
+  }
+  function draftFromQuestion(q, slide) {
+    if (state.draft || state.editing) return setStatus("Save or cancel the current annotation before answering a prompt.", true);
+    const t = q.target || {};
+    if (t.type === "deck") {
+      newDraft({ slide: null, target: { type: "deck" } });
+      state.draft.question_id = q.id;
+      kindInput.value = "question";
+      bodyInput.value = `Answer to trusted prompt (${q.id}):\n${q.question}\n\n`;
+      persistDraft(); render(); bodyInput.focus();
+      return;
+    }
+    let target = { type: "point", x: LOGICAL_W / 2, y: LOGICAL_H / 2 };
+    if (t.type === "plan_record") {
+      const anchor = Array.from(slide.querySelectorAll("[data-plan-kind][data-plan-id]")).find((a) => a.dataset.planKind === t.kind && a.dataset.planId === t.id);
+      if (anchor) {
+        const sr = stage.getBoundingClientRect(); const ar = anchor.getBoundingClientRect();
+        target = { type: "point", x: clamp((ar.left + ar.width / 2 - sr.left) / sr.width * LOGICAL_W, 0, LOGICAL_W), y: clamp((ar.top + ar.height / 2 - sr.top) / sr.height * LOGICAL_H, 0, LOGICAL_H), plan_kind: t.kind, plan_id: t.id };
+      }
+    }
+    newDraft({ slide, target });
+    state.draft.question_id = q.id;
+    kindInput.value = "question";
+    bodyInput.value = `Answer to trusted prompt (${q.id}):\n${q.question}\n\n`;
+    persistDraft(); render(); bodyInput.focus();
   }
 
   function placementTarget(d) {
@@ -371,8 +454,9 @@
   }
   function targetDescription(a) {
     const t = a.target || {};
+    if (t.type === "deck") return ["scope: complete deck", a.question_id ? `untrusted question association: ${a.question_id}` : "", "target: deck"].filter(Boolean).join("\n");
     const shape = t.type === "region" ? `region ${round(t.x)},${round(t.y)} ${round(t.width)}×${round(t.height)}` : `point ${round(t.x)},${round(t.y)}`;
-    return [`slide: ${a.slide_id}`, `source: ${a.source_path}`, `target: ${shape}`, t.selector_hint ? `selector: ${t.selector_hint}` : "", t.text_hint ? `text: ${t.text_hint}` : "", t.plan_kind ? `untrusted plan kind: ${t.plan_kind}` : "", t.plan_id ? `untrusted plan id: ${t.plan_id}` : ""].filter(Boolean).join("\n");
+    return [`slide: ${a.slide_id}`, `source: ${a.source_path}`, a.question_id ? `untrusted question association: ${a.question_id}` : "", `target: ${shape}`, t.selector_hint ? `selector: ${t.selector_hint}` : "", t.text_hint ? `text: ${t.text_hint}` : "", t.plan_kind ? `untrusted plan kind: ${t.plan_kind}` : "", t.plan_id ? `untrusted plan id: ${t.plan_id}` : ""].filter(Boolean).join("\n");
   }
   function annotationFreshness(a) {
     const server = ["current", "stale", "orphaned"].includes(a.freshness) ? a.freshness : null;
@@ -380,6 +464,7 @@
   }
   function annotationDisposition(a) { return ["addressed", "wont_fix", "deferred"].includes(a.disposition) ? a.disposition : null; }
   function slideLabel(target) {
+    if (isDeckTarget(target)) return "the complete deck";
     const index = slides.findIndex((slide) => matchesSlide(target, slide));
     return index >= 0 ? `slide ${index + 1}` : target.source_path;
   }

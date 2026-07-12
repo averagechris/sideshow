@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const REGISTRY_SCHEMA_VERSION: u32 = 1;
-pub const DEFAULT_PACK_SCHEMA_VERSION: u32 = 1;
+pub const DEFAULT_PACK_SCHEMA_VERSION: u32 = 2;
 pub const BUNDLED_DEFAULT_PACK: &str = "sideshow-defaults";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -58,6 +58,31 @@ pub struct RegistryMetadata {
     pub presets: BTreeMap<String, BTreeMap<String, PropertyValue>>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub file_slots: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cognitive_contract: Option<CognitiveContract>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CognitiveContract {
+    pub relationship_communicated: String,
+    pub when_to_use: String,
+    pub when_misleading: String,
+}
+
+impl CognitiveContract {
+    pub fn validate(&self, owner: &str) -> anyhow::Result<()> {
+        for (field, value) in [
+            ("relationship_communicated", &self.relationship_communicated),
+            ("when_to_use", &self.when_to_use),
+            ("when_misleading", &self.when_misleading),
+        ] {
+            if value.trim().is_empty() {
+                bail!("{owner} cognitive_contract.{field} must be nonblank");
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -136,6 +161,7 @@ impl RegistryMetadata {
             props: Vec::new(),
             presets: BTreeMap::new(),
             file_slots: Vec::new(),
+            cognitive_contract: None,
         }
     }
 
@@ -163,6 +189,7 @@ impl RegistryMetadata {
             props: Vec::new(),
             presets: BTreeMap::new(),
             file_slots: Vec::new(),
+            cognitive_contract: None,
         }
     }
 }
@@ -254,6 +281,7 @@ struct ComponentManifest {
     intent: Vec<String>,
     accepted_input: Vec<String>,
     capabilities: Vec<String>,
+    cognitive_contract: CognitiveContract,
     #[serde(default)]
     props: Vec<PropertySchema>,
     #[serde(default)]
@@ -311,6 +339,21 @@ fn bundled_resource_bytes(path: &str) -> Option<&'static [u8]> {
         }
         "bundled/components/semantic-lanes.html" => {
             Some(include_bytes!("bundled/components/semantic-lanes.html"))
+        }
+        "bundled/components/current-state-failure.html" => Some(include_bytes!(
+            "bundled/components/current-state-failure.html"
+        )),
+        "bundled/components/before-after.html" => {
+            Some(include_bytes!("bundled/components/before-after.html"))
+        }
+        "bundled/components/trust-boundary.html" => {
+            Some(include_bytes!("bundled/components/trust-boundary.html"))
+        }
+        "bundled/components/concrete-example.html" => {
+            Some(include_bytes!("bundled/components/concrete-example.html"))
+        }
+        "bundled/components/decision-feedback.html" => {
+            Some(include_bytes!("bundled/components/decision-feedback.html"))
         }
         "bundled/scaffolds/deck/deck.toml" => {
             Some(include_bytes!("bundled/scaffolds/deck/deck.toml"))
@@ -431,6 +474,7 @@ pub fn registry_document() -> anyhow::Result<RegistryDocument> {
         );
         metadata.props = component.props;
         metadata.presets = component.presets;
+        metadata.cognitive_contract = Some(component.cognitive_contract);
         entries.push(RegistryEntry {
             kind: "component".to_owned(),
             name: component.name,
@@ -541,6 +585,9 @@ fn parse_default_pack() -> anyhow::Result<DefaultPackManifest> {
                 component.name
             );
         }
+        component
+            .cognitive_contract
+            .validate(&format!("bundled component '{}'", component.name))?;
         let css = bundled_resource_bytes(&component.css).with_context(|| {
             format!(
                 "bundled component '{}' references missing css",
@@ -666,7 +713,11 @@ mod tests {
         assert_eq!(
             keys,
             vec![
+                "component/before-after",
                 "component/compare-options",
+                "component/concrete-example",
+                "component/current-state-failure",
+                "component/decision-feedback",
                 "component/decision-record",
                 "component/file-impact-outcomes",
                 "component/literal-card",
@@ -674,6 +725,7 @@ mod tests {
                 "component/plan-record-card",
                 "component/risk-register",
                 "component/show-dependencies",
+                "component/trust-boundary",
                 "component/verification-evidence",
                 "component/workstream-lanes",
                 "scaffold/deck",
@@ -684,6 +736,21 @@ mod tests {
             ]
         );
         assert!(doc.entries.iter().all(|e| e.provenance.source == "bundled"));
+        assert!(
+            doc.entries
+                .iter()
+                .all(|e| e.provenance.pack_schema_version == DEFAULT_PACK_SCHEMA_VERSION)
+        );
+        assert!(
+            doc.entries
+                .iter()
+                .filter(|e| e.kind == "component")
+                .all(|e| e
+                    .metadata
+                    .cognitive_contract
+                    .as_ref()
+                    .is_some_and(|c| c.validate(&e.name).is_ok()))
+        );
         let component = explain("component", "plan-primitives").unwrap();
         assert!(
             component
@@ -695,6 +762,15 @@ mod tests {
         assert_eq!(
             component.metadata.resource_path.as_deref(),
             Some("components/plan.css")
+        );
+        assert_eq!(
+            component
+                .metadata
+                .cognitive_contract
+                .as_ref()
+                .unwrap()
+                .relationship_communicated,
+            "plan execution state, dependency flow, risk, and evidence as canonical CSS primitives"
         );
     }
 

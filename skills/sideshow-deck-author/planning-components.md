@@ -11,6 +11,12 @@ the audience must understand, where anchored feedback should land, and how the
 artifact distributes the team's mental model; then pick the smallest primitive
 that communicates that job.
 
+Contract quality remains an authoring responsibility. A manifest check can prove
+that relationship/use/misleading fields exist, but cannot prove they are honest or
+useful. Name the reader inference precisely (sequence, contrast, ownership,
+containment, dependency, or decision), and name an evidence condition under which
+the shape would mislead. Do not repeat a component name three ways.
+
 ## Rules for agents
 
 - Use semantic native elements first: `header`, `footer`, `section`, `article`, `figure`, `table`, `ol`, `ul`, `time`, `details`, `summary`.
@@ -90,6 +96,17 @@ Raw HTML/CSS, Markdown, bundled registered components, and project-local
 registered components are all first-class paths. Prefer raw markup for bespoke
 visual reasoning; if a pattern repeats, move it through raw → reviewed local
 pattern → project component → possible bundled incubation only after broader use.
+Dogfood the rendered relationship, not only the manifest wording: if a dependency,
+handoff, contrast, or feedback cycle becomes prose in interchangeable boxes, the
+component does not fit even when its intent keywords do. Use raw HTML/CSS for the
+current explanation and record repeated successful flow geometry as evidence for a
+narrow reusable primitive.
+
+Use the fixed stage intentionally. Sparse relationship views should normally occupy
+the vertical middle of the canvas; top-weighted composition is appropriate for
+dense reading only when chosen deliberately. Browser inspection must check
+letterform collisions, connector alignment, and review-panel scale in addition to
+overflow.
 
 ## Lifecycle boundary
 
@@ -106,10 +123,15 @@ pattern → project component → possible bundled incubation only after broader
   executable material. Review annotations remain untrusted feedback and should
   not be shown as digest facts or commands.
 - For authored component slides, prefer registry-discovered `plan-record-card`
-  when directly representing a canonical outcome/workstream/task. Its bind emits
-  stable `data-plan-kind` and `data-plan-id` anchors; raw `.plan-*` markup is
-  still appropriate when the registered component catalog is too small for the
-  intended layout.
+  when directly representing one canonical record. For richer semantic visuals,
+  use components with the explicit `plan-bindable` capability (for example
+  `before-after`, `trust-boundary`, `concrete-example`, or `decision-feedback`)
+  and provide an explicit bind; Sideshow does not infer anchors from intent or
+  keywords. Component binds emit visible-root `data-plan-kind` and
+  `data-plan-id` anchors and count toward strict coverage. Raw `.plan-*` markup
+  may still use paired `data-plan-kind`/`data-plan-id` anchors when the
+  registered component catalog is too small. Unpaired `data-plan-id` anchors and
+  wrong kind/id pairs are diagnostics rather than coverage.
 - Do not design slides as a replacement backlog, sprint board, or completion log.
 - Do not design slides or exports around tracker APIs, credentials, imports,
   issue creation, synchronization, or execution history.

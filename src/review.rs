@@ -104,12 +104,19 @@ pub struct ReviewSlideManifest {
 #[serde(deny_unknown_fields)]
 pub struct ReviewAnnotation {
     pub id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub slide_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source_path: String,
     pub target: ReviewTarget,
     pub body: String,
     pub kind: ReviewKind,
     pub action: Option<ReviewAction>,
+    /// Optional untrusted association to an authored trusted review question. The question itself
+    /// is reloaded from plan.json when displayed/exported; this id never promotes the answer or
+    /// association into trusted source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question_id: Option<String>,
     /// Human workflow state. This is never inferred from build freshness.
     pub state: ReviewState,
     /// Explicit reviewer/agent disposition, independent of resolution and freshness.
@@ -133,6 +140,7 @@ pub struct ReviewAnnotation {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ReviewTarget {
+    Deck,
     Point {
         x: f64,
         y: f64,
@@ -208,12 +216,23 @@ pub enum ReviewFreshness {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct NewReviewAnnotation {
+    #[serde(default)]
     pub slide_id: String,
+    #[serde(default)]
     pub source_path: String,
     pub target: ReviewTarget,
     pub body: String,
     pub kind: ReviewKind,
     pub action: Option<ReviewAction>,
+    #[serde(default)]
+    pub question_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrustedReviewQuestions {
+    pub schema_version: u32,
+    pub questions: Vec<crate::plan::ReviewQuestion>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -543,6 +562,17 @@ impl ReviewRepository {
         Ok(self.load_artifact()?.snapshot())
     }
 
+    /// Separately exposed trusted authored prompts for the serve-time review runtime. This response
+    /// is intentionally disjoint from ordinary review artifacts/build output so untrusted answers
+    /// and metadata never become source authority.
+    pub fn trusted_questions(&self) -> Result<TrustedReviewQuestions, ReviewRepositoryError> {
+        Ok(TrustedReviewQuestions {
+            schema_version: REVIEW_SCHEMA_VERSION,
+            questions: crate::trusted_review_questions(&self.deck_root)
+                .map_err(|error| ReviewRepositoryError::Malformed(error.to_string()))?,
+        })
+    }
+
     /// Process-safe read-modify-write with optimistic revision checking.
     pub fn apply_mutation(
         &self,
@@ -727,6 +757,7 @@ impl ReviewRepository {
             canonical_deck_root: &'a str,
             artifact_path: &'a str,
             verification_commands: [String; 2],
+            review_questions: Vec<crate::plan::ReviewQuestion>,
         }
 
         #[derive(Serialize)]
@@ -748,6 +779,8 @@ impl ReviewRepository {
                 canonical_deck_root: &canonical_deck_root,
                 artifact_path: &artifact_path,
                 verification_commands: self.trusted_verification_commands(),
+                review_questions: crate::trusted_review_questions(&self.deck_root)
+                    .map_err(|error| ReviewRepositoryError::Malformed(error.to_string()))?,
             },
             untrusted_review_artifact: &artifact,
         };
@@ -773,17 +806,33 @@ impl ReviewRepository {
         } else {
             output.push_str("- Build: not recorded\n");
         }
+        let review_questions = crate::trusted_review_questions(&self.deck_root)
+            .map_err(|error| ReviewRepositoryError::Malformed(error.to_string()))?;
+        output.push_str("\n## Trusted explicit review questions\n");
+        if review_questions.is_empty() {
+            output.push_str("\nNo trusted explicit review questions.\n");
+        }
+        for question in review_questions {
+            output.push_str(&format!(
+                "\n- ID: {}\n  Target: {}\n  Question: {}\n",
+                markdown_inline_code(&question.id),
+                markdown_inline_code(&trusted_review_question_target(&question.target)),
+                markdown_text(&question.question)
+            ));
+            if !question.tags.is_empty() {
+                output.push_str(&format!("  Tags: `{}`\n", question.tags.join("`, `")));
+            }
+        }
         output.push_str("\n## Annotations\n");
         if artifact.annotations.is_empty() {
             output.push_str("\nNo annotations.\n");
         }
         for (index, annotation) in artifact.annotations.iter().enumerate() {
             output.push_str(&format!(
-                "\n### Annotation {}\n\n- ID: {}\n- Source: {}\n- Slide: {}\n- Workflow: `{:?}`\n- Freshness: `{:?}`\n- Disposition: `{:?}`\n- Kind/action: `{:?}` / `{}`\n- Target: `{}`\n",
+                "\n### Annotation {}\n\n- ID: {}\n- Scope: {}\n- Workflow: `{:?}`\n- Freshness: `{:?}`\n- Disposition: `{:?}`\n- Kind/action: `{:?}` / `{}`\n- Target: `{}`\n",
                 index + 1,
                 markdown_inline_code(&annotation.id),
-                markdown_inline_code(&annotation.source_path),
-                markdown_inline_code(&annotation.slide_id),
+                if matches!(annotation.target, ReviewTarget::Deck) { "deck".into() } else { format!("slide {} ({})", markdown_inline_code(&annotation.slide_id), markdown_inline_code(&annotation.source_path)) },
                 annotation.state,
                 annotation.freshness,
                 annotation.disposition,
@@ -794,6 +843,19 @@ impl ReviewRepository {
                     .unwrap_or_else(|| "none".into()),
                 target_summary(&annotation.target),
             ));
+            if !matches!(annotation.target, ReviewTarget::Deck) {
+                output.push_str(&format!(
+                    "- Source: {}\n- Slide: {}\n",
+                    markdown_inline_code(&annotation.source_path),
+                    markdown_inline_code(&annotation.slide_id)
+                ));
+            }
+            if let Some(question_id) = &annotation.question_id {
+                output.push_str(&format!(
+                    "- Untrusted question association: {}\n",
+                    markdown_inline_code(question_id)
+                ));
+            }
             let (selector_hint, text_hint, plan_kind, plan_id) = target_hints(&annotation.target);
             if let Some(hint) = selector_hint {
                 output.push_str(&format!(
@@ -1457,8 +1519,9 @@ fn apply_mutation_to_annotations(
                     break candidate;
                 }
             };
-            let captured = match build {
-                Some(manifest) => {
+            let captured = match (build, &annotation.target) {
+                (Some(manifest), ReviewTarget::Deck) => Some((manifest.build_id.clone(), None)),
+                (Some(manifest), _) => {
                     let slide = manifest
                         .slides
                         .iter()
@@ -1472,9 +1535,9 @@ fn apply_mutation_to_annotations(
                                     .into(),
                             )
                         })?;
-                    Some((manifest.build_id.clone(), slide.source_digest.clone()))
+                    Some((manifest.build_id.clone(), Some(slide.source_digest.clone())))
                 }
-                None => None,
+                (None, _) => None,
             };
             let mut created = ReviewAnnotation {
                 id,
@@ -1484,13 +1547,14 @@ fn apply_mutation_to_annotations(
                 body: annotation.body,
                 kind: annotation.kind,
                 action: annotation.action,
+                question_id: annotation.question_id,
                 state: ReviewState::Todo,
                 disposition: ReviewDisposition::Pending,
                 disposition_note: None,
                 disposition_updated_at_ms: None,
                 freshness: ReviewFreshness::Current,
                 captured_build_id: captured.as_ref().map(|(id, _)| id.clone()),
-                captured_source_digest: captured.map(|(_, digest)| digest),
+                captured_source_digest: captured.and_then(|(_, digest)| digest),
                 created_at_ms: now,
                 updated_at_ms: now,
             };
@@ -1594,6 +1658,12 @@ fn ensure_revision_available(artifact: &ReviewArtifact) -> Result<(), ReviewRepo
 }
 
 fn freshness_for(annotation: &ReviewAnnotation, manifest: &ReviewBuildManifest) -> ReviewFreshness {
+    if matches!(annotation.target, ReviewTarget::Deck) {
+        return match &annotation.captured_build_id {
+            Some(build_id) if build_id == &manifest.build_id => ReviewFreshness::Current,
+            _ => ReviewFreshness::Stale,
+        };
+    }
     let Some(slide) = manifest
         .slides
         .iter()
@@ -1689,8 +1759,11 @@ fn validate_manifest(manifest: &ReviewBuildManifest) -> Result<(), ReviewReposit
 
 fn validate_annotation(annotation: &ReviewAnnotation) -> Result<(), ReviewRepositoryError> {
     validate_single_line_value("annotation id", &annotation.id, MAX_ID_BYTES, false)?;
-    validate_single_line_value("slide id", &annotation.slide_id, MAX_ID_BYTES, false)?;
-    validate_source_path_value(&annotation.source_path)?;
+    validate_annotation_scope_value(
+        &annotation.target,
+        &annotation.slide_id,
+        &annotation.source_path,
+    )?;
     validate_bounded_text_value(
         "annotation body",
         &annotation.body,
@@ -1706,6 +1779,9 @@ fn validate_annotation(annotation: &ReviewAnnotation) -> Result<(), ReviewReposi
             true,
         )?;
     }
+    if let Some(question_id) = &annotation.question_id {
+        validate_single_line_value("question id", question_id, MAX_ID_BYTES, false)?;
+    }
     if let Some(build_id) = &annotation.captured_build_id {
         validate_single_line_value("captured build id", build_id, MAX_ID_BYTES, false)?;
     }
@@ -1716,10 +1792,51 @@ fn validate_annotation(annotation: &ReviewAnnotation) -> Result<(), ReviewReposi
 }
 
 fn validate_new_annotation(annotation: &NewReviewAnnotation) -> Result<(), ReviewMutationError> {
-    validate_single_line("slide id", &annotation.slide_id, MAX_ID_BYTES, false)?;
-    validate_source_path(&annotation.source_path)?;
+    validate_annotation_scope(
+        &annotation.target,
+        &annotation.slide_id,
+        &annotation.source_path,
+    )?;
     validate_body(&annotation.body)?;
-    validate_target(&annotation.target)
+    validate_target(&annotation.target)?;
+    if let Some(question_id) = &annotation.question_id {
+        validate_single_line("question id", question_id, MAX_ID_BYTES, false)?;
+    }
+    Ok(())
+}
+
+fn validate_annotation_scope(
+    target: &ReviewTarget,
+    slide_id: &str,
+    source_path: &str,
+) -> Result<(), ReviewMutationError> {
+    if matches!(target, ReviewTarget::Deck) {
+        if !slide_id.is_empty() || !source_path.is_empty() {
+            return Err(ReviewMutationError::Invalid(
+                "deck annotations must not carry slide identity".into(),
+            ));
+        }
+        return Ok(());
+    }
+    validate_single_line("slide id", slide_id, MAX_ID_BYTES, false)?;
+    validate_source_path(source_path)
+}
+
+fn validate_annotation_scope_value(
+    target: &ReviewTarget,
+    slide_id: &str,
+    source_path: &str,
+) -> Result<(), ReviewRepositoryError> {
+    if matches!(target, ReviewTarget::Deck) {
+        if !slide_id.is_empty() || !source_path.is_empty() {
+            return Err(ReviewRepositoryError::Invalid(
+                "deck annotations must not carry slide identity".into(),
+            ));
+        }
+        return Ok(());
+    }
+    validate_single_line_value("slide id", slide_id, MAX_ID_BYTES, false)?;
+    validate_source_path_value(source_path)
 }
 
 fn validate_body(body: &str) -> Result<(), ReviewMutationError> {
@@ -1837,6 +1954,7 @@ fn validate_target_value(target: &ReviewTarget) -> Result<(), ReviewRepositoryEr
 
 fn validate_target_inner(target: &ReviewTarget) -> Result<(), String> {
     let (x, y, width, height, selector_hint, text_hint, plan_kind, plan_id) = match target {
+        ReviewTarget::Deck => return Ok(()),
         ReviewTarget::Point {
             x,
             y,
@@ -1995,6 +2113,7 @@ fn default_next_annotation_id() -> u64 {
 
 fn target_summary(target: &ReviewTarget) -> String {
     match target {
+        ReviewTarget::Deck => "deck".into(),
         ReviewTarget::Point { x, y, .. } => format!("point({x:.1}, {y:.1})"),
         ReviewTarget::Region {
             x,
@@ -2008,6 +2127,7 @@ fn target_summary(target: &ReviewTarget) -> String {
 
 fn target_hints(target: &ReviewTarget) -> (Option<&str>, Option<&str>, Option<&str>, Option<&str>) {
     match target {
+        ReviewTarget::Deck => (None, None, None, None),
         ReviewTarget::Point {
             selector_hint,
             text_hint,
@@ -2052,6 +2172,18 @@ fn markdown_inline_code(value: &str) -> String {
     format!("{delimiter} {value} {delimiter}")
 }
 
+fn markdown_text(value: &str) -> String {
+    value.replace('\n', " ")
+}
+
+fn trusted_review_question_target(target: &crate::plan::ReviewQuestionTarget) -> String {
+    match target {
+        crate::plan::ReviewQuestionTarget::Deck => "deck".into(),
+        crate::plan::ReviewQuestionTarget::Slide { path } => format!("slide:{path}"),
+        crate::plan::ReviewQuestionTarget::PlanRecord { kind, id } => format!("{kind}:{id}"),
+    }
+}
+
 fn quote_markdown(value: &str) -> String {
     value
         .lines()
@@ -2094,6 +2226,7 @@ mod tests {
             body: "Tighten this title".into(),
             kind: ReviewKind::Issue,
             action: Some(ReviewAction::Fix),
+            question_id: None,
         }
     }
 
@@ -2155,6 +2288,93 @@ mod tests {
             edited.annotations[0].disposition,
             ReviewDisposition::Pending
         );
+    }
+
+    #[test]
+    fn question_id_is_untrusted_annotation_metadata() {
+        let mut store = ReviewStore::new("session".into());
+        let mut annotation = new_annotation();
+        annotation.question_id = Some("question-scope".into());
+
+        let snapshot = store
+            .apply(ReviewMutation::Create {
+                revision: 0,
+                annotation,
+            })
+            .unwrap();
+
+        assert_eq!(
+            snapshot.annotations[0].question_id.as_deref(),
+            Some("question-scope")
+        );
+        let edited = store
+            .apply(ReviewMutation::Edit {
+                revision: 1,
+                id: snapshot.annotations[0].id.clone(),
+                body: "answer stays untrusted".into(),
+                kind: ReviewKind::Question,
+                action: None,
+            })
+            .unwrap();
+        assert_eq!(
+            edited.annotations[0].question_id.as_deref(),
+            Some("question-scope")
+        );
+    }
+
+    #[test]
+    fn deck_annotations_omit_slide_identity_and_follow_build_freshness() {
+        let (_deck, _state, repository) = fixture();
+        let decoded: ReviewMutation = serde_json::from_str(
+            r#"{"operation":"create","revision":0,"annotation":{"target":{"type":"deck"},"body":"Deck feedback","kind":"note","action":null}}"#,
+        )
+        .unwrap();
+        let ReviewMutation::Create { annotation, .. } = decoded else {
+            panic!("expected create mutation");
+        };
+        assert!(annotation.slide_id.is_empty() && annotation.source_path.is_empty());
+        let built = repository
+            .update_build_manifest(0, manifest("aaa"))
+            .unwrap();
+        let created = repository
+            .apply_mutation(ReviewMutation::Create {
+                revision: built.revision,
+                annotation: NewReviewAnnotation {
+                    slide_id: String::new(),
+                    source_path: String::new(),
+                    target: ReviewTarget::Deck,
+                    body: "The complete narrative needs a stronger close".into(),
+                    kind: ReviewKind::Issue,
+                    action: Some(ReviewAction::Fix),
+                    question_id: Some("question-narrative".into()),
+                },
+            })
+            .unwrap();
+        let annotation = &created.annotations[0];
+        assert_eq!(annotation.freshness, ReviewFreshness::Current);
+        assert!(annotation.captured_source_digest.is_none());
+        let json = serde_json::to_value(annotation).unwrap();
+        assert!(json.get("slide_id").is_none());
+        assert!(json.get("source_path").is_none());
+
+        let rebuilt = repository
+            .update_build_manifest(created.revision, manifest("bbb"))
+            .unwrap();
+        assert_eq!(rebuilt.annotations[0].freshness, ReviewFreshness::Stale);
+        assert!(matches!(rebuilt.annotations[0].target, ReviewTarget::Deck));
+
+        let mut invalid = new_annotation();
+        invalid.target = ReviewTarget::Deck;
+        assert!(matches!(
+            repository.apply_mutation(ReviewMutation::Create {
+                revision: rebuilt.revision,
+                annotation: invalid,
+            }),
+            Err(ReviewRepositoryError::Invalid(_))
+        ));
+        let markdown = repository.handoff_markdown().unwrap();
+        assert!(markdown.contains("Scope: deck"));
+        assert!(markdown.contains("Untrusted question association"));
     }
 
     #[test]
@@ -2251,6 +2471,22 @@ mod tests {
                 .unwrap(),
             loaded
         );
+    }
+
+    #[test]
+    fn handoff_export_rejects_invalid_authored_review_questions() {
+        let (deck, _state, repository) = fixture();
+        fs::create_dir(deck.path().join("slides")).unwrap();
+        fs::write(deck.path().join("theme.css"), "").unwrap();
+        fs::write(deck.path().join("slides/01-title.html"), "<h1>Title</h1>").unwrap();
+        fs::write(
+            deck.path().join("plan.json"),
+            r#"{"schema_version":2,"title":"Invalid question","status":"draft","objective":"Reject invalid authored question targets.","review_questions":[{"id":"question-missing-slide","question":"Where did the slide go?","target":{"type":"slide","path":"slides/missing.html"}}],"outcomes":[{"id":"outcome-review","description":"Review question export is deterministic.","proof":["handoff fails"]}],"constraints":[],"non_goals":[],"decisions":[],"workstreams":[{"id":"ws-review","title":"Review","status":"todo","owner":"test","tasks":[{"id":"task-review","title":"Review","status":"todo","owner":"test","outcomes":["outcome-review"],"dependencies":[],"files":["plan.json"],"acceptance_checks":["Invalid questions are not hidden."],"verification":{"intent":"Reject invalid trusted context.","commands":["sideshow review export"]}}]}],"risks":[]}"#,
+        )
+        .unwrap();
+        let error = repository.handoff_json().unwrap_err().to_string();
+        assert!(error.contains("explicit review questions are unavailable"));
+        assert!(repository.handoff_markdown().is_err());
     }
 
     #[test]

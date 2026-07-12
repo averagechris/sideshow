@@ -417,9 +417,45 @@ Reuse Sideshow's existing review and markup ideas where they fit:
 - Review markup is commentary, not authority. Accepted changes are applied to
   `plan.json` and, when appropriate, authored slides; annotations never silently
   change the canonical plan.
+- Authors may add ordered `review_questions` to `plan.json` when they want to
+  direct reviewer attention. Each question has a stable kebab-case `id`, question
+  text, optional kebab-case tags, and a deterministic target: the complete deck,
+  an existing
+  authored slide source in deck slide order (`slides/*.html`, `slides/*.md`, or
+  component `slides/*.slide.toml`) or an existing canonical plan record
+  (`outcome`, `constraint`, `decision`, `workstream`, `task`, or `risk`). These
+  questions are trusted authored source and are preserved in plan JSON/Markdown
+  exports and review handoff trusted context. Invalid trusted questions fail
+  export rather than disappearing silently.
+- Review annotations may still carry optional plan association hints, but those
+  hints remain inside `UNTRUSTED_REVIEW_ARTIFACT`; they never override authored
+  `review_questions` or become trusted source.
+- During `sideshow plan serve`, the served-only review runtime fetches authored
+  prompts from `GET /__sideshow/review/questions`, a read-only endpoint separate
+  from the mutable annotation artifact and absent from ordinary build output.
+  The UI labels these as **Trusted authored prompt** and labels reviewer text as
+  untrusted answers/annotations. Prompt visibility is target-aware: deck targets
+  remain visible throughout review, slide targets match the active slide source
+  path, and plan-record targets match canonical
+  `kind/id` anchors visible on the active slide. If a canonical record appears
+  more than once, the question target remains that canonical record while any
+  answer is still disambiguated by the captured `slide_id`, `source_path`, and
+  nearest visible anchor hints. Starting an annotation from a prompt stores only
+  optional untrusted `question_id` association metadata; it never modifies or
+  promotes reviewer answers into trusted plan source.
 - The trust boundary is the same as deck fragments: plan data and notes are local
   source; generated output must not execute untrusted scripts, fetch remote code,
   or grant extra filesystem/network privileges.
+- The current review artifact retains only the latest build manifest. Review
+  revision numbers protect concurrent mutation; they do not let a reviewer reopen
+  a prior rendered plan. A future bounded review-only revision bundle may preserve
+  accepted rendered builds for comparison, but it must remain separate from final
+  plan/deck distribution and must keep all reviewer data untrusted.
+- Review annotations may target the complete deck without inventing slide identity.
+  Ordinary decks may author trusted deck/slide prompts under `[[review.questions]]`
+  in `deck.toml`; `plan_record` targets remain exclusive to `plan.json`. Duplicate
+  IDs across those trusted sources fail export. Answers and associations remain
+  untrusted schema-v2 artifact data.
 
 ## Guardrail philosophy
 
@@ -523,3 +559,8 @@ prototype CLI.
   components use, while compile-time compiler templates continue to use Askama?
 - Do dependency diagrams need a build-time graph layout dependency in v1, or are
   semantic tables and swimlanes enough for the prototype?
+- What bounded review revision format can preserve exact older renderings for
+  comparison without leaking them into final published output or growing local
+  state without limit?
+- Should the shared review model add an explicit deck-wide annotation target and a
+  trusted ordinary-deck question source alongside plan `review_questions`?

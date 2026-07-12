@@ -129,6 +129,40 @@
   color: var(--plan-accent);
 }
 
+.failure-sequence,
+.before-after-grid,
+.boundary-map,
+.decision-request {
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+}
+
+.current-state-failure .failure-mode {
+  border-inline-start: 0.45rem solid var(--plan-risk);
+}
+
+.before-after .before-panel {
+  opacity: 0.82;
+}
+
+.before-after .after-panel {
+  border-inline-start: 0.45rem solid var(--plan-good);
+}
+
+.trust-boundary .boundary-interface {
+  border-style: dashed;
+  border-color: var(--plan-accent);
+}
+
+.annotated-example pre {
+  overflow: auto;
+  margin: 0 0 0.8rem;
+  white-space: pre-wrap;
+}
+
+.annotated-example code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
 .plan-card h3,
 .plan-workstream h3,
 .plan-lane h3,

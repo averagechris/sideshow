@@ -405,7 +405,11 @@ fn registry_discovery_is_stable_bundled_and_clear() {
     assert_eq!(
         keys,
         vec![
+            "component/before-after",
             "component/compare-options",
+            "component/concrete-example",
+            "component/current-state-failure",
+            "component/decision-feedback",
             "component/decision-record",
             "component/file-impact-outcomes",
             "component/literal-card",
@@ -413,6 +417,7 @@ fn registry_discovery_is_stable_bundled_and_clear() {
             "component/plan-record-card",
             "component/risk-register",
             "component/show-dependencies",
+            "component/trust-boundary",
             "component/verification-evidence",
             "component/workstream-lanes",
             "scaffold/deck",
@@ -426,6 +431,11 @@ fn registry_discovery_is_stable_bundled_and_clear() {
         entries
             .iter()
             .all(|entry| entry["provenance"]["source"] == "bundled")
+    );
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry["provenance"]["pack_schema_version"] == 2)
     );
     let signal = entries
         .iter()
@@ -978,6 +988,8 @@ fn plan_markdown_export_hardens_hostile_authored_prose() {
     plan["outcomes"][0]["proof"][0] = serde_json::json!(format!("Proof\n{hostile}"));
     plan["constraints"][0]["description"] = serde_json::json!(format!("Constraint {hostile}"));
     plan["non_goals"][0] = serde_json::json!(format!("Non-goal\n{hostile}"));
+    plan["review_questions"][0]["question"] =
+        serde_json::json!(format!("Review question\n{hostile}"));
     plan["workstreams"][0]["title"] = serde_json::json!(format!("Workstream {hostile}"));
     plan["workstreams"][0]["owner"] = serde_json::json!(format!("Owner {hostile}"));
     plan["workstreams"][0]["tasks"][0]["title"] = serde_json::json!(format!("Task {hostile}"));
@@ -1042,7 +1054,7 @@ fn plan_markdown_export_hardens_hostile_authored_prose() {
     assert!(rendered.contains("Objective<br />\nvisible # heading<br />"));
     assert_eq!(md.matches("### Issue source packet:").count(), 3);
     assert_eq!(markdown_heading_count_outside_fences(&md, "# "), 1);
-    assert_eq!(markdown_heading_count_outside_fences(&md, "## "), 8);
+    assert_eq!(markdown_heading_count_outside_fences(&md, "## "), 9);
     assert!(md.contains("  - Acceptance"));
     assert!(md.contains("      visible # heading  \n      \\# heading  \n      \\- list  \n      \\+ list  \n      &gt; quote  \n      1\\. ordered"));
     assert!(md.contains("- Files:\n  - src/lib.rs  \n      visible"));
@@ -1308,6 +1320,7 @@ fn seed_review(
                 body: "private annotation body".into(),
                 kind: ReviewKind::Issue,
                 action: Some(ReviewAction::Fix),
+                question_id: Some("question-cli-review".into()),
             },
         })
         .unwrap()

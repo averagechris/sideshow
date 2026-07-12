@@ -9,7 +9,7 @@ fn write_user_pack(root: &Path, theme_name: &str, css: &str) {
     fs::write(
         root.join("pack.toml"),
         format!(
-            "schema_version=1\npack='user-pack'\n[[themes]]\nname='{theme_name}'\ncss='themes/{theme_name}.css'\n"
+            "schema_version=2\npack='user-pack'\n[[themes]]\nname='{theme_name}'\ncss='themes/{theme_name}.css'\n"
         ),
     )
     .unwrap();
@@ -21,7 +21,8 @@ fn write_user_component_pack(root: &Path, name: &str, template: &str, css: &str)
     fs::write(
         root.join("pack.toml"),
         format!(
-            "schema_version=1\npack='user-pack'\n[[components]]\nname='{name}'\ntemplate='components/{name}.html'\ncss='components/{name}.css'\nprops=['title']\ncapabilities=['component-slide','html-escaped','js-free']\nintent=['demo']\naccepted_input=[]\n"
+            "schema_version=2\npack='user-pack'\n[[components]]\nname='{name}'\ntemplate='components/{name}.html'\ncss='components/{name}.css'\nprops=['title']\ncapabilities=['component-slide','html-escaped','js-free']
+cognitive_contract={{relationship_communicated='demo relationship',when_to_use='use for safe demo cards',when_misleading='misleading for production evidence'}}\nintent=['demo']\naccepted_input=[]\n"
         ),
     )
     .unwrap();
@@ -287,6 +288,12 @@ fn vendor_component_survives_user_config_and_source_removal() {
             .unwrap()
             .contains("packs/vendor/user-pack-user-card")
     );
+    let vendored_manifest =
+        fs::read_to_string(deck.join("packs/vendor/user-pack-user-card/pack.toml")).unwrap();
+    assert!(vendored_manifest.contains("schema_version = 2"));
+    assert!(vendored_manifest.contains("relationship_communicated = \"demo relationship\""));
+    assert!(vendored_manifest.contains("when_to_use = \"use for safe demo cards\""));
+    assert!(vendored_manifest.contains("when_misleading = \"misleading for production evidence\""));
 
     fs::remove_file(&config).unwrap();
     fs::remove_dir_all(&pack).unwrap();
@@ -349,7 +356,8 @@ fn vendor_component_with_assets_survives_source_and_config_removal() {
     let pack = config_dir.join("packs/one");
     fs::create_dir_all(pack.join("components")).unwrap();
     fs::create_dir_all(pack.join("assets")).unwrap();
-    fs::write(pack.join("pack.toml"), "schema_version=1\npack='user-pack'\n[[components]]\nname='asset-card'\ntemplate='components/asset-card.html'\ncss='components/asset-card.css'\nprops=['title']\ncapabilities=['component-slide','html-escaped','js-free']\nintent=['demo']\n[[components.assets]]\npath='assets/icon.png'\n").unwrap();
+    fs::write(pack.join("pack.toml"), "schema_version=2\npack='user-pack'\n[[components]]\nname='asset-card'\ntemplate='components/asset-card.html'\ncss='components/asset-card.css'\nprops=['title']\ncapabilities=['component-slide','html-escaped','js-free']
+cognitive_contract={relationship_communicated='demo relationship',when_to_use='use for safe demo cards',when_misleading='misleading for production evidence'}\nintent=['demo']\n[[components.assets]]\npath='assets/icon.png'\n").unwrap();
     fs::write(
         pack.join("components/asset-card.html"),
         "<article><img src='assets/icon.png'><h1>{{title}}</h1></article>",
@@ -466,7 +474,8 @@ fn vendor_component_malformed_source_rejects_without_mutation() {
     let config_dir = t.path().join("cfg");
     let pack = config_dir.join("packs/one");
     fs::create_dir_all(&pack).unwrap();
-    fs::write(pack.join("pack.toml"), "schema_version=1\npack='user-pack'\n[[components]]\nname='bad-card'\ntemplate='components/missing.html'\ncss='components/bad-card.css'\ncapabilities=['component-slide','html-escaped','js-free']\n").unwrap();
+    fs::write(pack.join("pack.toml"), "schema_version=2\npack='user-pack'\n[[components]]\nname='bad-card'\ntemplate='components/missing.html'\ncss='components/bad-card.css'\ncapabilities=['component-slide','html-escaped','js-free']
+cognitive_contract={relationship_communicated='demo relationship',when_to_use='use for safe demo cards',when_misleading='misleading for production evidence'}\n").unwrap();
     fs::create_dir_all(pack.join("components")).unwrap();
     fs::write(pack.join("components/bad-card.css"), ".x{color:red}").unwrap();
     let config = config_dir.join("config.toml");

@@ -94,6 +94,27 @@ fn persisted_review_survives_restart_rebuild_and_explicit_handoff() {
     fs::write(deck.join("deck.toml"), "[deck]\ntitle='Dogfood'\n").unwrap();
     fs::write(deck.join("theme.css"), ":root { color: black; }\n").unwrap();
     fs::write(deck.join("slides/01-title.html"), "<h1>Before</h1>\n").unwrap();
+    fs::write(deck.join("plan.json"), r#"{
+  "schema_version": 2,
+  "title": "Dogfood",
+  "status": "draft",
+  "objective": "Exercise explicit authored review questions through trusted handoff export.",
+  "review_questions": [
+    {
+      "id": "question-title-specificity",
+      "question": "Is the title concrete enough for reviewers to act on?",
+      "target": { "type": "plan_record", "kind": "outcome", "id": "outcome-verification-scaffold" },
+      "tags": ["dogfood", "title"]
+    }
+  ],
+  "outcomes": [{"id":"outcome-verification-scaffold","description":"Review export keeps trusted questions separate from annotation data.","proof":["review-dogfood exports JSON and Markdown"]}],
+  "constraints": [],
+  "non_goals": [],
+  "decisions": [],
+  "workstreams": [{"id":"ws-review","title":"Review dogfood","status":"todo","owner":"test","tasks":[{"id":"task-review","title":"Run dogfood","status":"todo","owner":"test","outcomes":["outcome-verification-scaffold"],"dependencies":[],"files":["tests/review-dogfood.rs"],"acceptance_checks":["Questions are exported as trusted context."],"verification":{"intent":"Confirm review handoff carries trusted authored questions.","commands":["cargo test --test review-dogfood"]}}]}],
+  "risks": []
+}
+"#).unwrap();
     let tailwind = fake_tailwind(tmp.path());
     let port = TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -128,6 +149,7 @@ fn persisted_review_survives_restart_rebuild_and_explicit_handoff() {
                 body: "Make the title concrete".into(),
                 kind: ReviewKind::Issue,
                 action: Some(ReviewAction::Fix),
+                question_id: Some("question-scope-boundary".into()),
             },
         })
         .unwrap();
@@ -206,6 +228,10 @@ fn persisted_review_survives_restart_rebuild_and_explicit_handoff() {
     );
     let exported_handoff: serde_json::Value =
         serde_json::from_slice(&fs::read(&json_export).unwrap()).unwrap();
+    assert_eq!(
+        exported_handoff["trusted_context"]["review_questions"][0]["id"],
+        "question-title-specificity"
+    );
     let exported: sideshow::review::ReviewArtifact =
         serde_json::from_value(exported_handoff["UNTRUSTED_REVIEW_ARTIFACT"].clone()).unwrap();
     assert_eq!(exported, orphaned);
@@ -234,6 +260,9 @@ fn persisted_review_survives_restart_rebuild_and_explicit_handoff() {
     assert!(handoff.contains("Text hint: ` Before `"));
     assert!(handoff.contains("sideshow check"));
     assert!(handoff.contains("sideshow build"));
+    assert!(handoff.contains("Trusted explicit review questions"));
+    assert!(handoff.contains("question-title-specificity"));
+    assert!(handoff.contains("Is the title concrete enough"));
 
     let disposition = review_cli(&state)
         .args([

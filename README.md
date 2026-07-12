@@ -285,11 +285,34 @@ sideshow serve mydeck --review --open --port 8000
 ```
 
 Review mode adds comments to the local preview only: click to pin a point, or
-drag to mark a region. The comment is the only required input; optional intent
+drag to mark a region, or use **Deck feedback** for a comment about the complete
+narrative or review experience. The comment is the only required input; optional intent
 fields can record a type or suggested response when that context is useful.
-Comments carry the generated slide ID, source path, and 1920×1080 logical
-coordinates; they can be edited, resolved, reopened, deleted, or given an
-explicit disposition.
+Slide comments carry the generated slide ID, source path, and 1920×1080 logical
+coordinates. Deck-wide comments carry no fake slide identity. Both can be edited,
+resolved, reopened, deleted, or given an explicit disposition.
+
+Ordinary decks can author trusted review prompts in `deck.toml`; only deck and
+existing authored-slide targets are accepted:
+
+```toml
+[[review.questions]]
+id = "question-narrative"
+question = "Does the complete narrative support the requested decision?"
+target = { type = "deck" }
+tags = ["narrative"]
+
+[[review.questions]]
+id = "question-evidence"
+question = "Is this evidence sufficient?"
+target = { type = "slide", path = "slides/04-evidence.html" }
+```
+
+Planning decks may additionally use `plan_record` targets from `plan.json`.
+Authored prompts are returned from a separate read-only endpoint and labeled
+trusted; every answer and optional question-ID association remains inside the
+untrusted review artifact. Prompt data and review state are absent from ordinary
+build output.
 
 Review annotations persist across server restarts and rebuilds in a tool-neutral
 schema v2 JSON artifact under `$XDG_STATE_HOME/sideshow/reviews/`, falling back
