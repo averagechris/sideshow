@@ -122,6 +122,8 @@ fn persisted_review_survives_restart_rebuild_and_explicit_handoff() {
                     height: 120.0,
                     selector_hint: Some("h1".into()),
                     text_hint: Some("Before".into()),
+                    plan_kind: Some("outcome".into()),
+                    plan_id: Some("outcome-verification-scaffold".into()),
                 },
                 body: "Make the title concrete".into(),
                 kind: ReviewKind::Issue,

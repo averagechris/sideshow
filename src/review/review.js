@@ -321,6 +321,13 @@
     const out = {}; const id = target.id ? `#${target.id}` : ""; const cls = target.className && typeof target.className === "string" ? `.${target.className.trim().split(/\s+/).slice(0, 2).join(".")}` : "";
     if (id || cls) out.selector_hint = `${target.tagName.toLowerCase()}${id}${cls}`;
     const text = (target.textContent || "").replace(/\s+/g, " ").trim(); if (text) out.text_hint = text.slice(0, 120);
+    const plan = target.closest("[data-plan-kind][data-plan-id]");
+    if (plan) {
+      out.plan_kind = (plan.dataset.planKind || "").slice(0, 256);
+      out.plan_id = (plan.dataset.planId || "").slice(0, 256);
+      if (!out.plan_kind) delete out.plan_kind;
+      if (!out.plan_id) delete out.plan_id;
+    }
     return out;
   }
   function panelToggle() {
@@ -365,7 +372,7 @@
   function targetDescription(a) {
     const t = a.target || {};
     const shape = t.type === "region" ? `region ${round(t.x)},${round(t.y)} ${round(t.width)}×${round(t.height)}` : `point ${round(t.x)},${round(t.y)}`;
-    return [`slide: ${a.slide_id}`, `source: ${a.source_path}`, `target: ${shape}`, t.selector_hint ? `selector: ${t.selector_hint}` : "", t.text_hint ? `text: ${t.text_hint}` : ""].filter(Boolean).join("\n");
+    return [`slide: ${a.slide_id}`, `source: ${a.source_path}`, `target: ${shape}`, t.selector_hint ? `selector: ${t.selector_hint}` : "", t.text_hint ? `text: ${t.text_hint}` : "", t.plan_kind ? `untrusted plan kind: ${t.plan_kind}` : "", t.plan_id ? `untrusted plan id: ${t.plan_id}` : ""].filter(Boolean).join("\n");
   }
   function annotationFreshness(a) {
     const server = ["current", "stale", "orphaned"].includes(a.freshness) ? a.freshness : null;

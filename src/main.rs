@@ -4479,6 +4479,8 @@ mod serve_tests {
                         y: 2.0,
                         selector_hint: None,
                         text_hint: None,
+                        plan_kind: None,
+                        plan_id: None,
                     },
                     body: "other process".into(),
                     kind: sideshow::review::ReviewKind::Note,

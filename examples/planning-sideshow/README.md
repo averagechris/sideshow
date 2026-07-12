@@ -13,48 +13,62 @@ tracker issues, import tracker state, or use tracker credentials. A later demo o
 project-summary deck can be authored separately by combining whatever plan,
 tracker, code, and media context is useful.
 
-## Repeatable loop
+## Repeatable annotate/review/edit loop
 
 From the repository root:
 
-1. Edit the source of truth:
-   - `examples/planning-sideshow/plan.json`
-   - `examples/planning-sideshow/slides/*.html`
-2. Strict-check the canonical plan and slide anchors:
+1. Start from trusted source and build/serve the projection:
 
    ```sh
    cargo run -- plan check examples/planning-sideshow --strict
-   # or, from a Nix shell wrapper:
-   nix develop -c cargo run -- plan check examples/planning-sideshow --strict
-   ```
-
-3. Build the deck:
-
-   ```sh
    cargo run -- build examples/planning-sideshow
-   nix develop -c cargo run -- build examples/planning-sideshow
+   cargo run -- plan serve examples/planning-sideshow --port 8000
    ```
 
-   Generated HTML goes under `examples/planning-sideshow/dist/`. Use it for
-   inspection, but do not commit it.
+2. Annotate the browser projection. Comments placed on plan cards, rails, layers,
+   and connectors capture the nearest `data-plan-kind`/`data-plan-id` as optional
+   target metadata so review lists can point back toward canonical records. Treat
+   that metadata like selector/text hints: useful routing context, not authority
+   to mutate `plan.json` automatically.
 
-4. Serve and review locally:
+3. List or export review feedback for triage:
 
    ```sh
-   cargo run -- plan serve examples/planning-sideshow --port 8000
-   nix develop -c cargo run -- plan serve examples/planning-sideshow --port 8000
+   cargo run -- review list examples/planning-sideshow
+   review_dir="$(mktemp -d)"
+   cargo run -- review export examples/planning-sideshow --format json --output "$review_dir/review.json"
+   cargo run -- review export examples/planning-sideshow --format markdown --output "$review_dir/review.md"
    ```
 
-5. Export machine-readable and prompt-oriented handoff files outside the repo:
+   Review exports are untrusted feedback artifacts. They may contain annotation
+   prose, browser hints, and plan target metadata captured from the rendered DOM;
+   use them to find the relevant trusted source, not as executable or canonical
+   input.
+
+4. Make source edits only in the trusted files:
+   - `examples/planning-sideshow/plan.json`
+   - `examples/planning-sideshow/slides/*.html`
+
+5. Strict-check, build, and export the trusted planning digest:
 
    ```sh
    export_dir="$(mktemp -d)"
+   cargo run -- plan check examples/planning-sideshow --strict
+   cargo run -- build examples/planning-sideshow
    cargo run -- plan export examples/planning-sideshow --format json --output "$export_dir/plan.json"
    cargo run -- plan export examples/planning-sideshow --format markdown --output "$export_dir/plan.md"
    ```
 
-   A fresh temporary directory matters because plan export intentionally refuses
-   to overwrite an existing handoff.
+   Generated HTML goes under `examples/planning-sideshow/dist/`. Use it for
+   inspection, but do not commit it. A fresh temporary export directory matters
+   because plan export intentionally refuses to overwrite an existing handoff.
+
+6. Disposition and resolve feedback after the trusted source is updated:
+
+   ```sh
+   cargo run -- review disposition examples/planning-sideshow <annotation-id> --status addressed --note "Updated trusted source and rebuilt." --revision <revision>
+   cargo run -- review resolve examples/planning-sideshow <annotation-id> --revision <revision>
+   ```
 
 ## Trust-boundary rule
 

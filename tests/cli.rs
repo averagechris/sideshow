@@ -1295,6 +1295,8 @@ fn seed_review(
                     height: 40.0,
                     selector_hint: Some("h1".into()),
                     text_hint: Some("T".into()),
+                    plan_kind: Some("outcome".into()),
+                    plan_id: Some("outcome-cli-review".into()),
                 },
                 body: "private annotation body".into(),
                 kind: ReviewKind::Issue,
