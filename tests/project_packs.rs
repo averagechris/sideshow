@@ -37,6 +37,27 @@ fn write_pack(deck: &Path) {
 }
 
 #[test]
+fn pack_rejects_entity_obfuscated_remote_and_active_urls() {
+    for html in [
+        "<a href='java&#x73;cript:alert(1)'>x</a>{{title}}",
+        "<img src='data&#58;text/html;base64,PHNjcmlwdA=='>{{title}}",
+        "<img src='http&#x3a;//example.test/x'>{{title}}",
+        "<img src='https&#58;//example.test/x'>{{title}}",
+        "<img src='//example.test/x'>{{title}}",
+        "<source srcset='safe.png 1x, https&#58;//example.test/x 2x'>{{title}}",
+    ] {
+        let t = tempfile::tempdir().unwrap();
+        write_pack(t.path());
+        fs::write(t.path().join("packs/local/components/card.html"), html).unwrap();
+        let out = bin()
+            .args(["registry", "list", "--deck", t.path().to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "accepted {html}");
+    }
+}
+
+#[test]
 fn project_component_build_discovery_compose_and_theme_apply_work() {
     let t = tempfile::tempdir().unwrap();
     write_pack(t.path());

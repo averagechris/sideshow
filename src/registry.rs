@@ -56,6 +56,8 @@ pub struct RegistryMetadata {
     pub props: Vec<PropertySchema>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
     pub presets: BTreeMap<String, BTreeMap<String, PropertyValue>>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub file_slots: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -133,6 +135,7 @@ impl RegistryMetadata {
             files: Vec::new(),
             props: Vec::new(),
             presets: BTreeMap::new(),
+            file_slots: Vec::new(),
         }
     }
 
@@ -159,6 +162,7 @@ impl RegistryMetadata {
             files,
             props: Vec::new(),
             presets: BTreeMap::new(),
+            file_slots: Vec::new(),
         }
     }
 }

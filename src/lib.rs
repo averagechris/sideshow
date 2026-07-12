@@ -224,7 +224,7 @@ pub mod project_packs {
                             ));
                         }
                         if matches!(attr_name.as_str(), "src" | "href" | "srcset" | "style")
-                            && (value.contains("javascript:") || value.contains("data:text/html"))
+                            && active_or_remote_reference(&value)
                         {
                             attr_error = Some(anyhow::anyhow!(
                                 "project component {name} contains forbidden decoded active reference"
@@ -282,6 +282,19 @@ pub mod project_packs {
         }
         out.push_str(rest);
         out
+    }
+
+    fn active_or_remote_reference(value: &str) -> bool {
+        let compact: String = value
+            .chars()
+            .filter(|c| !c.is_ascii_whitespace() && *c != '\0')
+            .collect();
+        compact.contains("javascript:")
+            || compact.contains("data:")
+            || compact.contains("http://")
+            || compact.contains("https://")
+            || compact.starts_with("//")
+            || compact.contains(",//")
     }
 
     fn reject_placeholders_in_tags(name: &str, s: &str) -> anyhow::Result<()> {
@@ -827,6 +840,7 @@ pub mod project_packs {
                 };
                 metadata.props = effective_schema.clone();
                 metadata.presets = c.presets.clone();
+                metadata.file_slots = c.files.clone();
                 let entry = registry::RegistryEntry {
                     kind: "component".into(),
                     name: c.name.clone(),
@@ -989,9 +1003,24 @@ pub mod project_packs {
             {
                 bail!("component file input must be deck-relative without traversal: {rel}");
             }
-            checked_descend(&deck_dir.canonicalize()?, rel, false)?;
+            validate_file_slot_input(&deck_dir.canonicalize()?, rel)?;
         }
         Ok(true)
+    }
+
+    pub(super) fn validate_file_slot_input(base: &Path, rel: &str) -> anyhow::Result<()> {
+        let path = checked_descend(base, rel, false)?;
+        let md = fs::metadata(&path)?;
+        if md.len() > 5 * 1024 * 1024 {
+            bail!("component file input {rel} exceeds 5MiB limit");
+        }
+        let mime = crate::mime_for(rel);
+        if !(mime.starts_with("image/")
+            || matches!(mime, "text/plain" | "text/markdown" | "application/pdf"))
+        {
+            bail!("component file input {rel} has unsupported MIME type {mime}");
+        }
+        Ok(())
     }
 
     pub(super) fn validate_prop_value(
@@ -1025,6 +1054,9 @@ pub mod project_packs {
         if ordered(files.to_vec()) != files {
             bail!("project component '{component}' file slots must be sorted unique");
         }
+        if !schema.is_empty() && !legacy_props.is_empty() {
+            bail!("project component '{component}' must not mix legacy props and schema");
+        }
         let declared = if schema.is_empty() {
             legacy_props.iter().cloned().collect::<BTreeSet<_>>()
         } else {
@@ -1037,6 +1069,12 @@ pub mod project_packs {
             }
             names
         };
+        for slot in files {
+            validate_registry_name(slot)?;
+            if declared.contains(slot) {
+                bail!("project component '{component}' file slot collides with prop {slot}");
+            }
+        }
         for (preset, values) in presets {
             validate_registry_name(preset)?;
             for (key, value) in values {
@@ -1097,6 +1135,7 @@ pub mod composition {
         pub component: String,
         pub registry: registry::RegistryEntry,
         pub props: BTreeMap<String, registry::PropertyValue>,
+        pub selected_presets: Vec<String>,
         pub effective_props: BTreeMap<String, registry::PropertyValue>,
         pub prop_provenance: BTreeMap<String, String>,
         pub files: BTreeMap<String, String>,
@@ -1250,6 +1289,7 @@ pub mod composition {
             effective_props: effective.values,
             prop_provenance: effective.provenance,
             props: slide.props,
+            selected_presets: slide.presets,
             files: slide.files,
             bind: slide.bind,
             trust_contract: TRUST_CONTRACT,
@@ -1343,9 +1383,17 @@ pub mod composition {
             .iter()
             .map(|(k, v)| (k.as_str(), Escaped::Owned(v.as_render_string())))
             .collect();
+        for prop in &component.entry.metadata.props {
+            values
+                .entry(prop.name.as_str())
+                .or_insert(Escaped::Text(""));
+        }
         let rendered_files = render_file_slots(deck_dir, &component, slide)?;
         for (k, v) in &rendered_files {
             values.insert(k.as_str(), Escaped::TrustedHtml(v));
+        }
+        for slot in &component.files {
+            values.entry(slot.as_str()).or_insert(Escaped::Text(""));
         }
         render_template_string(&component.name, &component.template, values).map(Some)
     }
@@ -1370,11 +1418,8 @@ pub mod composition {
             {
                 bail!("component file input must be deck-relative without traversal: {rel}");
             }
+            crate::project_packs::validate_file_slot_input(&base, rel)?;
             let path = crate::project_packs::checked_descend(&base, rel, false)?;
-            let md = fs::metadata(&path)?;
-            if md.len() > 5 * 1024 * 1024 {
-                bail!("component file input {rel} exceeds 5MiB limit");
-            }
             let bytes = fs::read(&path)?;
             let mime = crate::mime_for(rel);
             if !(mime.starts_with("image/")
@@ -3821,6 +3866,14 @@ pub fn check_deck(dir: &Path) -> Vec<CheckFinding> {
             return findings;
         }
     };
+    if let Err(e) = project_packs::load(dir, &deck) {
+        findings.push(CheckFinding {
+            path: deck_path.display().to_string(),
+            severity: FindingSeverity::Error,
+            kind: "project_packs".into(),
+            message: format!("configured project pack is invalid: {e:#}"),
+        });
+    }
     let slides_dir = dir.join("slides");
     let slides = match slide_order(dir, &deck) {
         Ok(s) => s,
@@ -4638,10 +4691,12 @@ pub fn build_deck_to(dir: &Path, out_dir: &Path) -> anyhow::Result<PathBuf> {
     for (rel, stem, is_md, html) in rendered_slides {
         let html = rewrite_asset_refs_with_state(dir, &html, deck.images, &mut rewrite_state)?;
         let class = if is_md { "slide slide-md" } else { "slide" };
+        let safe_stem = html_id_token(&stem);
+        let safe_rel = html_attr_escape(&rel);
         sections.push_str(&format!(
-            "<section class=\"{class}\" id=\"s-{stem}\" data-src=\"{rel}\">\n{html}\n</section>\n"
+            "<section class=\"{class}\" id=\"s-{safe_stem}\" data-src=\"{safe_rel}\">\n{html}\n</section>\n"
         ));
-        slide_sections.push((rel, stem, class, html));
+        slide_sections.push((safe_rel, safe_stem, class, html));
     }
     let mut css = compile_css(dir)?;
     if !deck.fonts.is_empty() {
@@ -4790,8 +4845,32 @@ fn mime_for(p: &str) -> &'static str {
         "webm" => "video/webm",
         "mp4" => "video/mp4",
         "css" => "text/css",
+        "txt" => "text/plain",
+        "md" | "markdown" => "text/markdown",
+        "pdf" => "application/pdf",
         _ => "application/octet-stream",
     }
+}
+
+fn html_id_token(s: &str) -> String {
+    let out = s
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    if out.is_empty() { "slide".into() } else { out }
+}
+
+fn html_attr_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn is_raster(p: &str) -> bool {
@@ -5279,11 +5358,7 @@ mod tests {
         )
         .unwrap();
         assert!(!out.contains("assets/a.txt"));
-        assert!(
-            out.matches("data:application/octet-stream;base64,aGk=")
-                .count()
-                == 2
-        );
+        assert!(out.matches("data:text/plain;base64,aGk=").count() == 2);
     }
 
     #[test]
@@ -5624,10 +5699,7 @@ mod tests {
         assert!(!out.contains("assets/s.txt"));
         assert!(!out.contains("assets/l.txt"));
         assert!(out.contains("data:image/png;base64,AA 2x"));
-        assert_eq!(
-            out.matches("data:application/octet-stream;base64,").count(),
-            4
-        );
+        assert_eq!(out.matches("data:text/plain;base64,").count(), 4);
     }
 
     #[test]

@@ -248,13 +248,34 @@ struct ComposeWriteArgs {
     /// Apply a named component preset. Repeatable; applied in order after defaults and before props.
     #[arg(long = "preset")]
     presets: Vec<String>,
+    /// Remove a preset on update.
+    #[arg(long = "remove-preset")]
+    remove_presets: Vec<String>,
+    /// Clear all presets on update.
+    #[arg(long)]
+    clear_presets: bool,
     /// Deck-relative file input slot as KEY=path; checked for traversal, symlinks, type, and existence.
     #[arg(long = "file", value_parser = parse_key_val)]
     files: Vec<(String, String)>,
+    /// Remove a file slot on update.
+    #[arg(long = "remove-file")]
+    remove_files: Vec<String>,
+    /// Clear all files on update.
+    #[arg(long)]
+    clear_files: bool,
+    /// Remove a prop on update.
+    #[arg(long = "remove-prop")]
+    remove_props: Vec<String>,
+    /// Clear all explicit props on update.
+    #[arg(long)]
+    clear_props: bool,
     #[arg(long = "bind-kind")]
     bind_kind: Option<String>,
     #[arg(long = "bind-id")]
     bind_id: Option<String>,
+    /// Clear existing bind on update.
+    #[arg(long)]
+    clear_bind: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1178,9 +1199,31 @@ fn registry_document_for_deck(deck: &Path) -> anyhow::Result<sideshow::registry:
 fn compose_command(command: ComposeCommand) -> anyhow::Result<()> {
     match command {
         ComposeCommand::Add(args) => {
+            if args.clear_props
+                || args.clear_presets
+                || args.clear_files
+                || args.clear_bind
+                || !args.remove_props.is_empty()
+                || !args.remove_presets.is_empty()
+                || !args.remove_files.is_empty()
+            {
+                anyhow::bail!("clear/remove options are only valid for compose update");
+            }
             reject_duplicate_keys("--preset", args.presets.iter().map(String::as_str))?;
             reject_duplicate_keys("--prop", args.props.iter().map(|(k, _)| k.as_str()))?;
             reject_duplicate_keys("--file", args.files.iter().map(|(k, _)| k.as_str()))?;
+            reject_duplicate_keys(
+                "--remove-preset",
+                args.remove_presets.iter().map(String::as_str),
+            )?;
+            reject_duplicate_keys(
+                "--remove-prop",
+                args.remove_props.iter().map(String::as_str),
+            )?;
+            reject_duplicate_keys(
+                "--remove-file",
+                args.remove_files.iter().map(String::as_str),
+            )?;
             let bind = match (args.bind_kind, args.bind_id) {
                 (Some(kind), Some(id)) => Some(sideshow::composition::PlanBinding { kind, id }),
                 (None, None) => None,
@@ -1225,6 +1268,27 @@ fn compose_command(command: ComposeCommand) -> anyhow::Result<()> {
                 }
             };
             slide.component = args.component;
+            if args.clear_props {
+                slide.props.clear();
+            }
+            if args.clear_presets {
+                slide.presets.clear();
+            }
+            if args.clear_files {
+                slide.files.clear();
+            }
+            if args.clear_bind {
+                slide.bind = None;
+            }
+            for key in args.remove_props {
+                slide.props.remove(&key);
+            }
+            for key in args.remove_files {
+                slide.files.remove(&key);
+            }
+            if !args.remove_presets.is_empty() {
+                slide.presets.retain(|p| !args.remove_presets.contains(p));
+            }
             slide.props.extend(args.props);
             if !args.presets.is_empty() {
                 slide.presets = args.presets;
@@ -1343,7 +1407,7 @@ fn composition_explain_effective(source: &Path) -> anyhow::Result<serde_json::Va
             }
             let effective = sideshow::composition::effective_props_for_entry(&slide, &entry)?;
             return Ok(
-                serde_json::json!({"source": source, "component": slide.component, "registry": entry, "props": slide.props, "effective_props": effective.values, "prop_provenance": effective.provenance, "files": slide.files, "bind": slide.bind, "trust_contract": sideshow::composition::TRUST_CONTRACT}),
+                serde_json::json!({"source": source, "component": slide.component, "registry": entry, "props": slide.props, "selected_presets": slide.presets, "effective_props": effective.values, "prop_provenance": effective.provenance, "files": slide.files, "bind": slide.bind, "trust_contract": sideshow::composition::TRUST_CONTRACT}),
             );
         }
     }
