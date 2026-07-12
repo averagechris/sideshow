@@ -216,12 +216,24 @@ pub mod project_packs {
 
     fn reject_placeholders_in_tags(name: &str, s: &str) -> anyhow::Result<()> {
         let mut in_tag = false;
+        let mut quote: Option<char> = None;
         let mut chars = s.char_indices().peekable();
         while let Some((i, c)) = chars.next() {
-            if c == '<' {
+            if in_tag {
+                if let Some(q) = quote {
+                    if c == q {
+                        quote = None;
+                    }
+                } else if c == '"' || c == '\'' {
+                    quote = Some(c);
+                } else if c == '>' {
+                    in_tag = false;
+                }
+            } else if c == '<' {
                 in_tag = true;
+                quote = None;
             }
-            if c == '>' {
+            if c == '>' && !in_tag {
                 in_tag = false;
             }
             if c == '{' && matches!(chars.peek(), Some((_, '{'))) && in_tag {
@@ -583,6 +595,7 @@ pub mod project_packs {
                 let assets = load_assets(&root, &format!("component '{}'", c.name), &c.assets)?;
                 validate_markup(&c.name, &template)?;
                 validate_css_with_assets(&c.name, &css, &assets)?;
+                validate_component_contract(&c.name, &c.props, &c.schema, &c.presets, &c.files)?;
                 let template = rewrite_local_assets(&template, &assets)?;
                 let css = rewrite_local_assets(&css, &assets)?;
                 let files = vec![
@@ -616,7 +629,21 @@ pub mod project_packs {
                     Some(&cb),
                     files,
                 );
-                metadata.props = c.schema.clone();
+                let effective_schema = if c.schema.is_empty() {
+                    c.props
+                        .iter()
+                        .map(|name| registry::PropertySchema {
+                            name: name.clone(),
+                            ty: registry::PropertyType::String,
+                            required: true,
+                            default: None,
+                            values: Vec::new(),
+                        })
+                        .collect()
+                } else {
+                    c.schema.clone()
+                };
+                metadata.props = effective_schema.clone();
                 metadata.presets = c.presets.clone();
                 let entry = registry::RegistryEntry {
                     kind: "component".into(),
@@ -630,7 +657,7 @@ pub mod project_packs {
                     css,
                     assets,
                     props: c.props,
-                    schema: c.schema,
+                    schema: effective_schema,
                     presets: c.presets,
                     files: c.files,
                     entry,
@@ -762,33 +789,7 @@ pub mod project_packs {
         if slide.bind.is_some() {
             bail!("{} does not accept plan binding", slide.component);
         }
-        let schema_names = component
-            .schema
-            .iter()
-            .map(|p| p.name.as_str())
-            .collect::<BTreeSet<_>>();
-        let declared = if schema_names.is_empty() {
-            component.props.iter().map(String::as_str).collect()
-        } else {
-            schema_names
-        };
-        for key in slide.props.keys() {
-            if !declared.contains(key.as_str()) {
-                bail!("unknown prop {key} for component {}", slide.component);
-            }
-        }
-        for key in &component.props {
-            if !slide.props.contains_key(key) {
-                bail!("missing prop {key}");
-            }
-        }
-        for prop in &component.schema {
-            match slide.props.get(&prop.name).or(prop.default.as_ref()) {
-                Some(value) => validate_prop_value(&component.name, prop, value)?,
-                None if prop.required => bail!("missing prop {}", prop.name),
-                None => {}
-            }
-        }
+        let _ = crate::composition::effective_props_for_entry(slide, &component.entry)?;
         let file_slots = component
             .files
             .iter()
@@ -828,6 +829,47 @@ pub mod project_packs {
                 prop.name
             ),
         }
+    }
+
+    fn validate_component_contract(
+        component: &str,
+        legacy_props: &[String],
+        schema: &[registry::PropertySchema],
+        presets: &BTreeMap<String, BTreeMap<String, registry::PropertyValue>>,
+        files: &[String],
+    ) -> anyhow::Result<()> {
+        if ordered(files.to_vec()) != files {
+            bail!("project component '{component}' file slots must be sorted unique");
+        }
+        let declared = if schema.is_empty() {
+            legacy_props.iter().cloned().collect::<BTreeSet<_>>()
+        } else {
+            let names = schema
+                .iter()
+                .map(|p| p.name.clone())
+                .collect::<BTreeSet<_>>();
+            if names.len() != schema.len() {
+                bail!("project component '{component}' declares duplicate schema prop");
+            }
+            names
+        };
+        for (preset, values) in presets {
+            validate_registry_name(preset)?;
+            for (key, value) in values {
+                if !declared.contains(key) {
+                    bail!("preset {preset} for component {component} sets unknown prop {key}");
+                }
+                if let Some(prop) = schema.iter().find(|p| p.name == *key) {
+                    validate_prop_value(component, prop, value)?;
+                }
+            }
+        }
+        for prop in schema {
+            if let Some(default) = &prop.default {
+                validate_prop_value(component, prop, default)?;
+            }
+        }
+        Ok(())
     }
 
     fn ordered(values: Vec<String>) -> Vec<String> {
@@ -879,6 +921,74 @@ pub mod composition {
     }
 
     pub const TRUST_CONTRACT: &str = "component slide TOML is data-only; literal and plan fields are HTML-escaped by bundled renderers; audited component markup is compiler-owned, JS-free, and limited to static HTML/CSS";
+
+    #[derive(Debug, Clone)]
+    pub struct EffectiveProps {
+        pub values: BTreeMap<String, registry::PropertyValue>,
+        pub provenance: BTreeMap<String, String>,
+    }
+
+    pub fn effective_props_for_entry(
+        slide: &ComponentSlide,
+        entry: &registry::RegistryEntry,
+    ) -> anyhow::Result<EffectiveProps> {
+        let mut values = BTreeMap::new();
+        let mut provenance = BTreeMap::new();
+        let mut seen_presets = BTreeSet::new();
+        let declared = entry
+            .metadata
+            .props
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<BTreeSet<_>>();
+        for prop in &entry.metadata.props {
+            if let Some(default) = &prop.default {
+                crate::project_packs::validate_prop_value(&slide.component, prop, default)?;
+                values.insert(prop.name.clone(), default.clone());
+                provenance.insert(prop.name.clone(), "default".into());
+            }
+        }
+        for preset in &slide.presets {
+            if !seen_presets.insert(preset) {
+                bail!(
+                    "duplicate preset {preset} for component {}",
+                    slide.component
+                );
+            }
+            let preset_values = entry.metadata.presets.get(preset).with_context(|| {
+                format!("unknown preset {preset} for component {}", slide.component)
+            })?;
+            for (key, value) in preset_values {
+                if !declared.contains(key.as_str()) {
+                    bail!(
+                        "preset {preset} for component {} sets unknown prop {key}",
+                        slide.component
+                    );
+                }
+                if let Some(prop) = entry.metadata.props.iter().find(|p| p.name == *key) {
+                    crate::project_packs::validate_prop_value(&slide.component, prop, value)?;
+                }
+                values.insert(key.clone(), value.clone());
+                provenance.insert(key.clone(), format!("preset:{preset}"));
+            }
+        }
+        for (key, value) in &slide.props {
+            if !declared.contains(key.as_str()) {
+                bail!("unknown prop {key} for component {}", slide.component);
+            }
+            if let Some(prop) = entry.metadata.props.iter().find(|p| p.name == *key) {
+                crate::project_packs::validate_prop_value(&slide.component, prop, value)?;
+            }
+            values.insert(key.clone(), value.clone());
+            provenance.insert(key.clone(), "explicit".into());
+        }
+        for prop in &entry.metadata.props {
+            if !values.contains_key(&prop.name) && prop.required {
+                bail!("missing prop {}", prop.name);
+            }
+        }
+        Ok(EffectiveProps { values, provenance })
+    }
 
     pub fn is_component_slide_path(path: &Path) -> bool {
         path.file_name()
@@ -948,16 +1058,13 @@ pub mod composition {
         let slide = load(path)?;
         validate_component(&slide)?;
         let registry = registry::explain("component", &slide.component)?;
+        let effective = effective_props_for_entry(&slide, &registry)?;
         Ok(Explanation {
             source: path.to_string_lossy().into_owned(),
-            component: slide.component,
+            component: slide.component.clone(),
             registry,
-            effective_props: slide.props.clone(),
-            prop_provenance: slide
-                .props
-                .keys()
-                .map(|k| (k.clone(), "explicit".into()))
-                .collect(),
+            effective_props: effective.values,
+            prop_provenance: effective.provenance,
             props: slide.props,
             files: slide.files,
             bind: slide.bind,
@@ -1017,20 +1124,7 @@ pub mod composition {
         slide: &ComponentSlide,
         entry: &registry::RegistryEntry,
     ) -> anyhow::Result<BTreeMap<String, registry::PropertyValue>> {
-        let mut effective = BTreeMap::new();
-        for prop in &entry.metadata.props {
-            if let Some(default) = &prop.default {
-                effective.insert(prop.name.clone(), default.clone());
-            }
-        }
-        for preset in &slide.presets {
-            let values = entry.metadata.presets.get(preset).with_context(|| {
-                format!("unknown preset {preset} for component {}", slide.component)
-            })?;
-            effective.extend(values.clone());
-        }
-        effective.extend(slide.props.clone());
-        Ok(effective)
+        Ok(effective_props_for_entry(slide, entry)?.values)
     }
 
     fn render_bundled_entry(
@@ -1060,39 +1154,71 @@ pub mod composition {
             return Ok(None);
         };
         reject_bind(slide)?;
-        let declared = component
-            .props
-            .iter()
-            .map(String::as_str)
-            .collect::<BTreeSet<_>>();
-        let mut effective = BTreeMap::new();
-        for prop in &component.schema {
-            if let Some(default) = &prop.default {
-                effective.insert(prop.name.clone(), default.clone());
-            }
-        }
-        for preset in &slide.presets {
-            let values = component.presets.get(preset).with_context(|| {
-                format!("unknown preset {preset} for component {}", slide.component)
-            })?;
-            effective.extend(values.clone());
-        }
-        effective.extend(slide.props.clone());
-        for key in effective.keys() {
-            if !declared.contains(key.as_str()) {
-                bail!("unknown prop {key} for component {}", slide.component);
-            }
-        }
-        for key in &component.props {
-            if !effective.contains_key(key) {
-                bail!("missing prop {key}");
-            }
-        }
-        let values = effective
+        let effective = effective_props_for_entry(slide, &component.entry)?.values;
+        let mut values: BTreeMap<&str, Escaped<'_>> = effective
             .iter()
             .map(|(k, v)| (k.as_str(), Escaped::Owned(v.as_render_string())))
             .collect();
+        let rendered_files = render_file_slots(deck_dir, &component, slide)?;
+        for (k, v) in &rendered_files {
+            values.insert(k.as_str(), Escaped::TrustedHtml(v));
+        }
         render_template_string(&component.name, &component.template, values).map(Some)
+    }
+
+    fn render_file_slots(
+        deck_dir: &Path,
+        component: &crate::project_packs::ProjectComponent,
+        slide: &ComponentSlide,
+    ) -> anyhow::Result<BTreeMap<String, String>> {
+        let declared = component.files.iter().cloned().collect::<BTreeSet<_>>();
+        for slot in slide.files.keys() {
+            if !declared.contains(slot) {
+                bail!("unknown file slot {slot} for component {}", slide.component);
+            }
+        }
+        let mut out = BTreeMap::new();
+        let base = deck_dir.canonicalize()?;
+        for (slot, rel) in &slide.files {
+            if rel.is_empty()
+                || Path::new(rel).is_absolute()
+                || rel.split('/').any(|p| p.is_empty() || p == "..")
+            {
+                bail!("component file input must be deck-relative without traversal: {rel}");
+            }
+            let path = crate::project_packs::checked_descend(&base, rel, false)?;
+            let md = fs::metadata(&path)?;
+            if md.len() > 5 * 1024 * 1024 {
+                bail!("component file input {rel} exceeds 5MiB limit");
+            }
+            let bytes = fs::read(&path)?;
+            let mime = crate::mime_for(rel);
+            if !(mime.starts_with("image/")
+                || matches!(mime, "text/plain" | "text/markdown" | "application/pdf"))
+            {
+                bail!("component file input {rel} has unsupported MIME type {mime}");
+            }
+            let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            let html = if mime.starts_with("image/") {
+                format!(
+                    "<img src=\"data:{mime};base64,{data}\" alt=\"{}\" />",
+                    esc_attr(slot)
+                )
+            } else {
+                format!(
+                    "<a href=\"data:{mime};base64,{data}\" download=\"{}\">{}</a>",
+                    esc_attr(
+                        Path::new(rel)
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("file")
+                    ),
+                    esc(slot)
+                )
+            };
+            out.insert(slot.clone(), html);
+        }
+        Ok(out)
     }
 
     fn validate_component(slide: &ComponentSlide) -> anyhow::Result<()> {
@@ -1116,27 +1242,10 @@ pub mod composition {
         slide: &ComponentSlide,
         entry: &registry::RegistryEntry,
     ) -> anyhow::Result<()> {
-        let effective = effective_props(slide, entry)?;
-        let declared = entry
-            .metadata
-            .props
-            .iter()
-            .map(|p| p.name.as_str())
-            .collect::<BTreeSet<_>>();
-        for key in effective.keys() {
-            if !declared.contains(key.as_str()) {
-                bail!("unknown prop {key} for component {}", slide.component);
-            }
+        if !slide.files.is_empty() {
+            bail!("component {} does not declare file slots", slide.component);
         }
-        for prop in &entry.metadata.props {
-            match effective.get(&prop.name) {
-                Some(value) => {
-                    crate::project_packs::validate_prop_value(&slide.component, prop, value)?
-                }
-                None if prop.required => bail!("missing prop {}", prop.name),
-                None => {}
-            }
-        }
+        let _ = effective_props_for_entry(slide, entry)?;
         Ok(())
     }
     fn validate_binding(bind: &PlanBinding) -> anyhow::Result<()> {
@@ -1174,6 +1283,7 @@ pub mod composition {
         Text(&'a str),
         Attribute(&'a str),
         Owned(String),
+        TrustedHtml(&'a str),
     }
 
     fn render_template_resource(
@@ -1205,6 +1315,7 @@ pub mod composition {
                 Escaped::Text(value) => esc(value),
                 Escaped::Attribute(value) => esc_attr(value),
                 Escaped::Owned(value) => esc(value),
+                Escaped::TrustedHtml(value) => value.to_string(),
             };
             rendered.push_str(&escaped);
             used.insert(key.to_owned());
@@ -1247,6 +1358,7 @@ pub mod composition {
                 Escaped::Text(v) => esc(v),
                 Escaped::Attribute(v) => esc_attr(v),
                 Escaped::Owned(v) => esc(v),
+                Escaped::TrustedHtml(v) => v.to_string(),
             });
             used.insert(key.to_owned());
             rest = &after_open[end + 2..];

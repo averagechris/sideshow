@@ -245,6 +245,9 @@ struct ComposeWriteArgs {
     component: String,
     #[arg(long = "prop", value_parser = parse_prop_val)]
     props: Vec<(String, sideshow::registry::PropertyValue)>,
+    /// Apply a named component preset. Repeatable; applied in order after defaults and before props.
+    #[arg(long = "preset")]
+    presets: Vec<String>,
     /// Deck-relative file input slot as KEY=path; checked for traversal, symlinks, type, and existence.
     #[arg(long = "file", value_parser = parse_key_val)]
     files: Vec<(String, String)>,
@@ -858,6 +861,15 @@ struct VendorComponent {
     intent: Vec<String>,
     #[serde(default)]
     accepted_input: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    schema: Vec<sideshow::registry::PropertySchema>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    presets: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, sideshow::registry::PropertyValue>,
+    >,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    files: Vec<String>,
 }
 
 fn vendor_component(deck: &Path, name: &str) -> anyhow::Result<()> {
@@ -1165,6 +1177,9 @@ fn registry_document_for_deck(deck: &Path) -> anyhow::Result<sideshow::registry:
 fn compose_command(command: ComposeCommand) -> anyhow::Result<()> {
     match command {
         ComposeCommand::Add(args) => {
+            reject_duplicate_keys("--preset", args.presets.iter().map(String::as_str))?;
+            reject_duplicate_keys("--prop", args.props.iter().map(|(k, _)| k.as_str()))?;
+            reject_duplicate_keys("--file", args.files.iter().map(|(k, _)| k.as_str()))?;
             let bind = match (args.bind_kind, args.bind_id) {
                 (Some(kind), Some(id)) => Some(sideshow::composition::PlanBinding { kind, id }),
                 (None, None) => None,
@@ -1173,7 +1188,7 @@ fn compose_command(command: ComposeCommand) -> anyhow::Result<()> {
             let slide = sideshow::composition::ComponentSlide {
                 component: args.component,
                 props: args.props.into_iter().collect(),
-                presets: Vec::new(),
+                presets: args.presets,
                 files: args.files.into_iter().collect(),
                 bind,
             };
@@ -1189,18 +1204,34 @@ fn compose_command(command: ComposeCommand) -> anyhow::Result<()> {
             );
         }
         ComposeCommand::Update(args) => {
+            reject_duplicate_keys("--preset", args.presets.iter().map(String::as_str))?;
+            reject_duplicate_keys("--prop", args.props.iter().map(|(k, _)| k.as_str()))?;
+            reject_duplicate_keys("--file", args.files.iter().map(|(k, _)| k.as_str()))?;
             let bind = match (args.bind_kind, args.bind_id) {
                 (Some(kind), Some(id)) => Some(sideshow::composition::PlanBinding { kind, id }),
                 (None, None) => None,
                 _ => anyhow::bail!("--bind-kind and --bind-id must be provided together"),
             };
-            let slide = sideshow::composition::ComponentSlide {
-                component: args.component,
-                props: args.props.into_iter().collect(),
-                presets: Vec::new(),
-                files: args.files.into_iter().collect(),
-                bind,
+            let mut slide = if args.source.is_file() {
+                sideshow::composition::load(&args.source)?
+            } else {
+                sideshow::composition::ComponentSlide {
+                    component: args.component.clone(),
+                    props: Default::default(),
+                    presets: Vec::new(),
+                    files: Default::default(),
+                    bind: None,
+                }
             };
+            slide.component = args.component;
+            slide.props.extend(args.props);
+            if !args.presets.is_empty() {
+                slide.presets = args.presets;
+            }
+            if !args.files.is_empty() {
+                slide.files.extend(args.files);
+            }
+            slide.bind = bind.or(slide.bind);
             let project = validate_effective_component(args.deck.as_deref(), &args.source, &slide)?;
             if project {
                 write_project_slide(&args.source, &slide, false)?;
@@ -1219,6 +1250,19 @@ fn compose_command(command: ComposeCommand) -> anyhow::Result<()> {
         ComposeCommand::Remove { source } => {
             let removed = composition_remove_effective(&source)?;
             println!("{}", serde_json::to_string_pretty(&removed)?);
+        }
+    }
+    Ok(())
+}
+
+fn reject_duplicate_keys<'a>(
+    what: &str,
+    keys: impl Iterator<Item = &'a str>,
+) -> anyhow::Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for key in keys {
+        if !seen.insert(key.to_string()) {
+            anyhow::bail!("duplicate {what} value for {key}");
         }
     }
     Ok(())
@@ -1296,45 +1340,15 @@ fn composition_explain_effective(source: &Path) -> anyhow::Result<serde_json::Va
             if entry.provenance.source.starts_with("project:") && !is_project {
                 anyhow::bail!("invalid project component source");
             }
-            let (effective_props, prop_provenance) = explain_effective_props(&entry, &slide);
+            let effective = sideshow::composition::effective_props_for_entry(&slide, &entry)?;
             return Ok(
-                serde_json::json!({"source": source, "component": slide.component, "registry": entry, "props": slide.props, "effective_props": effective_props, "prop_provenance": prop_provenance, "files": slide.files, "bind": slide.bind, "trust_contract": sideshow::composition::TRUST_CONTRACT}),
+                serde_json::json!({"source": source, "component": slide.component, "registry": entry, "props": slide.props, "effective_props": effective.values, "prop_provenance": effective.provenance, "files": slide.files, "bind": slide.bind, "trust_contract": sideshow::composition::TRUST_CONTRACT}),
             );
         }
     }
     Ok(serde_json::to_value(sideshow::composition::explain(
         source,
     )?)?)
-}
-
-fn explain_effective_props(
-    entry: &sideshow::registry::RegistryEntry,
-    slide: &sideshow::composition::ComponentSlide,
-) -> (
-    std::collections::BTreeMap<String, sideshow::registry::PropertyValue>,
-    std::collections::BTreeMap<String, String>,
-) {
-    let mut values = std::collections::BTreeMap::new();
-    let mut prov = std::collections::BTreeMap::new();
-    for prop in &entry.metadata.props {
-        if let Some(default) = &prop.default {
-            values.insert(prop.name.clone(), default.clone());
-            prov.insert(prop.name.clone(), "default".into());
-        }
-    }
-    for preset in &slide.presets {
-        if let Some(preset_values) = entry.metadata.presets.get(preset) {
-            for (k, v) in preset_values {
-                values.insert(k.clone(), v.clone());
-                prov.insert(k.clone(), format!("preset:{preset}"));
-            }
-        }
-    }
-    for (k, v) in &slide.props {
-        values.insert(k.clone(), v.clone());
-        prov.insert(k.clone(), "explicit".into());
-    }
-    (values, prov)
 }
 
 fn composition_remove_effective(source: &Path) -> anyhow::Result<serde_json::Value> {
