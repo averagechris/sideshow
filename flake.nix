@@ -31,6 +31,7 @@
       fleet.lib.fleet.presets.rust {
         pkgs = pkgsFor system;
         inherit self;
+        srhtPackage = fleet.packages.${system}.srht;
         pname = "sideshow";
         binaries = ["sideshow"];
         subdir = "sideshow";
