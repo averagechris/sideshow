@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v0.5.2 - 2026-08-06
+
+### Changed
+
+- Refresh compatible Rust dependencies and the pinned Nix toolchain, including
+  the fleet release tooling and SourceHut integration.
+- Use the approved SourceHut release channel for CI-driven release work.
 
 ## v0.5.1 - 2026-07-10
 
