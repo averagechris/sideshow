@@ -39,6 +39,12 @@
         versionMode = "package";
         versionFile = "Cargo.toml";
         lockPackages = ["sideshow"];
+        releaseValidationApps = [
+          "ci-deny"
+          "ci-machete"
+          "ci-sort"
+          "ci-release-contract"
+        ];
       };
     mkToolApp = system: name: runtimeInputs: text: let
       pkgs = pkgsFor system;
@@ -61,6 +67,10 @@
     ciSort = system:
       mkToolApp system "ci-sort" [(pkgsFor system).cargo (pkgsFor system).cargo-sort] ''
         cargo sort --workspace --check
+      '';
+    ciReleaseContract = system:
+      mkToolApp system "ci-release-contract" [(pkgsFor system).bash (pkgsFor system).coreutils (pkgsFor system).gnugrep (pkgsFor system).nix] ''
+        exec bash scripts/ci-release-contract.sh
       '';
     avifEvaluationEncoder = system: enableAvif: let
       pkgs = pkgsFor system;
@@ -128,6 +138,7 @@
       ci-deny = ciDeny system;
       ci-machete = ciMachete system;
       ci-sort = ciSort system;
+      ci-release-contract = ciReleaseContract system;
       avif-evaluation-encoder = avifEvaluationEncoder system true;
       avif-evaluation-encoder-webp-only = avifEvaluationEncoder system false;
       release-artifact = (fleetApps system).releaseArtifact system;
@@ -154,6 +165,10 @@
       ci-sort = {
         type = "app";
         program = "${self.packages.${system}.ci-sort}/bin/ci-sort";
+      };
+      ci-release-contract = {
+        type = "app";
+        program = "${self.packages.${system}.ci-release-contract}/bin/ci-release-contract";
       };
       avif-evaluation = {
         type = "app";

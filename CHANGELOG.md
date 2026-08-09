@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add fail-safe release preflight, prepared-tree policy gates, and deterministic release-contract validation.
+
 ## v0.5.2 - 2026-08-06
 
 ### Changed
