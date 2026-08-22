@@ -146,6 +146,7 @@
         src = lib.cleanSource ./.;
         cargoLock.lockFile = ./Cargo.lock;
         nativeBuildInputs = [pkgs.makeWrapper];
+        nativeCheckInputs = [pkgs.tailwindcss_4];
 
         postInstall = ''
           wrapProgram $out/bin/sideshow \
