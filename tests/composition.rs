@@ -1,8 +1,6 @@
-use std::process::Command;
+mod support;
 
-fn sideshow() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_sideshow"))
-}
+use support::sideshow;
 
 fn build_output(deck: &std::path::Path) -> String {
     let status = sideshow().args(["build"]).arg(deck).status().unwrap();

@@ -72,6 +72,33 @@
       mkToolApp system "ci-release-contract" [(pkgsFor system).bash (pkgsFor system).coreutils (pkgsFor system).gnugrep (pkgsFor system).nix] ''
         exec bash scripts/ci-release-contract.sh
       '';
+    ciTest = system: let
+      pkgs = pkgsFor system;
+    in
+      mkToolApp system "ci-test" [pkgs.coreutils pkgs.tailwindcss_4] ''
+        env \
+          -u SIDESHOW_CONFIG \
+          -u SIDESHOW_TAILWINDCSS \
+          PATH=${pkgs.lib.makeBinPath [pkgs.coreutils pkgs.tailwindcss_4]} \
+          ${(fleetApps system).apps.ci-test.program}
+
+        composition_test=""
+        for candidate in target/debug/deps/composition-*; do
+          if [[ -x "$candidate" && ( -z "$composition_test" || "$candidate" -nt "$composition_test" ) ]]; then
+            composition_test="$candidate"
+          fi
+        done
+        if [[ -z "$composition_test" ]]; then
+          echo "composition test binary not found" >&2
+          exit 1
+        fi
+
+        exec env \
+          -u SIDESHOW_CONFIG \
+          -u SIDESHOW_TAILWINDCSS \
+          PATH=${pkgs.lib.makeBinPath [pkgs.coreutils]} \
+          "$composition_test"
+      '';
     avifEvaluationEncoder = system: enableAvif: let
       pkgs = pkgsFor system;
     in
@@ -174,7 +201,11 @@
         type = "app";
         program = "${avifEvaluation system}/bin/avif-evaluation";
       };
-      inherit ((fleetApps system).apps) prepare-release release-tag release ci-fmt ci-clippy static-checks ci-test;
+      ci-test = {
+        type = "app";
+        program = "${ciTest system}/bin/ci-test";
+      };
+      inherit ((fleetApps system).apps) prepare-release release-tag release ci-fmt ci-clippy static-checks;
     });
 
     checks = forAllSystems (system: {
