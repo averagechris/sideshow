@@ -1465,6 +1465,40 @@ fn plan_component_fixture_builds_with_css_and_no_component_js() {
     assert!(!html.contains("customElements.define"));
 }
 
+#[cfg(unix)]
+#[test]
+fn raw_html_slide_preserves_remote_iframe_through_check_and_build() {
+    let tmp = tempfile::tempdir().unwrap();
+    let deck = tmp.path().join("deck");
+    std::fs::create_dir_all(deck.join("slides")).unwrap();
+    std::fs::write(deck.join("deck.toml"), "[deck]\ntitle='Iframe'\n").unwrap();
+    std::fs::write(deck.join("theme.css"), "").unwrap();
+    let iframe = r#"<iframe src="https://example.test/prototype" title="Prototype"></iframe>"#;
+    std::fs::write(deck.join("slides/01-prototype.html"), iframe).unwrap();
+
+    let check = sideshow_command().arg("check").arg(&deck).output().unwrap();
+    assert!(
+        check.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+
+    let tailwind = fake_tailwind(tmp.path());
+    let build = sideshow_command()
+        .env("SIDESHOW_TAILWINDCSS", tailwind)
+        .arg("build")
+        .arg(&deck)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let html = std::fs::read_to_string(deck.join("dist/iframe.html")).unwrap();
+    assert!(html.contains(iframe));
+}
+
 fn copy_dir(from: impl AsRef<std::path::Path>, to: impl AsRef<std::path::Path>) {
     std::fs::create_dir_all(&to).unwrap();
     for entry in std::fs::read_dir(from).unwrap() {

@@ -8,7 +8,13 @@ allowed-tools: Bash, Read, Grep, Glob, Edit, Write
 
 Use this skill when creating or revising a `sideshow` deck. `sideshow` compiles a source directory of HTML/markdown slide fragments into one self-contained HTML file.
 
-For static planning and roadmap slides, use `planning-components.md` for the `.plan-*` visual primitive vocabulary and accessibility rules. Distribution, packaging, installation, and flake docs are separate work; do not mix those concerns into deck authoring guidance.
+For a deck that explains a project or architecture, prototypes uncertain behavior,
+and later presents implemented evidence, read `project-artifacts.md`. It defines
+the three-mode workflow, canonical-source boundary, media fallbacks, and team
+feedback loop. For static planning and roadmap slides, use
+`planning-components.md` for the `.plan-*` visual primitive vocabulary and
+accessibility rules. Distribution, packaging, installation, and flake docs are
+separate work; do not mix those concerns into deck authoring guidance.
 
 ## Planning mode
 

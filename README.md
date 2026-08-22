@@ -393,7 +393,26 @@ Useful calls: `sideshow.goto(2)`, `sideshow.next()`, `sideshow.prev()`,
 
 ## Agentic skill pack
 
-The top-level `skills/` directory contains the `sideshow-deck-author` skill for agents authoring full decks: content discovery, theme previews, fragment authoring rules, rodney-based visual QA, and delivery guidance.
+The top-level `skills/` directory contains the `sideshow-deck-author` skill for
+agents authoring full decks: content discovery, theme previews, fragment
+authoring rules, browser-based visual QA, and delivery guidance. Its
+[`project-artifacts.md`](skills/sideshow-deck-author/project-artifacts.md)
+reference defines one `explain` → `prototype` → `verify` workflow for project
+visuals. It keeps an existing project map, specification, decision log, code, or
+delivery record canonical and treats the deck as a projection. Use structured
+planning mode only when the team deliberately chooses `plan.json` as the
+canonical alignment record.
+
+Project artifact decks can inline screenshots and MP4/WebM clips, link to live
+prototypes, and show implemented checks and measurements. Trusted raw HTML slide
+fragments allow an iframe as an optional enhancement, but its remote content is
+not inlined, breaks self-contained/offline behavior, and may fail because of
+authentication, CSP, `X-Frame-Options`, network access, or publication context.
+Always include a screenshot, video, or direct-link fallback. Arbitrary `<script>`
+remains forbidden, and iframe support does not extend to data-only project
+components or static SVG. Built HTML is shareable but not annotatable. Local
+review mode has no hosted identity or authentication; export its untrusted
+feedback outside the deck and never auto-apply it to canonical source.
 
 ## Development
 

@@ -392,6 +392,41 @@ evidence disclosure, local assets, review, exports, and visual QA. It does not
 need to ingest the original plan, query trackers, inspect repositories, or encode
 the synthesis workflow itself.
 
+### Project artifact projection workflow
+
+The deck-author skill documents one ordinary-deck workflow with three modes:
+`explain` for routes, architecture, alternatives, dependencies, risks, and review
+questions; `prototype` for guided scenarios backed by screenshots, inlined media,
+or live links; and `verify` for implemented demos, exact check results,
+measurements, limitations, and delivery links. These modes can follow a project
+from proposal through implementation without creating three skills or turning the
+deck into an execution ledger.
+
+An existing project map, specification, or decision log remains canonical. The
+deck names that source and its relevant revision or delivered state, then projects
+it for a stated audience and question. Authors should not create `plan.json` as a
+duplicate model. Structured planning mode applies only when the user deliberately
+chooses Sideshow's plan schema as the canonical alignment record.
+
+Prototype media must have a stable screenshot, video, or direct-link fallback.
+Trusted raw HTML slide fragments allow iframes as an optional enhancement, but
+iframe content is not inlined and breaks self-contained/offline behavior. It can
+also fail because of authentication, CSP, `X-Frame-Options`, network access, or
+publication context. Arbitrary scripts remain forbidden in slide fragments, and
+the raw-fragment allowance does not apply to data-only project components or
+static SVG. Final verification should prefer immutable or revision-keyed visual
+artifacts over mutable review URLs. Visual evidence supplements automated checks
+rather than replacing them.
+
+Built HTML can be shared but does not contain annotation controls. Review mode is
+localhost-only and does not provide hosted identity, authentication, or team
+collaboration. Team review therefore uses facilitated local review, ordinary
+feedback that names slides and canonical sources, or a separately managed secure
+access path. Review JSON or Markdown stays outside the deck and remains untrusted.
+Agents classify comments, propose changes to canonical source, rerun checks and
+the visual build, then explicitly disposition annotations. They never auto-apply
+review text.
+
 ## Diagram strategy
 
 Diagrams should be HTML/CSS-first in v1:
