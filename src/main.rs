@@ -4868,9 +4868,68 @@ cognitive_contract={relationship_communicated='demo relationship',when_to_use='u
         .unwrap();
     }
 
+    #[cfg(unix)]
+    fn write_fake_tailwind(root: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = root.join("tailwindcss");
+        fs::write(
+            &path,
+            "#!/bin/sh\nin=''\nout=''\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    -i) in=$2; shift 2 ;;\n    -o) out=$2; shift 2 ;;\n    *) shift ;;\n  esac\ndone\ncp \"$in\" \"$out\"\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions).unwrap();
+        path
+    }
+
+    struct ScopedToolConfig {
+        config: Option<std::ffi::OsString>,
+        tailwind: Option<std::ffi::OsString>,
+    }
+
+    impl ScopedToolConfig {
+        fn new(config: &Path) -> Self {
+            let previous = Self {
+                config: std::env::var_os("SIDESHOW_CONFIG"),
+                tailwind: std::env::var_os("SIDESHOW_TAILWINDCSS"),
+            };
+            unsafe {
+                std::env::set_var("SIDESHOW_CONFIG", config);
+                std::env::remove_var("SIDESHOW_TAILWINDCSS");
+            }
+            previous
+        }
+    }
+
+    impl Drop for ScopedToolConfig {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.config {
+                    Some(value) => std::env::set_var("SIDESHOW_CONFIG", value),
+                    None => std::env::remove_var("SIDESHOW_CONFIG"),
+                }
+                match &self.tailwind {
+                    Some(value) => std::env::set_var("SIDESHOW_TAILWINDCSS", value),
+                    None => std::env::remove_var("SIDESHOW_TAILWINDCSS"),
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
     #[test]
     fn project_pack_resources_affect_digest_review_and_watcher_relevance() {
         let t = tempfile::tempdir().unwrap();
+        let tailwind = write_fake_tailwind(t.path());
+        let config = t.path().join("config.toml");
+        fs::write(
+            &config,
+            format!("[tools]\ntailwindcss = '{}'\n", tailwind.display()),
+        )
+        .unwrap();
+        let _config = ScopedToolConfig::new(&config);
         write_project_pack_fixture(t.path());
         let dist = t.path().join("dist");
         let before_digest = deck_input_digest(t.path()).unwrap();
