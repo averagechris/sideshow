@@ -1,8 +1,8 @@
-use std::{fs, path::Path, process::Command};
+mod support;
 
-fn bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_sideshow"))
-}
+use std::{fs, path::Path};
+
+use support::sideshow as bin;
 
 fn write_user_pack(root: &Path, theme_name: &str, css: &str) {
     fs::create_dir_all(root.join("themes")).unwrap();
