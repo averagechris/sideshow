@@ -482,18 +482,19 @@ sideshow tickets carry the `repo:sideshow` label.
 
 ```sh
 nix run .#release -- --version X.Y.Z --check
-nix run .#release -- --version X.Y.Z --submit-linux-build
+nix run .#release -- --version X.Y.Z
 ```
 
 The first command is a non-mutating readiness preflight. It fails fast on an
-invalid checkout, authentication, or tag state and requires an empty `@` whose
+invalid checkout or tag state and requires an empty `@` whose
 parent, local `main`, and `main@origin` agree. The release validates the prepared
 tree and verifies the artifact and checksum before atomically publishing refs.
-If a later upload or build submission fails, the exact same command resumes only
-when the checkout, refs, annotated tag, and version match exactly.
+The tag-triggered GitHub workflow builds the two platform artifacts; an operator
+verifies and publishes the GitHub Release and refreshes Pages by following
+[`docs/release.md`](docs/release.md). Future releases are GitHub-only.
 
 The shared release interface comes from
-`git+https://git.sr.ht/~averagechris/averagechris.srht.site#lib.fleet.presets.rust`.
+the SHA-pinned `github:averagechris/fleet` `lib.fleet.presets.rust` preset.
 
 ## License
 

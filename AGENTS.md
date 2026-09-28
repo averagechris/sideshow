@@ -34,18 +34,19 @@ This repo uses the standard averagechris fleet interface:
 ```sh
 nix run .#static-checks
 nix run .#release -- --version X.Y.Z --check
-nix run .#release -- --version X.Y.Z --submit-linux-build
+nix run .#release -- --version X.Y.Z
 ```
 
 The preflight is non-mutating and fails fast unless the checkout is Git-backed,
-SourceHut authentication works, the requested tag is available, and the empty
+the requested GitHub tag is available, and the empty
 jj working-copy commit's parent, local `main`, and `main@origin` agree. The
 release prepares the tree, runs fmt/clippy/test plus deny, machete, sort, and the
-evaluated help/docs contract, then builds and verifies the artifact and checksum
-before atomically publishing `main` and the annotated tag. Do not use lower-level
-helpers or bypass flags as the routine workflow. After a post-publication
-failure, rerun the exact same command: only exact matching release state resumes
-idempotently; mismatched checkout, refs, tag, or version fail closed.
+evaluated help/docs contract before atomically publishing `main` and the
+annotated tag. The read-only GitHub workflow then builds and verifies both
+platform artifact/checksum pairs as Actions artifacts. Follow `docs/release.md` to verify and
+manually publish the four assets, then manually refresh Pages. Do not use
+lower-level helpers or bypass flags as the routine workflow.
 
-`.builds/ci.yml` runs automatically on every push. `builds/release-linux-x86_64.yml`
-is explicit-submit only; do not move it to `.builds/`.
+`.builds/ci.yml` still runs automatically on every SourceHut push.
+`builds/release-linux-x86_64.yml` and historical SourceHut assets are archival
+and rollback material only: do not submit it for, or dual-publish, a new release.

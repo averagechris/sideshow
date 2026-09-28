@@ -8,7 +8,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    fleet.url = "git+https://git.sr.ht/~averagechris/averagechris.srht.site";
+    fleet.url = "github:averagechris/fleet/e31a02573d79dfeb2496fec6c21cf74a0ece4d79";
   };
 
   outputs = {
@@ -36,6 +36,7 @@
         binaries = ["sideshow"];
         subdir = "sideshow";
         srhtRepo = "sideshow";
+        releaseBackend = "github";
         versionMode = "package";
         versionFile = "Cargo.toml";
         lockPackages = ["sideshow"];
